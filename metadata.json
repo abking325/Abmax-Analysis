@@ -1,0 +1,6 @@
+{
+  "name": "ABMAX ANALYSIS — Trading Analysis Journal",
+  "description": "Professional multi-timeframe market analysis and trading journal with structured SMC framework, alignment verification, and reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

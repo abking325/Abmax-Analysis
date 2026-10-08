@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-main: #FFFFFF;
+    --bg-secondary: #F8FAFC;
+    --bg-field: #F3F5F7;
+    --text-main: #111827;
+    --text-secondary: #64748B;
+    --border-color: #E5E7EB;
+    --emerald-primary: #078354;
+    --emerald-hover: #066B45;
+    --emerald-pale: #E8F5EE;
+    --bullish-text: #087546;
+    --bearish-text: #B42335;
+    --bearish-pale: #FDECEF;
+    --neutral-surface: #EEF1F5;
+    --amber-text: #9A6700;
+  }
+
+  .dark {
+    --bg-main: #0B0F17;
+    --bg-secondary: #131B26;
+    --bg-field: #1A2433;
+    --text-main: #F3F4F6;
+    --text-secondary: #94A3B8;
+    --border-color: #263345;
+    --emerald-primary: #0A9E66;
+    --emerald-hover: #088556;
+    --emerald-pale: rgba(10, 158, 102, 0.18);
+    --bullish-text: #10B981;
+    --bearish-text: #EF4444;
+    --bearish-pale: rgba(239, 68, 68, 0.16);
+    --neutral-surface: #1E293B;
+    --amber-text: #F59E0B;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+}
+
+/* Custom Emerald Minimal Utility Classes */
+.bg-app-main {
+  background-color: var(--bg-main);
+}
+.bg-app-secondary {
+  background-color: var(--bg-secondary);
+}
+.bg-app-field {
+  background-color: var(--bg-field);
+}
+.bg-app-neutral {
+  background-color: var(--neutral-surface);
+}
+.text-app-main {
+  color: var(--text-main);
+}
+.text-app-secondary {
+  color: var(--text-secondary);
+}
+.border-app {
+  border-color: var(--border-color);
+}
+.bg-emerald-theme {
+  background-color: var(--emerald-primary);
+}
+.bg-emerald-theme-hover:hover {
+  background-color: var(--emerald-hover);
+}
+.text-emerald-theme {
+  color: var(--emerald-primary);
+}
+.bg-emerald-pale {
+  background-color: var(--emerald-pale);
+}
+.text-bullish {
+  color: var(--bullish-text);
+}
+.text-bearish {
+  color: var(--bearish-text);
+}
+.bg-bearish-pale {
+  background-color: var(--bearish-pale);
+}
+.text-amber-theme {
+  color: var(--amber-text);
+}
+
+/* Print Stylesheet for A4 Report Print / PDF */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 14mm 12mm;
+  }
+
+  body {
+    background-color: #FFFFFF !important;
+    color: #111827 !important;
+    font-size: 10.5pt !important;
+    overflow: visible !important;
+  }
+
+  /* Hide navigation, background pages, dialog controls, action buttons */
+  .no-print,
+  header,
+  footer,
+  nav,
+  .print-hide {
+    display: none !important;
+  }
+
+  /* Modal print container adapts into full natural document stream */
+  .print-modal-backdrop {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    inset: auto !important;
+  }
+
+  .print-modal-container {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #FFFFFF !important;
+    color: #111827 !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  .print-timeframe-row {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border-bottom: 1px solid #E5E7EB !important;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+  }
+
+  .print-image-container {
+    display: block !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-top: 8px !important;
+  }
+
+  .print-image-container img {
+    max-width: 100% !important;
+    max-height: 420px !important;
+    object-fit: contain !important;
+  }
+}
