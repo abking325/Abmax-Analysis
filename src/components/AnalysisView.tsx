@@ -43,6 +43,15 @@ import {
   getImage,
   saveTemplate,
 } from '../services/db';
+import { useAuth } from '../context/AuthContext';
+import {
+  uploadReportToCloud,
+  uploadDraftToCloud,
+  clearDraftFromCloud,
+  uploadTemplateToCloud,
+  SyncState,
+} from '../services/cloudSync';
+import { SyncStatusBadge } from './SyncStatusBadge';
 
 interface AnalysisViewProps {
   initialData: AnalysisData;
@@ -57,6 +66,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   onNavigateHome,
   onReportSavedSuccessfully,
 }) => {
+  const { user } = useAuth();
   const [data, setData] = useState<AnalysisData>(initialData);
   const [expandedTimeframes, setExpandedTimeframes] = useState<Record<TimeframeId, boolean>>({
     Weekly: false,
@@ -78,8 +88,10 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     });
   });
 
-  // Autosave status state
+  // Autosave & sync status state
   const [autosaveStatus, setAutosaveStatus] = useState<string>('Ready');
+  const [syncStatus, setSyncStatus] = useState<SyncState>('local');
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const autosaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Modals state
@@ -124,12 +136,22 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         await saveDraft(currentData);
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         setAutosaveStatus(`Draft autosaved at ${timeStr}`);
+
+        if (user) {
+          setSyncStatus('syncing');
+          await uploadDraftToCloud(user.id, currentData);
+          setSyncStatus('synced');
+          setLastSyncedAt(Date.now());
+        } else {
+          setSyncStatus('local');
+        }
       } catch (err) {
         console.error('Autosave failed', err);
         setAutosaveStatus('Autosave failed (local storage full or blocked)');
+        if (user) setSyncStatus('error');
       }
     }, 800);
-  }, []);
+  }, [user]);
 
   const updateAnalysis = (updater: (prev: AnalysisData) => AnalysisData) => {
     setData((prev) => {
@@ -341,6 +363,24 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
 
       await saveReport(reportPayload);
       await clearDraft();
+
+      // Cloud synchronization if user is signed in
+      if (user) {
+        setSyncStatus('syncing');
+        const cloudRes = await uploadReportToCloud(user.id, reportPayload);
+        await clearDraftFromCloud(user.id);
+        if (cloudRes.success) {
+          setSyncStatus('synced');
+          setLastSyncedAt(Date.now());
+        } else if (cloudRes.conflict) {
+          setSaveReportError('Cloud revision conflict: a newer version of this report exists in your account. Your local edit has been saved to this browser.');
+          setSyncStatus('error');
+        } else {
+          setSaveReportError(`Saved locally. Cloud sync pending: ${cloudRes.error}`);
+          setSyncStatus('error');
+        }
+      }
+
       onReportSavedSuccessfully(reportPayload.id);
     } catch (err) {
       console.error('Failed to save report', err);
@@ -354,6 +394,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const handleContinueLater = async () => {
     try {
       await saveDraft(data);
+      if (user) {
+        await uploadDraftToCloud(user.id, data);
+      }
       onNavigateHome();
     } catch (err) {
       console.error('Failed to save draft for later', err);
@@ -380,6 +423,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       },
     };
     await saveTemplate(tmpl);
+    if (user) {
+      await uploadTemplateToCloud(user.id, tmpl);
+    }
   };
 
   // Load Template (loads as a new analysis with today's local date, does not carry existing report ID)
@@ -410,6 +456,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     const fresh = createInitialAnalysisData('XAUUSD');
     updateAnalysis(() => fresh);
     await clearDraft();
+    if (user) {
+      await clearDraftFromCloud(user.id);
+    }
     setShowClearConfirm(false);
   };
 
@@ -433,10 +482,18 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           </p>
         </div>
 
-        {/* Autosave subtle status text */}
-        <div className="flex items-center gap-1.5 text-xs text-app-secondary">
-          <Clock className="w-3.5 h-3.5 text-emerald-theme" />
-          <span>{autosaveStatus}</span>
+        {/* Autosave subtle status text & Cloud Sync Status */}
+        <div className="flex flex-wrap items-center gap-2.5 text-xs text-app-secondary">
+          <SyncStatusBadge
+            status={syncStatus}
+            lastSyncedAt={lastSyncedAt}
+            onRetry={() => triggerAutosave(data)}
+          />
+          <span className="text-app-secondary opacity-40">|</span>
+          <div className="flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-emerald-theme" />
+            <span>{autosaveStatus}</span>
+          </div>
         </div>
       </div>
 

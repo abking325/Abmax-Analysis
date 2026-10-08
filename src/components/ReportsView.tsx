@@ -17,6 +17,8 @@ import {
 } from '../utils/analysisUtils';
 import { ReportDetailsModal } from './ReportDetailsModal';
 import { BackupModal } from './BackupModal';
+import { SyncStatusBadge } from './SyncStatusBadge';
+import { useAuth } from '../context/AuthContext';
 
 interface ReportsViewProps {
   reports: SavedReport[];
@@ -33,6 +35,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   onDeleteReport,
   onRefreshData,
 }) => {
+  const { user } = useAuth();
   const [selectedPair, setSelectedPair] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -108,9 +111,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       {/* Top section: Heading, Pair filter, Search, Export CSV, Secondary backup/import */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-6 pb-4 border-b border-app">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-app-main">
-            Analysis Reports
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-app-main">
+              Analysis Reports
+            </h2>
+            <SyncStatusBadge status={user ? 'synced' : 'local'} />
+          </div>
           <p className="text-xs text-app-secondary mt-0.5">
             Archived journal records sorted by session date.
           </p>

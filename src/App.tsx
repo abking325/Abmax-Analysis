@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { ActiveView, Header } from './components/Header';
 import { HomeView } from './components/HomeView';
 import { AnalysisView } from './components/AnalysisView';
 import { ReportsView } from './components/ReportsView';
+import { AuthModal } from './components/AuthModal';
+import { MigrationModal } from './components/MigrationModal';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import {
   AnalysisData,
   SavedReport,
@@ -14,9 +17,17 @@ import {
   getAllReports,
   getDraft,
   saveReport,
+  saveTemplate,
 } from './services/db';
+import {
+  deleteReportFromCloud,
+  fetchAllUserCloudData,
+  uploadReportToCloud,
+  getLocalDataCounts,
+} from './services/cloudSync';
 
-export default function App() {
+function MainApp() {
+  const { user, isPasswordRecovery } = useAuth();
   const [activeView, setActiveView] = useState<ActiveView>('home');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('abmax_theme');
@@ -31,8 +42,17 @@ export default function App() {
   const [isEditingExistingReport, setIsEditingExistingReport] = useState(false);
   const [reportsList, setReportsList] = useState<SavedReport[]>([]);
 
-  // Confirmation dialog for replacing unfinished work
+  // Modals state
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
   const [showReplaceDraftDialog, setShowReplaceDraftDialog] = useState(false);
+
+  // If URL has recovery token (password reset link), open auth modal immediately
+  useEffect(() => {
+    if (isPasswordRecovery) {
+      setIsAuthModalOpen(true);
+    }
+  }, [isPasswordRecovery]);
 
   // Sync theme to HTML class & localStorage
   useEffect(() => {
@@ -51,8 +71,8 @@ export default function App() {
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   };
 
-  // Load draft and reports on mount
-  const refreshStorageData = async () => {
+  // Load draft and reports from IndexedDB
+  const refreshStorageData = useCallback(async () => {
     try {
       const [draft, reports] = await Promise.all([getDraft(), getAllReports()]);
       setSavedDraft(draft);
@@ -63,11 +83,55 @@ export default function App() {
     } catch (e) {
       console.error('Failed to load initial data from IndexedDB', e);
     }
-  };
+  }, [isEditingExistingReport]);
 
   useEffect(() => {
     refreshStorageData();
-  }, []);
+  }, [refreshStorageData]);
+
+  // Handle user authentication change: fetch cloud data & check migration offer
+  useEffect(() => {
+    if (!user) return;
+
+    let isMounted = true;
+    const syncAccountData = async () => {
+      try {
+        // 1. Fetch all cloud reports and templates for this user
+        const cloudData = await fetchAllUserCloudData(user.id);
+        if (!isMounted) return;
+
+        // Merge cloud reports into local store
+        for (const cloudRep of cloudData.reports) {
+          await saveReport(cloudRep);
+        }
+        for (const cloudTmpl of cloudData.templates) {
+          await saveTemplate(cloudTmpl);
+        }
+
+        await refreshStorageData();
+
+        // 2. Check if user has unmigrated local records
+        const migrationKey = `abmax_migrated_prompt_${user.id}`;
+        const hasPrompted = localStorage.getItem(migrationKey);
+
+        if (!hasPrompted) {
+          const counts = await getLocalDataCounts();
+          if (counts.reportsCount > 0 || counts.templatesCount > 0 || counts.imagesCount > 0) {
+            setIsMigrationModalOpen(true);
+            localStorage.setItem(migrationKey, 'true');
+          }
+        }
+      } catch (err) {
+        console.error('Error syncing cloud data on sign-in', err);
+      }
+    };
+
+    syncAccountData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, refreshStorageData]);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
@@ -76,7 +140,6 @@ export default function App() {
   // Start fresh analysis
   const handleStartAnalysisClick = () => {
     if (savedDraft) {
-      // Prompt user before replacing unfinished work
       setShowReplaceDraftDialog(true);
     } else {
       const fresh = createInitialAnalysisData('XAUUSD');
@@ -122,7 +185,7 @@ export default function App() {
     navigateTo('analysis');
   };
 
-  // Copy report: creates independent report with new ID, today's local date, new creation timestamp, copy provenance
+  // Copy report: creates independent report with new ID, today's local date, new creation timestamp
   const handleCopyReport = async (sourceReport: SavedReport) => {
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
@@ -141,6 +204,9 @@ export default function App() {
 
     try {
       await saveReport(copiedReport);
+      if (user) {
+        await uploadReportToCloud(user.id, copiedReport);
+      }
       await refreshStorageData();
     } catch (e) {
       console.error('Failed to copy report', e);
@@ -151,6 +217,9 @@ export default function App() {
   const handleDeleteReport = async (id: string) => {
     try {
       await deleteReport(id);
+      if (user) {
+        await deleteReportFromCloud(user.id, id);
+      }
       await refreshStorageData();
     } catch (e) {
       console.error('Failed to delete report', e);
@@ -159,12 +228,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-app-main text-app-main transition-colors">
-      {/* Compact Header with scroll hide / reveal */}
+      {/* Compact Header with scroll hide / reveal & Account Control */}
       <Header
         activeView={activeView}
         onNavigate={navigateTo}
         theme={theme}
         onToggleTheme={toggleTheme}
+        onOpenAuth={() => setIsAuthModalOpen(true)}
         hasUnsavedDraft={Boolean(savedDraft)}
       />
 
@@ -248,6 +318,30 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Supabase Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onOpenMigration={() => setIsMigrationModalOpen(true)}
+      />
+
+      {/* Local to Cloud Journal Migration Modal */}
+      <MigrationModal
+        isOpen={isMigrationModalOpen}
+        onClose={() => setIsMigrationModalOpen(false)}
+        onMigrationComplete={() => {
+          refreshStorageData();
+        }}
+      />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <MainApp />
+    </AuthProvider>
   );
 }

@@ -14,7 +14,8 @@ import {
   calculateOverallAlignment,
   findMatchingValues,
 } from '../utils/analysisUtils';
-import { getImage } from '../services/db';
+import { getChartImageUrl } from '../services/cloudSync';
+import { useAuth } from '../context/AuthContext';
 import { ImageViewerModal } from './ImageViewerModal';
 
 interface ReportDetailsModalProps {
@@ -34,6 +35,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   onCopy,
   onDelete,
 }) => {
+  const { user } = useAuth();
   const [imagesMap, setImagesMap] = useState<Record<string, string>>({});
   const [expandedImages, setExpandedImages] = useState<Record<TimeframeId, boolean>>({
     Weekly: false,
@@ -52,7 +54,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Load chart images from IndexedDB when report opens
+  // Load chart images from private cloud storage or local IndexedDB
   useEffect(() => {
     if (!report || !isOpen) return;
 
@@ -63,7 +65,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
         const imgId = report.timeframes[tf]?.chartImageId;
         if (imgId) {
           try {
-            const dataUrl = await getImage(imgId);
+            const dataUrl = await getChartImageUrl(user?.id || null, imgId);
             if (dataUrl && isMounted) {
               map[imgId] = dataUrl;
             }
@@ -81,7 +83,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [report, isOpen]);
+  }, [report, isOpen, user]);
 
   // Lock background scroll and manage keyboard focus
   useEffect(() => {

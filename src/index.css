@@ -92,6 +92,23 @@
   color: var(--amber-text);
 }
 
+/* Header scroll hide / reveal with 200ms transition */
+.header-transition {
+  transition: transform 200ms ease-in-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-transition {
+    transition: none !important;
+  }
+}
+.header-visible {
+  transform: translateY(0);
+}
+.header-hidden {
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
 /* Print Stylesheet for A4 Report Print / PDF */
 @media print {
   @page {
