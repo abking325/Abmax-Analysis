@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Sun, Moon, User, Cloud } from 'lucide-react';
+import { Sun, Moon, User } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { getCloudVerifiedState } from '../services/supabaseDiagnostic';
 
 export type ActiveView = 'home' | 'analysis' | 'reports';
 
@@ -51,9 +50,16 @@ export const Header: React.FC<HeaderProps> = ({
   }, [activeView]);
 
   // Scroll event listener tracking window.scrollY:
-  // Nav bar is visible only when at the top of the page (scrollY <= 80px)
+  // Nav bar is visible only when at the top of the page (scrollY <= 80px) on Analysis & Reports.
+  // Home view always keeps the header visible.
   useEffect(() => {
     const handleScroll = () => {
+      // Home page header remains stationary and visible
+      if (activeView === 'home') {
+        setIsVisible(true);
+        return;
+      }
+
       // Do not alter header visibility when background scrolling is locked by a modal
       if (document.body.style.overflow === 'hidden') return;
 
@@ -70,7 +76,7 @@ export const Header: React.FC<HeaderProps> = ({
     return () => {
       window.removeEventListener('scroll', handleScroll);
     };
-  }, []);
+  }, [activeView]);
 
   // Keyboard focus management: blur active element if header hides
   useEffect(() => {
@@ -162,48 +168,38 @@ export const Header: React.FC<HeaderProps> = ({
 
             <div className="h-4 w-px border-r border-app mx-1" aria-hidden="true" />
 
-            {/* Account & Cloud Sync Control */}
+            {/* Account Control (Clean outline user icon with min 44px touch target) */}
             <button
               type="button"
               tabIndex={buttonTabIndex}
               onClick={onOpenAuth}
+              aria-label={user ? 'Open account' : 'Sign in'}
               title={
                 user
-                  ? `Signed in as ${user.email}${getCloudVerifiedState(user?.id).cloudSaveVerified ? ' • Cloud Sync Verified' : ' • Cloud Active'}`
-                  : 'Sign in to Account'
+                  ? user.email
+                    ? `Open account (${user.email})`
+                    : 'Open account'
+                  : 'Sign in'
               }
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+              className="relative min-w-[44px] min-h-[44px] w-11 h-11 inline-flex items-center justify-center rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
             >
-              {user ? (
-                <>
-                  <div
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      getCloudVerifiedState(user?.id).cloudSaveVerified
-                        ? 'bg-emerald-500'
-                        : 'bg-emerald-400'
-                    }`}
-                  />
-                  <span className="max-w-[100px] truncate hidden sm:inline text-app-main font-medium">
-                    {user.email?.split('@')[0]}
-                  </span>
-                  <Cloud className="w-3.5 h-3.5 text-emerald-theme shrink-0" />
-                </>
-              ) : (
-                <>
-                  <User className="w-3.5 h-3.5 text-app-secondary shrink-0" />
-                  <span className="hidden sm:inline">Sign In</span>
-                </>
+              <User className="w-5 h-5 text-current" strokeWidth={1.75} />
+              {user && (
+                <span
+                  className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900"
+                  aria-hidden="true"
+                />
               )}
             </button>
 
-            {/* Small Light / Dark Mode Toggle */}
+            {/* Light / Dark Mode Toggle with 44px touch target */}
             <button
               type="button"
               tabIndex={buttonTabIndex}
               onClick={onToggleTheme}
               aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
               title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-              className="p-1.5 rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+              className="min-w-[44px] min-h-[44px] w-11 h-11 inline-flex items-center justify-center rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
             >
               {theme === 'light' ? (
                 <Moon className="w-4 h-4 text-slate-600" />

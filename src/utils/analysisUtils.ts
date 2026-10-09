@@ -347,7 +347,105 @@ export function generateReportsCsv(reports: SavedReport[]): string {
 /**
  * SMC & Discipline rotating quotes for the Home section
  */
-export const DISCIPLINE_QUOTES = [
+export interface DisciplineQuote {
+  quote: string;
+  author: string;
+  reference?: string;
+}
+
+export const DISCIPLINE_QUOTES: DisciplineQuote[] = [
+  {
+    quote: "Anything can happen.",
+    author: "Mark Douglas",
+  },
+  {
+    quote: "Losers average losers.",
+    author: "Paul Tudor Jones",
+  },
+  {
+    quote: "Know what you own and why you own it.",
+    author: "Peter Lynch",
+  },
+  {
+    quote: "I have always found it profitable to study my mistakes.",
+    author: "Edwin Lefèvre",
+    reference: "Reminiscences of a Stock Operator",
+  },
+  {
+    quote: "You can’t predict. You can prepare.",
+    author: "Howard Marks",
+  },
+  {
+    quote: "Whenever I enter a position, I have a predetermined stop.",
+    author: "Bruce Kovner",
+  },
+  {
+    quote: "Profits always take care of themselves but losses never do.",
+    author: "Jesse Livermore",
+  },
+  {
+    quote: "The investor’s chief problem, and even his worst enemy, is likely to be himself.",
+    author: "Benjamin Graham",
+  },
+  {
+    quote: "Writing down your trades is the best exercise in the world.",
+    author: "Linda Bradford Raschke",
+  },
+  {
+    quote: "Risk comes from not knowing what you’re doing.",
+    author: "Warren Buffett",
+  },
+  {
+    quote: "If you lose all your chips, you can’t bet.",
+    author: "Larry Hite",
+  },
+  {
+    quote: "Every moment in the market is unique.",
+    author: "Mark Douglas",
+  },
+  {
+    quote: "The four most dangerous words in investing are, ‘It’s different this time.’",
+    author: "John Templeton",
+  },
+  {
+    quote: "The most important rule of trading is to play great defense, not great offense.",
+    author: "Paul Tudor Jones",
+  },
+  {
+    quote: "Nobody can catch all the fluctuations.",
+    author: "Edwin Lefèvre",
+    reference: "Reminiscences of a Stock Operator",
+  },
+  {
+    quote: "You don’t trade the markets: You trade your beliefs about the markets.",
+    author: "Van K. Tharp",
+  },
+  {
+    quote: "If you can’t take a small loss, sooner or later you will take the mother of all losses.",
+    author: "Ed Seykota",
+  },
+  {
+    quote: "To hell with my ego, making money is more important.",
+    author: "Marty Schwartz",
+    reference: "Pit Bull",
+  },
+  {
+    quote: "Risk management is the most important thing to be well understood.",
+    author: "Bruce Kovner",
+  },
+  {
+    quote: "I predefine the risk of every trade.",
+    author: "Mark Douglas",
+    reference: "Trading in the Zone",
+  },
+  {
+    quote: "Never argue with the market.",
+    author: "Jesse Livermore",
+  },
+  {
+    quote: "The way to build superior long-term returns is through preservation of capital and home runs.",
+    author: "Stanley Druckenmiller",
+  },
   {
     quote: "The market is a device for transferring money from the impatient to the patient.",
     author: "Warren Buffett",
@@ -357,15 +455,51 @@ export const DISCIPLINE_QUOTES = [
     author: "Smart Money Principle",
   },
   {
-    quote: "Plan the trade, trade the plan. Never force an execution into unconfirmed bias.",
-    author: "Execution Rule #1",
-  },
-  {
     quote: "When higher timeframe structure and lower timeframe intent align, clarity replaces anxiety.",
     author: "Discipline Axiom",
   },
-  {
-    quote: "Your edge is not predicting the future; it is strictly adhering to your framework under uncertainty.",
-    author: "Risk Protocol",
-  },
 ];
+
+/**
+ * Shuffles quotes ensuring no two consecutive quotes are from the same author
+ */
+export function getShuffledQuotes(list: DisciplineQuote[] = DISCIPLINE_QUOTES): DisciplineQuote[] {
+  const pool = [...list];
+  // Fisher-Yates shuffle
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  // Pass to ensure no consecutive quotes share the same author
+  for (let i = 1; i < pool.length; i++) {
+    if (pool[i].author === pool[i - 1].author) {
+      let swapIdx = -1;
+      for (let j = i + 1; j < pool.length; j++) {
+        if (
+          pool[j].author !== pool[i - 1].author &&
+          (j + 1 === pool.length || pool[j].author !== pool[j + 1]?.author)
+        ) {
+          swapIdx = j;
+          break;
+        }
+      }
+      if (swapIdx === -1) {
+        for (let j = 0; j < i - 1; j++) {
+          if (
+            pool[j].author !== pool[i].author &&
+            (j === 0 || pool[j - 1].author !== pool[i].author)
+          ) {
+            swapIdx = j;
+            break;
+          }
+        }
+      }
+      if (swapIdx !== -1) {
+        [pool[i], pool[swapIdx]] = [pool[swapIdx], pool[i]];
+      }
+    }
+  }
+
+  return pool;
+}

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   SavedReport,
   TimeframeId,
-  SupplyDemandLevel,
+  TIMEFRAME_ORDER,
 } from '../types/journal';
 import {
   calculateOverallAlignment,
@@ -11,6 +11,7 @@ import {
 } from '../utils/analysisUtils';
 import {
   Image as ImageIcon,
+  CheckCircle,
   ChevronDown,
   ChevronUp,
   Maximize2,
@@ -18,11 +19,11 @@ import {
 
 interface OrganizedReportViewProps {
   report: SavedReport;
-  imagesMap: Record<string, string>;
-  onOpenViewer: (url: string, title: string) => void;
+  imagesMap?: Record<string, string>;
+  onOpenViewer?: (url: string, title: string) => void;
 }
 
-const TIMEFRAME_TITLE_MAP: Record<TimeframeId, string> = {
+const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
   Weekly: 'WEEKLY',
   Daily: 'DAILY',
   '4H': '4-HOUR',
@@ -34,185 +35,300 @@ const TIMEFRAME_TITLE_MAP: Record<TimeframeId, string> = {
 
 export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   report,
-  imagesMap,
+  imagesMap = {},
   onOpenViewer,
 }) => {
-  const [expandedCharts, setExpandedCharts] = useState<Record<TimeframeId, boolean>>({
-    Weekly: false,
-    Daily: false,
-    '4H': false,
-    '1H': false,
-    '15M': false,
-    '5M': false,
-    '1M': false,
-  });
+  const [expandedCharts, setExpandedCharts] = useState<Record<string, boolean>>({});
 
   const toggleChart = (tf: TimeframeId) => {
     setExpandedCharts((prev) => ({ ...prev, [tf]: !prev[tf] }));
   };
 
-  const alignment = calculateOverallAlignment(report.timeframes);
+  const overallAlign = calculateOverallAlignment(report.timeframes);
+  const deepAlignedCount = TIMEFRAME_ORDER.filter(
+    (tf) => report.timeframes[tf] && isDeepAnalysisAligned(report.timeframes[tf])
+  ).length;
+  const isAllDeepAligned = deepAlignedCount === 7;
   const matchingValues = findMatchingValues(report.timeframes);
 
-  // Helper: check if timeframe has any recorded detail
-  const hasTimeframeDetail = (tf: TimeframeId) => {
-    const d = report.timeframes[tf];
-    if (!d) return false;
-    const hasBias = Boolean(d.overallBias || d.biasSpecific);
-    const hasSwing = Boolean(d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt);
-    const hasInternal = Boolean(
-      d.internal.direction || d.internal.high || d.internal.low || d.internal.ibosAt
-    );
-    const hasFractal = Boolean(d.fractal.direction || d.fractal.fractalBosAt);
-    const hasNote = Boolean(d.note && d.note.trim());
-    const hasChart = Boolean(d.chartImageId);
-    const hasSD = (report.supplyDemandLevels || []).some((sd) => sd.timeframe === tf);
-    return hasBias || hasSwing || hasInternal || hasFractal || hasNote || hasChart || hasSD;
+  // Groupings for the 3 balanced columns on desktop (while DOM matches mobile order or column groups)
+  const leftTfs: TimeframeId[] = ['Weekly', 'Daily'];
+  const midTfs: TimeframeId[] = ['4H', '1H', '15M'];
+  const rightTfs: TimeframeId[] = ['5M', '1M'];
+
+  const getBiasBadgeClass = (bias: string) => {
+    if (bias === 'Bullish') {
+      return 'bg-emerald-50 text-emerald-800 border-emerald-300';
+    }
+    if (bias === 'Bearish') {
+      return 'bg-rose-50 text-rose-800 border-rose-300';
+    }
+    if (bias === 'Neutral') {
+      return 'bg-slate-100 text-slate-700 border-slate-300';
+    }
+    if (bias === 'Not sure') {
+      return 'bg-amber-50 text-amber-800 border-amber-300';
+    }
+    return 'bg-gray-100 text-gray-600 border-gray-200';
   };
 
-  // Render timeframe section
-  const renderTimeframeSection = (tf: TimeframeId) => {
-    const d = report.timeframes[tf];
-    const tfTitle = TIMEFRAME_TITLE_MAP[tf];
-    const recordedBias = d?.overallBias || '—';
-    const isPopulated = d && hasTimeframeDetail(tf);
+  const renderTimeframeSection = (tfId: TimeframeId) => {
+    const tf = report.timeframes[tfId];
+    const label = TIMEFRAME_DISPLAY_NAMES[tfId];
 
-    // Deep alignment logic
-    let deepAlignmentText: string | null = null;
-    if (d && d.swing.direction && d.internal.direction && d.fractal.direction) {
-      if (isDeepAnalysisAligned(d)) {
-        deepAlignmentText = `Aligned (${d.swing.direction})`;
-      } else {
-        deepAlignmentText = 'Mixed / Divergent';
-      }
+    if (!tf) {
+      return (
+        <section key={tfId} className="py-4 border-b border-gray-200">
+          <div className="flex items-baseline justify-between gap-2 mb-2">
+            <h3 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+              {label} <span className="text-gray-400 font-normal">| —</span>
+            </h3>
+          </div>
+          <p className="text-[11px] text-gray-400 italic">No detail recorded</p>
+        </section>
+      );
     }
 
-    // Supply/Demand assigned to this timeframe (including when editor visibility was off)
-    const sdList: SupplyDemandLevel[] = (report.supplyDemandLevels || []).filter(
-      (sd) => sd.timeframe === tf
+    const imgId = tf.chartImageId;
+    const chartUrl = imgId ? imagesMap[imgId] : null;
+
+    const tfSdLevels = (report.supplyDemandLevels || []).filter(
+      (sd) => sd.timeframe === tfId
     );
 
-    const chartUrl = d?.chartImageId ? imagesMap[d.chartImageId] : undefined;
-    const isChartExpanded = expandedCharts[tf];
+    const hasInterpretation = Boolean(tf.biasSpecific && tf.biasSpecific.trim());
+    const hasSwing = Boolean(
+      tf.swing.direction ||
+      tf.swing.high?.trim() ||
+      tf.swing.low?.trim() ||
+      tf.swing.bosAt?.trim()
+    );
+    const hasInternal = Boolean(
+      tf.internal.direction ||
+      tf.internal.high?.trim() ||
+      tf.internal.low?.trim() ||
+      tf.internal.ibosAt?.trim()
+    );
+    const hasFractal = Boolean(
+      tf.fractal.direction ||
+      tf.fractal.fractalBosAt?.trim()
+    );
+    const hasSd = tfSdLevels.length > 0;
+    const hasNote = Boolean(tf.note && tf.note.trim());
+    const hasChart = Boolean(chartUrl);
+
+    const hasAnyDetail =
+      Boolean(tf.overallBias) ||
+      hasInterpretation ||
+      hasSwing ||
+      hasInternal ||
+      hasFractal ||
+      hasSd ||
+      hasNote ||
+      hasChart;
 
     return (
-      <section className="py-3.5 border-b border-slate-200 last:border-b-0 space-y-2 text-slate-800">
-        {/* Bold Emerald Heading */}
-        <h3 className="text-sm sm:text-base font-bold text-[#065f46] tracking-tight flex items-center justify-between">
-          <span>
-            {tfTitle} | <span className="font-semibold">{recordedBias}</span>
-          </span>
-        </h3>
+      <section
+        key={tfId}
+        className="py-3.5 border-b border-gray-200 last:border-b-0 space-y-2"
+      >
+        {/* Section Header: [TIMEFRAME] | [recorded overall bias] */}
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+            {label}{' '}
+            <span className="font-normal text-gray-700">
+              | {tf.overallBias || '—'}
+            </span>
+          </h3>
+          {tf.overallBias && (
+            <span
+              className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border uppercase tracking-wider ${getBiasBadgeClass(
+                tf.overallBias
+              )}`}
+            >
+              {tf.overallBias}
+            </span>
+          )}
+        </div>
 
-        {!isPopulated ? (
-          <p className="text-xs sm:text-[13px] text-slate-400 italic">No detail recorded</p>
+        {!hasAnyDetail ? (
+          <p className="text-[11px] text-gray-400 italic">No detail recorded</p>
         ) : (
-          <div className="space-y-1.5 text-xs sm:text-[13px] leading-relaxed break-words">
-            {/* 1. Bias */}
-            <div>
-              <span className="font-semibold text-slate-700">Bias:</span>{' '}
-              <span>{d.biasSpecific?.trim() || d.overallBias || '—'}</span>
-            </div>
-
-            {/* 2. Swing */}
-            <div>
-              <span className="font-semibold text-slate-700">Swing:</span>{' '}
-              <span>
-                {d.swing.direction || '—'} | High {d.swing.high || '—'} | Low {d.swing.low || '—'} | BOS {d.swing.bosAt || '—'}
-              </span>
-            </div>
-
-            {/* 3. Internal */}
-            <div>
-              <span className="font-semibold text-slate-700">Internal:</span>{' '}
-              <span>
-                {d.internal.direction || '—'} | High {d.internal.high || '—'} | Low {d.internal.low || '—'} | iBOS {d.internal.ibosAt || '—'}
-              </span>
-            </div>
-
-            {/* 4. Fractal */}
-            <div>
-              <span className="font-semibold text-slate-700">Fractal:</span>{' '}
-              <span>
-                {d.fractal.direction || '—'} | BOS {d.fractal.fractalBosAt || '—'}
-              </span>
-            </div>
-
-            {/* 5. Deep alignment (when applicable) */}
-            {deepAlignmentText && (
-              <div>
-                <span className="font-semibold text-slate-700">Deep alignment:</span>{' '}
-                <span className={deepAlignmentText.startsWith('Aligned') ? 'text-[#065f46] font-medium' : 'text-slate-600'}>
-                  {deepAlignmentText}
+          <div className="space-y-2 text-[11px] leading-relaxed text-gray-700">
+            {/* Overall Interpretation */}
+            {hasInterpretation && (
+              <div className="bg-gray-50/70 p-2 rounded border border-gray-200/70">
+                <span className="text-[9px] font-semibold uppercase tracking-wider text-gray-500 block mb-0.5">
+                  Overall Interpretation
                 </span>
+                <p className="text-gray-900 whitespace-pre-wrap">{tf.biasSpecific}</p>
               </div>
             )}
 
-            {/* 6. Supply / Demand */}
-            <div>
-              <span className="font-semibold text-slate-700">Supply / Demand:</span>{' '}
-              {sdList.length > 0 ? (
-                <div className="mt-0.5 space-y-0.5 pl-2 border-l border-slate-200">
-                  {sdList.map((sd, i) => (
-                    <div key={sd.id || i} className="text-xs text-slate-700">
-                      Level {i + 1}: {sd.supply ? `Supply ${sd.supply}` : ''}
-                      {sd.supply && sd.demand ? ' | ' : ''}
-                      {sd.demand ? `Demand ${sd.demand}` : ''}
+            {/* Core Structures Grid */}
+            {(hasSwing || hasInternal || hasFractal) && (
+              <div className="space-y-1.5 bg-gray-50/50 p-2 rounded border border-gray-100 font-mono text-[10px]">
+                {/* Swing */}
+                {hasSwing && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-sans font-bold text-gray-600 text-[10px] tracking-wider uppercase">
+                      SWING:
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        tf.swing.direction === 'Bullish'
+                          ? 'text-emerald-700'
+                          : tf.swing.direction === 'Bearish'
+                          ? 'text-rose-700'
+                          : 'text-gray-700'
+                      }`}
+                    >
+                      {tf.swing.direction || '—'}
+                    </span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">High: {tf.swing.high || '—'}</span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">Low: {tf.swing.low || '—'}</span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">BOS: {tf.swing.bosAt || '—'}</span>
+                  </div>
+                )}
+
+                {/* Internal */}
+                {hasInternal && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5 pt-1 border-t border-gray-100">
+                    <span className="font-sans font-bold text-gray-600 text-[10px] tracking-wider uppercase">
+                      INTERNAL:
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        tf.internal.direction === 'Bullish'
+                          ? 'text-emerald-700'
+                          : tf.internal.direction === 'Bearish'
+                          ? 'text-rose-700'
+                          : 'text-gray-700'
+                      }`}
+                    >
+                      {tf.internal.direction || '—'}
+                    </span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">High: {tf.internal.high || '—'}</span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">Low: {tf.internal.low || '—'}</span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">iBOS: {tf.internal.ibosAt || '—'}</span>
+                  </div>
+                )}
+
+                {/* Fractal */}
+                {hasFractal && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5 pt-1 border-t border-gray-100">
+                    <span className="font-sans font-bold text-gray-600 text-[10px] tracking-wider uppercase">
+                      FRACTAL:
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        tf.fractal.direction === 'Bullish'
+                          ? 'text-emerald-700'
+                          : tf.fractal.direction === 'Bearish'
+                          ? 'text-rose-700'
+                          : 'text-gray-700'
+                      }`}
+                    >
+                      {tf.fractal.direction || '—'}
+                    </span>
+                    <span className="text-gray-300">·</span>
+                    <span className="text-gray-700">
+                      BOS: {tf.fractal.fractalBosAt || '—'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Supply & Demand Levels */}
+            {hasSd && (
+              <div>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block mb-0.5">
+                  Supply &amp; Demand
+                </span>
+                <div className="space-y-1">
+                  {tfSdLevels.map((sd) => (
+                    <div
+                      key={sd.id}
+                      className="flex flex-wrap items-center gap-x-2 font-mono text-[10px] bg-gray-50/70 px-2 py-1 rounded border border-gray-100"
+                    >
+                      <span className="text-rose-800">
+                        Supply: {sd.supply?.trim() || '—'}
+                      </span>
+                      <span className="text-gray-300">·</span>
+                      <span className="text-emerald-800">
+                        Demand: {sd.demand?.trim() || '—'}
+                      </span>
                     </div>
                   ))}
                 </div>
-              ) : (
-                <span className="text-slate-500">None recorded</span>
-              )}
-            </div>
+              </div>
+            )}
 
-            {/* 7. Note */}
-            <div>
-              <span className="font-semibold text-slate-700">Note:</span>{' '}
-              {d.note?.trim() ? (
-                <span className="text-slate-800 whitespace-pre-wrap">{d.note.trim()}</span>
-              ) : (
-                <span className="text-slate-500">—</span>
-              )}
-            </div>
+            {/* Note */}
+            {hasNote && (
+              <div>
+                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block mb-0.5">
+                  {tfId === 'Weekly' ? 'Weekly Note' : `${tfId} Note`}
+                </span>
+                <p className="text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2 rounded border border-gray-100 font-sans text-[11px]">
+                  {tf.note}
+                </p>
+              </div>
+            )}
 
-            {/* 8. Chart */}
+            {/* Attached Chart (expandable preserving aspect ratio) */}
             {chartUrl && (
               <div className="pt-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-700">Chart:</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleChart(tf)}
-                    className="inline-flex items-center gap-1 text-xs text-[#065f46] hover:underline font-medium cursor-pointer"
-                  >
-                    <ImageIcon className="w-3.5 h-3.5" />
-                    <span>{isChartExpanded ? 'Collapse preview' : 'View chart preview'}</span>
-                    {isChartExpanded ? (
-                      <ChevronUp className="w-3 h-3" />
-                    ) : (
-                      <ChevronDown className="w-3 h-3" />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenViewer(chartUrl, `${report.pair} — ${tfTitle} Chart`)}
-                    className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-800 transition-colors ml-1"
-                    title="Open full resolution"
-                  >
-                    <Maximize2 className="w-3 h-3" />
-                    <span>Full view</span>
-                  </button>
-                </div>
-
-                {isChartExpanded && (
-                  <div className="mt-2 p-1 bg-slate-50 border border-slate-200 rounded">
+                <button
+                  type="button"
+                  onClick={() => toggleChart(tfId)}
+                  className="flex items-center justify-between w-full text-[10px] font-semibold text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100/70 px-2 py-1.5 rounded border border-emerald-200 transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <ImageIcon className="w-3 h-3 text-emerald-700" />
+                    Attached Chart ({label})
+                  </span>
+                  {expandedCharts[tfId] ? (
+                    <ChevronUp className="w-3.5 h-3.5 text-emerald-700" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5 text-emerald-700" />
+                  )}
+                </button>
+                {expandedCharts[tfId] && (
+                  <div className="mt-2 p-2 bg-gray-50 rounded border border-gray-200 space-y-1.5">
                     <img
                       src={chartUrl}
-                      alt={`${tfTitle} chart screenshot`}
-                      className="w-full max-h-56 object-contain rounded cursor-pointer hover:opacity-95"
-                      onClick={() => onOpenViewer(chartUrl, `${report.pair} — ${tfTitle} Chart`)}
+                      alt={`${report.pair} ${tfId} chart screenshot`}
+                      className="w-full max-h-72 object-contain rounded bg-white border border-gray-200 cursor-pointer"
+                      onClick={() =>
+                        onOpenViewer?.(
+                          chartUrl,
+                          `${report.pair} - ${label} Chart Attachment`
+                        )
+                      }
                     />
+                    {onOpenViewer && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenViewer(
+                            chartUrl,
+                            `${report.pair} - ${label} Chart Attachment`
+                          )
+                        }
+                        className="inline-flex items-center gap-1 text-[10px] text-emerald-800 hover:underline font-medium"
+                      >
+                        <Maximize2 className="w-3 h-3" />
+                        Open fullscreen
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -225,172 +341,206 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
 
   return (
     <article
-      className="organized-report-sheet bg-white text-slate-900 border border-slate-200 rounded-md shadow-xs p-5 sm:p-8 md:p-10 max-w-5xl mx-auto space-y-6"
-      style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif' }}
+      id="organized-report-sheet"
+      className="bg-white text-gray-900 border border-gray-300 rounded-lg shadow-sm p-5 sm:p-7 lg:p-9 max-w-5xl mx-auto font-sans"
     >
-      {/* ================= A. FULL-WIDTH DOCUMENT HEADER ================= */}
-      <header className="space-y-2 border-b border-slate-200 pb-5">
-        {/* Status and Provenance line */}
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-          <div className="flex items-center gap-2">
-            <span
-              className={`font-semibold tracking-wide uppercase text-[11px] px-2 py-0.5 rounded ${
-                report.status === 'Modified'
-                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                  : 'bg-emerald-50 text-[#065f46] border border-emerald-200'
-              }`}
-            >
-              {report.status === 'Modified' ? 'Modified Analysis' : 'Original Analysis'}
-            </span>
+      {/* A. Full-Width Document Header */}
+      <header className="border-b border-gray-300 pb-4 mb-5">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-900 uppercase">
+            ABMAX | {report.pair || 'UNSPECIFIED'} ANALYSIS
+          </h1>
+
+          {/* Original / Modified status & provenance */}
+          <div className="flex items-center gap-2 text-[10px]">
+            {report.status === 'Modified' || report.isModified ? (
+              <span className="px-2 py-0.5 rounded font-medium bg-amber-50 text-amber-800 border border-amber-300">
+                Modified
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded font-medium bg-gray-100 text-gray-700 border border-gray-200">
+                Original
+              </span>
+            )}
             {report.copiedFromId && (
-              <span className="text-slate-500 text-[11px]">· Copied entry ({report.copiedFromId})</span>
+              <span className="text-gray-400 italic">
+                Copy of {report.copiedFromId.slice(0, 8)}
+              </span>
             )}
           </div>
-          <div className="text-[11px] text-slate-400 font-mono">
-            ID: {report.id}
+        </div>
+
+        {/* Compact metadata lines */}
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-gray-600 pt-2 border-t border-gray-100">
+          <div>
+            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+              Analysis Date
+            </span>
+            <span className="font-medium text-gray-900">
+              {report.date || 'Not specified'}
+            </span>
+          </div>
+
+          <div>
+            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+              Session
+            </span>
+            <span className="font-medium text-gray-900">
+              {report.session || 'Not specified'}
+            </span>
+          </div>
+
+          <div>
+            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+              Analysis Time
+            </span>
+            <span className="font-medium text-gray-900">
+              {report.time
+                ? `${report.time}${report.timezone ? ` (${report.timezone})` : ''}`
+                : '—'}
+            </span>
+          </div>
+
+          <div>
+            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+              Timing Made
+            </span>
+            <span className="font-medium text-gray-900">
+              {report.analysisTiming || '—'}
+            </span>
           </div>
         </div>
 
-        {/* Document Title: ABMAX | [PAIR] ANALYSIS */}
-        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#065f46]">
-          ABMAX | {report.pair} ANALYSIS
-        </h1>
+        {/* Timeframe Alignment strip */}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 p-2 bg-emerald-50/70 rounded border border-emerald-200 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900">
+              Timeframe Alignment:
+            </span>
+            <span
+              className={`font-semibold ${
+                overallAlign.status === 'ALIGNED'
+                  ? overallAlign.bias === 'Bullish'
+                    ? 'text-emerald-700'
+                    : 'text-rose-700'
+                  : 'text-amber-700'
+              }`}
+            >
+              {overallAlign.label}
+            </span>
+          </div>
 
-        {/* Compact metadata lines */}
-        <div className="text-xs sm:text-sm text-slate-800 font-medium flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className="font-mono">{report.date}</span>
-          <span className="text-slate-300">•</span>
-          <span>{report.session} Session</span>
-          {report.time && (
-            <>
-              <span className="text-slate-300">•</span>
-              <span className="font-mono">
-                {report.time}
-                {report.timezone ? ` (${report.timezone})` : ''}
+          <div className="flex items-center gap-1.5 text-[11px]">
+            {isAllDeepAligned ? (
+              <span className="inline-flex items-center gap-1 text-emerald-800 font-medium">
+                <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                Deep Analysis Aligned
               </span>
-            </>
-          )}
-          <span className="text-slate-300">•</span>
-          <span>Analysis Made: {report.analysisTiming || 'On time'}</span>
-          <span className="text-slate-300">•</span>
-          <span>
-            Overall Alignment:{' '}
-            <strong className="text-[#065f46] font-bold">{alignment.label}</strong>
-          </span>
-        </div>
-
-        {/* Timestamps */}
-        <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-          {report.createdAt && (
-            <span>Created: {new Date(report.createdAt).toLocaleString()}</span>
-          )}
-          {report.updatedAt && (
-            <>
-              <span>·</span>
-              <span>Last modified: {new Date(report.updatedAt).toLocaleString()}</span>
-            </>
-          )}
+            ) : (
+              <span className="text-gray-500">
+                Deep: {deepAlignedCount > 0 ? `${deepAlignedCount}/7 Aligned` : 'Mixed / Transition'}
+              </span>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* ================= B. THREE-COLUMN DOCUMENT BODY ================= */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
+      {/* B. Three-Column Document Body on Desktop (1 column on mobile) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8 items-start">
         {/* LEFT COLUMN: 1. External Liquidity, 2. Weekly, 3. Daily */}
-        <div className="space-y-2 lg:pr-6 lg:border-r lg:border-slate-200">
-          {/* 1. EXTERNAL LIQUIDITY */}
-          <section className="pb-3.5 border-b border-slate-200 space-y-1.5">
-            <h3 className="text-sm sm:text-base font-bold text-[#065f46] tracking-tight">
-              EXTERNAL LIQUIDITY
-            </h3>
+        <div className="space-y-3 md:border-r md:border-gray-200 md:pr-6 lg:pr-8">
+          {/* 1. External Liquidity */}
+          <section className="pb-3.5 border-b border-gray-200 space-y-2">
+            <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+              1. EXTERNAL LIQUIDITY
+            </h2>
+
             {report.crossedLiquidity && report.crossedLiquidity.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {report.crossedLiquidity.map((item) => (
-                  <span
-                    key={item}
-                    className="inline-block px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-800 rounded border border-slate-200"
-                  >
-                    {item}
-                  </span>
-                ))}
+              <div className="space-y-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
+                  Liquidity Crossed
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {report.crossedLiquidity.map((liq) => (
+                    <span
+                      key={liq}
+                      className="font-medium text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[10px]"
+                    >
+                      {liq}
+                    </span>
+                  ))}
+                </div>
               </div>
             ) : (
-              <p className="text-xs sm:text-[13px] text-slate-500 italic">None recorded</p>
+              <p className="text-[11px] text-gray-400 italic">No crossed liquidity recorded</p>
             )}
           </section>
 
-          {/* 2. WEEKLY */}
-          {renderTimeframeSection('Weekly')}
-
-          {/* 3. DAILY */}
-          {renderTimeframeSection('Daily')}
+          {/* 2. Weekly & 3. Daily */}
+          {leftTfs.map((tfId) => renderTimeframeSection(tfId))}
         </div>
 
         {/* MIDDLE COLUMN: 4. 4-Hour, 5. 1-Hour, 6. 15-Minute */}
-        <div className="space-y-2 lg:px-6 lg:border-r lg:border-slate-200">
-          {/* 4. 4-HOUR */}
-          {renderTimeframeSection('4H')}
-
-          {/* 5. 1-HOUR */}
-          {renderTimeframeSection('1H')}
-
-          {/* 6. 15-MINUTE */}
-          {renderTimeframeSection('15M')}
+        <div className="space-y-3 md:border-r md:border-gray-200 md:pr-6 lg:pr-8">
+          {midTfs.map((tfId) => renderTimeframeSection(tfId))}
         </div>
 
         {/* RIGHT COLUMN: 7. 5-Minute, 8. 1-Minute, 9. Overall Notes */}
-        <div className="space-y-2 lg:pl-6">
-          {/* 7. 5-MINUTE */}
-          {renderTimeframeSection('5M')}
+        <div className="space-y-3">
+          {rightTfs.map((tfId) => renderTimeframeSection(tfId))}
 
-          {/* 8. 1-MINUTE */}
-          {renderTimeframeSection('1M')}
-
-          {/* 9. OVERALL NOTES */}
-          <section className="py-3.5 border-b border-slate-200 last:border-b-0 space-y-2 text-slate-800">
-            <h3 className="text-sm sm:text-base font-bold text-[#065f46] tracking-tight">
+          {/* 9. Overall Notes */}
+          <section className="pt-2 space-y-1.5">
+            <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
               OVERALL NOTES
-            </h3>
-            {report.overallNotes && report.overallNotes.trim() ? (
-              <p className="text-xs sm:text-[13px] text-slate-800 leading-relaxed whitespace-pre-wrap break-words">
-                {report.overallNotes.trim()}
+            </h2>
+            {report.overallNotes?.trim() ? (
+              <p className="text-[11px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans">
+                {report.overallNotes}
               </p>
             ) : (
-              <p className="text-xs sm:text-[13px] text-slate-500 italic">None recorded</p>
+              <p className="text-[11px] text-gray-400 italic">No notes recorded</p>
             )}
           </section>
         </div>
       </div>
 
-      {/* ================= E. FULL-WIDTH ENDING ================= */}
-      <footer className="pt-6 border-t border-slate-200 space-y-4">
-        {/* Matching Values */}
-        <div className="space-y-2">
-          <h3 className="text-sm sm:text-base font-bold text-[#065f46] tracking-tight">
-            MATCHING VALUES
-          </h3>
-          {matchingValues.length > 0 ? (
-            <div className="space-y-1.5 text-xs sm:text-[13px] text-slate-800">
-              {matchingValues.map((group) => (
-                <div key={group.normalizedPrice} className="flex flex-wrap items-baseline gap-1.5">
-                  <span className="font-semibold font-mono text-[#065f46]">
-                    {group.displayPrice}:
+      {/* D. Document Footer & Cross-Timeframe Confluence */}
+      <footer className="mt-8 pt-4 border-t border-gray-200 text-xs text-gray-600">
+        {/* Confluent Structural Price Points */}
+        {matchingValues.length > 0 && (
+          <div className="mb-4 p-3 bg-emerald-50/40 rounded-lg border border-emerald-200">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900 block mb-1">
+              Confluent Structural Price Points ({matchingValues.length})
+            </span>
+            <div className="flex flex-wrap gap-2 text-[10px] font-mono">
+              {matchingValues.map((group, idx) => (
+                <span
+                  key={idx}
+                  className="bg-white text-emerald-800 px-2 py-0.5 rounded border border-emerald-200"
+                >
+                  <strong className="font-bold">{group.displayPrice}</strong>
+                  <span className="text-gray-500 ml-1">
+                    ({group.occurrences.map((o) => `${o.timeframe} ${o.field}`).join(', ')})
                   </span>
-                  <span className="text-slate-600">
-                    {group.occurrences
-                      .map((occ) => `${occ.timeframe} ${occ.field}`)
-                      .join(', ')}
-                  </span>
-                </div>
+                </span>
               ))}
             </div>
-          ) : (
-            <p className="text-xs sm:text-[13px] text-slate-500 italic">None detected</p>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* Document Footer */}
-        <div className="pt-4 border-t border-slate-200 text-center text-xs text-slate-500">
-          ABMAX ANALYSIS — Trading Journal
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-400">
+          <div>
+            <span>Created: {new Date(report.createdAt).toLocaleString()}</span>
+            {report.updatedAt !== report.createdAt && (
+              <span className="ml-2">
+                | Updated: {new Date(report.updatedAt).toLocaleString()}
+              </span>
+            )}
+          </div>
+          <div>
+            <span>Report ID: {report.id}</span>
+          </div>
         </div>
       </footer>
     </article>

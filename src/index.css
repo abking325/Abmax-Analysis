@@ -109,6 +109,77 @@
   pointer-events: none;
 }
 
+/* Hero Visual & Animated Trading Chart animations */
+@keyframes chartScrollAnim {
+  0% {
+    transform: translateX(0px);
+  }
+  100% {
+    transform: translateX(-432px);
+  }
+}
+
+@keyframes chartLivePulse {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  35% {
+    transform: translateY(-3px);
+  }
+  65% {
+    transform: translateY(2px);
+  }
+}
+
+@keyframes beaconPingAnim {
+  0% {
+    r: 3.5;
+    opacity: 0.9;
+  }
+  75%, 100% {
+    r: 11;
+    opacity: 0;
+  }
+}
+
+@keyframes liveDotBlink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+}
+
+.chart-moving-track {
+  animation: chartScrollAnim 12s linear infinite;
+  will-change: transform;
+}
+
+.chart-live-ticker {
+  animation: chartLivePulse 2.6s ease-in-out infinite;
+  will-change: transform;
+}
+
+.chart-beacon-ping {
+  animation: beaconPingAnim 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.chart-live-dot {
+  animation: liveDotBlink 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-moving-track,
+  .chart-live-ticker,
+  .chart-beacon-ping,
+  .chart-live-dot {
+    animation: none !important;
+  }
+}
+
 /* Print Stylesheet for A4 Report Print / PDF */
 @media print {
   @page {

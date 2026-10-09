@@ -227,7 +227,11 @@ function MainApp() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-app-main text-app-main transition-colors">
+    <div
+      className={`min-h-screen min-h-[100dvh] flex flex-col bg-app-main text-app-main transition-colors ${
+        activeView === 'home' ? 'h-screen h-[100dvh] overflow-hidden' : ''
+      }`}
+    >
       {/* Compact Header with scroll hide / reveal & Account Control */}
       <Header
         activeView={activeView}
@@ -239,7 +243,11 @@ function MainApp() {
       />
 
       {/* Main Content Area - Shows only the selected view */}
-      <div className="flex-1">
+      <div
+        className={`flex-1 ${
+          activeView === 'home' ? 'min-h-0 flex flex-col overflow-y-auto' : ''
+        }`}
+      >
         {activeView === 'home' && (
           <HomeView
             onStartAnalysis={handleStartAnalysisClick}
