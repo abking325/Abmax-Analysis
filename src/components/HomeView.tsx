@@ -110,34 +110,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
               View Reports
             </button>
           </div>
-
-          {/* Small feature overview note */}
-          <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-3 w-full text-left pt-6 border-t border-app">
-            <div className="p-3 rounded bg-app-secondary/60 border border-app">
-              <div className="text-xs font-semibold text-emerald-theme uppercase tracking-wider mb-1">
-                7 Timeframes
-              </div>
-              <p className="text-xs text-app-secondary leading-normal">
-                Weekly down to 1M with Swing, Internal, and Fractal structure logging.
-              </p>
-            </div>
-            <div className="p-3 rounded bg-app-secondary/60 border border-app">
-              <div className="text-xs font-semibold text-emerald-theme uppercase tracking-wider mb-1">
-                Local IndexedDB
-              </div>
-              <p className="text-xs text-app-secondary leading-normal">
-                Private, persistent journal storage in your browser with offline chart screenshots.
-              </p>
-            </div>
-            <div className="p-3 rounded bg-app-secondary/60 border border-app">
-              <div className="text-xs font-semibold text-emerald-theme uppercase tracking-wider mb-1">
-                Numeric Matching
-              </div>
-              <p className="text-xs text-app-secondary leading-normal">
-                Auto-detect matching key structural price points across multiple timeframes.
-              </p>
-            </div>
-          </div>
         </div>
       </main>
 

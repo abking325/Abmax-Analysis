@@ -8,6 +8,11 @@ import {
   Image as ImageIcon,
   ChevronDown,
   ChevronUp,
+  Download,
+  LayoutGrid,
+  ArrowLeft,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import { SavedReport, TIMEFRAME_ORDER, TimeframeId } from '../types/journal';
 import {
@@ -17,6 +22,8 @@ import {
 import { getChartImageUrl } from '../services/cloudSync';
 import { useAuth } from '../context/AuthContext';
 import { ImageViewerModal } from './ImageViewerModal';
+import { OrganizedReportView } from './OrganizedReportView';
+import { downloadReportPdf } from '../services/pdfExport';
 
 interface ReportDetailsModalProps {
   isOpen: boolean;
@@ -36,6 +43,9 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   onDelete,
 }) => {
   const { user } = useAuth();
+  const [viewMode, setViewMode] = useState<'standard' | 'organized'>('standard');
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const [imagesMap, setImagesMap] = useState<Record<string, string>>({});
   const [expandedImages, setExpandedImages] = useState<Record<TimeframeId, boolean>>({
     Weekly: false,
@@ -53,6 +63,29 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Reset view mode and error when modal opens/closes
+  useEffect(() => {
+    if (!isOpen) {
+      setViewMode('standard');
+      setPdfError(null);
+    }
+  }, [isOpen]);
+
+  const handleDownloadPdf = async () => {
+    if (!report || exportingPdf) return;
+    setExportingPdf(true);
+    setPdfError(null);
+    try {
+      await downloadReportPdf({ report, imagesMap });
+    } catch (err: unknown) {
+      console.error('Failed to export PDF:', err);
+      const msg = err instanceof Error ? err.message : 'Failed to generate PDF.';
+      setPdfError(`${msg} You can use Print / Save as PDF as a fallback.`);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
 
   // Load chart images from private cloud storage or local IndexedDB
   useEffect(() => {
@@ -148,23 +181,35 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
           {/* Interactive Modal Top Bar with Actions */}
           <div className="no-print flex items-center justify-between px-4 sm:px-6 py-2.5 sm:py-3 border-b border-app bg-app-secondary shrink-0">
             <span className="text-xs font-semibold text-emerald-theme uppercase tracking-wider">
-              Document Report View
+              {viewMode === 'organized' ? 'Organized Analysis Sheet' : 'Document Report View'}
             </span>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-app-main border border-app hover:bg-app-field rounded transition-colors text-app-main"
-                title="Print or Save as PDF"
-              >
-                <Printer className="w-3.5 h-3.5 text-app-secondary" />
-                Print / Save as PDF
-              </button>
+              {viewMode === 'standard' ? (
+                <button
+                  type="button"
+                  onClick={() => setViewMode('organized')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-theme text-white hover:bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer"
+                  title="View Organized report presentation"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  View Organized
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setViewMode('standard')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-app-main border border-app hover:bg-app-field rounded transition-colors text-app-main cursor-pointer"
+                  title="Back to Details view"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 text-app-secondary" />
+                  Back to Details
+                </button>
+              )}
               <button
                 ref={closeButtonRef}
                 type="button"
                 onClick={onClose}
-                className="p-1.5 text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors"
+                className="p-1.5 text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
                 title="Close (Esc)"
               >
                 <X className="w-4 h-4" />
@@ -173,8 +218,16 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
           </div>
 
           {/* Internal Scrolling Document Body */}
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-6">
-            {/* 1. DOCUMENT HEADER */}
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 md:p-8 space-y-6">
+            {viewMode === 'organized' ? (
+              <OrganizedReportView
+                report={report}
+                imagesMap={imagesMap}
+                onOpenViewer={(url, title) => setActiveViewerImage({ url, title })}
+              />
+            ) : (
+              <div className="space-y-6">
+                {/* 1. DOCUMENT HEADER */}
             <div className="space-y-2 border-b border-app pb-5">
               {/* Status & Quiet secondary info */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -563,18 +616,45 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        )}
 
-              {/* 3. REPORT ACTIONS */}
-              <div className="no-print pt-4 border-t border-app flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handlePrint}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-app-main border border-app hover:bg-app-field rounded text-app-main transition-colors"
-                  >
-                    <Printer className="w-3.5 h-3.5 text-app-secondary" />
-                    Print / Save as PDF
-                  </button>
+            {/* PDF Generation Error Alert */}
+            {pdfError && (
+              <div className="no-print p-3 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{pdfError}</span>
+              </div>
+            )}
+
+            {/* 3. REPORT ACTIONS */}
+            <div className="no-print pt-4 border-t border-app flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={exportingPdf}
+                  onClick={handleDownloadPdf}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+                  title="Download organized report as selectable A4 PDF"
+                >
+                  {exportingPdf ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  {exportingPdf ? 'Exporting PDF...' : 'Download PDF'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePrint}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-app-main border border-app hover:bg-app-field rounded text-app-main transition-colors cursor-pointer"
+                  title="Print or Save as PDF via browser print dialog"
+                >
+                  <Printer className="w-3.5 h-3.5 text-app-secondary" />
+                  Print / Save as PDF
+                </button>
 
                   <button
                     type="button"
@@ -644,7 +724,6 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
             </div>
           </div>
         </div>
-      </div>
 
       {/* Large Image Zoom Viewer Modal */}
       {activeViewerImage && (
