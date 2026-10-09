@@ -376,6 +376,148 @@ export async function downloadReportPdf({
 
   endingY += 4;
 
+  // Helper to ensure enough vertical room or start a new page
+  const ensureSpace = (neededHeight: number) => {
+    if (endingY + neededHeight > usableBottom - 10) {
+      doc.addPage();
+      endingY = marginY + 6;
+    }
+  };
+
+  // PLANNED SCENARIOS SECTION (Appended after 3-column analysis and matching values)
+  ensureSpace(15);
+  doc.setDrawColor(...ruleGray);
+  doc.setLineWidth(0.3);
+  doc.line(marginX, endingY, marginX + usableWidth, endingY);
+  endingY += 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(...emeraldMuted);
+  const scnCount = report.scenarios?.length || 0;
+  doc.text(`PLANNED SCENARIOS (${scnCount})`, marginX, endingY);
+  endingY += 4.5;
+
+  if (report.scenarios && report.scenarios.length > 0) {
+    for (const sc of report.scenarios) {
+      ensureSpace(18);
+      // Scenario Header: Label [Direction] Strategy
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(...textDark);
+      const scHeader = `${sc.label || 'Scenario'}${sc.direction ? ` [${sc.direction.toUpperCase()}]` : ''}${
+        sc.strategy ? ` — ${sc.strategy}` : ''
+      }`;
+      doc.text(scHeader, marginX, endingY);
+      endingY += 3.5;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(...textDark);
+
+      if (sc.description) {
+        const descLines = doc.splitTextToSize(`Description: ${sc.description}`, usableWidth);
+        ensureSpace(descLines.length * 3.2);
+        doc.text(descLines, marginX, endingY);
+        endingY += descLines.length * 3.2 + 1;
+      }
+
+      if (sc.entryConditions) {
+        const entryLines = doc.splitTextToSize(`Entry Rules: ${sc.entryConditions}`, usableWidth);
+        ensureSpace(entryLines.length * 3.2);
+        doc.text(entryLines, marginX, endingY);
+        endingY += entryLines.length * 3.2 + 1;
+      }
+
+      if (sc.invalidationConditions) {
+        doc.setTextColor(185, 28, 28); // subtle red
+        const invLines = doc.splitTextToSize(
+          `Invalidation: ${sc.invalidationConditions}`,
+          usableWidth
+        );
+        ensureSpace(invLines.length * 3.2);
+        doc.text(invLines, marginX, endingY);
+        endingY += invLines.length * 3.2 + 2;
+        doc.setTextColor(...textDark);
+      } else {
+        endingY += 1;
+      }
+    }
+  } else {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...textMuted);
+    doc.text('No scenarios recorded.', marginX, endingY);
+    endingY += 4.5;
+  }
+
+  // TRADES TAKEN SECTION (Appended below Planned Scenarios)
+  ensureSpace(15);
+  doc.setDrawColor(...ruleGray);
+  doc.setLineWidth(0.3);
+  doc.line(marginX, endingY, marginX + usableWidth, endingY);
+  endingY += 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(...emeraldMuted);
+  const tradeCount = report.trades?.length || 0;
+  doc.text(`TRADES TAKEN (${tradeCount})`, marginX, endingY);
+  endingY += 4.5;
+
+  if (report.trades && report.trades.length > 0) {
+    for (const trd of report.trades) {
+      ensureSpace(16);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(...textDark);
+      const outcomeText = trd.outcome ? ` | Outcome: ${trd.outcome}` : '';
+      const rulesText = trd.rulesFollowed !== false ? ' [Rules Followed]' : ' [Rules Broken]';
+      const trdHeader = `• ${trd.direction || 'Trade'} — ${trd.scenarioLabel || 'Execution'}${outcomeText}${rulesText}`;
+      doc.text(trdHeader, marginX, endingY);
+      endingY += 3.5;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(...textDark);
+
+      const priceParts: string[] = [];
+      if (trd.timeframeTaken) priceParts.push(`TF: ${trd.timeframeTaken}`);
+      if (trd.session) priceParts.push(`Session: ${trd.session}`);
+      if (trd.entryPrice) priceParts.push(`Entry: ${trd.entryPrice}`);
+      if (trd.stopLoss) priceParts.push(`SL: ${trd.stopLoss}`);
+      if (trd.takeProfit) priceParts.push(`TP: ${trd.takeProfit}`);
+      if (trd.exitPrice) priceParts.push(`Exit: ${trd.exitPrice}`);
+      if (trd.riskReward) priceParts.push(`R:R: ${trd.riskReward}`);
+
+      if (priceParts.length > 0) {
+        doc.text(priceParts.join('  •  '), marginX + 3, endingY);
+        endingY += 3.5;
+      }
+
+      if (trd.notes) {
+        const noteLines = doc.splitTextToSize(`Notes: "${trd.notes}"`, usableWidth - 3);
+        ensureSpace(noteLines.length * 3.2);
+        doc.setFont('helvetica', 'italic');
+        doc.setTextColor(...textMuted);
+        doc.text(noteLines, marginX + 3, endingY);
+        endingY += noteLines.length * 3.2 + 2;
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(...textDark);
+      } else {
+        endingY += 1.5;
+      }
+    }
+  } else {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...textMuted);
+    doc.text('No trades recorded.', marginX, endingY);
+    endingY += 4.5;
+  }
+
+  endingY += 3;
+
   // Small footer
   doc.setDrawColor(...ruleGray);
   doc.setLineWidth(0.2);

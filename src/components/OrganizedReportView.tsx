@@ -505,6 +505,197 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
         </div>
       </div>
 
+      {/* PLANNED SCENARIOS SECTION (Appended below analysis content) */}
+      <section className="mt-8 pt-6 border-t-2 border-emerald-800/20 space-y-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+            PLANNED SCENARIOS
+          </h2>
+          {report.scenarios && report.scenarios.length > 0 && (
+            <span className="text-[10px] text-gray-500 font-medium">
+              {report.scenarios.length} {report.scenarios.length === 1 ? 'scenario' : 'scenarios'} recorded
+            </span>
+          )}
+        </div>
+
+        {report.scenarios && report.scenarios.length > 0 ? (
+          <div className="space-y-3">
+            {report.scenarios.map((sc, idx) => (
+              <div
+                key={sc.id || idx}
+                className="bg-gray-50/70 p-3 rounded border border-gray-200 space-y-2 text-[11px] leading-relaxed"
+              >
+                <div className="flex items-center justify-between gap-2 flex-wrap pb-1.5 border-b border-gray-200">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-900">
+                      {sc.label || `Scenario ${idx + 1}`}
+                    </span>
+                    {sc.strategy && (
+                      <span className="text-gray-600 font-medium">— {sc.strategy}</span>
+                    )}
+                  </div>
+                  {sc.direction && (
+                    <span
+                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                        sc.direction === 'Buy'
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                          : 'bg-rose-50 text-rose-800 border-rose-300'
+                      }`}
+                    >
+                      {sc.direction}
+                    </span>
+                  )}
+                </div>
+
+                {sc.description && (
+                  <div>
+                    <span className="font-bold text-gray-700">Description: </span>
+                    <span className="text-gray-800 whitespace-pre-wrap">{sc.description}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
+                  {sc.entryConditions && (
+                    <div className="bg-white/80 p-2 rounded border border-gray-200">
+                      <span className="font-bold text-gray-700 block mb-0.5">
+                        Entry Conditions / Rules:
+                      </span>
+                      <span className="text-gray-800 whitespace-pre-wrap">
+                        {sc.entryConditions}
+                      </span>
+                    </div>
+                  )}
+                  {sc.invalidationConditions && (
+                    <div className="bg-white/80 p-2 rounded border border-gray-200">
+                      <span className="font-bold text-rose-800 block mb-0.5">
+                        Invalidation Conditions:
+                      </span>
+                      <span className="text-gray-800 whitespace-pre-wrap">
+                        {sc.invalidationConditions}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-gray-400 italic">No scenarios recorded.</p>
+        )}
+      </section>
+
+      {/* TRADES TAKEN SECTION (Appended below Planned Scenarios) */}
+      <section className="mt-6 pt-5 border-t border-gray-200 space-y-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+            TRADES TAKEN
+          </h2>
+          {report.trades && report.trades.length > 0 && (
+            <span className="text-[10px] text-gray-500 font-medium">
+              {report.trades.length} {report.trades.length === 1 ? 'trade' : 'trades'} logged
+            </span>
+          )}
+        </div>
+
+        {report.trades && report.trades.length > 0 ? (
+          <div className="space-y-2.5">
+            {report.trades.map((trd, idx) => (
+              <div
+                key={trd.id || idx}
+                className="bg-gray-50/70 p-3 rounded border border-gray-200 space-y-1.5 text-[11px]"
+              >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                        trd.direction === 'Buy'
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                          : 'bg-rose-50 text-rose-800 border-rose-300'
+                      }`}
+                    >
+                      {trd.direction}
+                    </span>
+                    <span className="font-bold text-gray-900">
+                      {trd.scenarioLabel || 'Planned Execution'}
+                    </span>
+                    {trd.timeframeTaken && (
+                      <span className="text-gray-500 font-mono text-[10px]">
+                        [{trd.timeframeTaken}]
+                      </span>
+                    )}
+                    {trd.session && (
+                      <span className="text-gray-500 text-[10px]">{trd.session}</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {trd.outcome && (
+                      <span
+                        className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase ${
+                          trd.outcome === 'Win'
+                            ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
+                            : trd.outcome === 'Loss'
+                            ? 'bg-rose-100 text-rose-900 border-rose-400'
+                            : 'bg-gray-100 text-gray-800 border-gray-300'
+                        }`}
+                      >
+                        {trd.outcome}
+                      </span>
+                    )}
+                    <span
+                      className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
+                        trd.rulesFollowed !== false
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : 'bg-rose-50 text-rose-800 border-rose-200'
+                      }`}
+                    >
+                      {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Price parameters */}
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] text-gray-700 bg-white/70 p-2 rounded border border-gray-200">
+                  {trd.entryPrice && (
+                    <span>
+                      Entry: <strong className="text-gray-900">{trd.entryPrice}</strong>
+                    </span>
+                  )}
+                  {trd.stopLoss && (
+                    <span>
+                      SL: <strong className="text-rose-700">{trd.stopLoss}</strong>
+                    </span>
+                  )}
+                  {trd.takeProfit && (
+                    <span>
+                      TP: <strong className="text-emerald-700">{trd.takeProfit}</strong>
+                    </span>
+                  )}
+                  {trd.exitPrice && (
+                    <span>
+                      Exit: <strong className="text-gray-900">{trd.exitPrice}</strong>
+                    </span>
+                  )}
+                  {trd.riskReward && (
+                    <span>
+                      R:R: <strong className="text-gray-900">{trd.riskReward}</strong>
+                    </span>
+                  )}
+                </div>
+
+                {trd.notes && (
+                  <div className="text-gray-700 whitespace-pre-wrap italic pt-0.5">
+                    &ldquo;{trd.notes}&rdquo;
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-gray-400 italic">No trades recorded.</p>
+        )}
+      </section>
+
       {/* D. Document Footer & Cross-Timeframe Confluence */}
       <footer className="mt-8 pt-4 border-t border-gray-200 text-xs text-gray-600">
         {/* Confluent Structural Price Points */}

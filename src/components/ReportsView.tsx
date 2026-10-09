@@ -25,6 +25,7 @@ interface ReportsViewProps {
   onModifyReport: (report: SavedReport) => void;
   onCopyReport: (report: SavedReport) => void;
   onDeleteReport: (id: string) => void;
+  onUpdateReport?: (updated: SavedReport) => Promise<void>;
   onRefreshData: () => void;
 }
 
@@ -33,6 +34,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   onModifyReport,
   onCopyReport,
   onDeleteReport,
+  onUpdateReport,
   onRefreshData,
 }) => {
   const { user } = useAuth();
@@ -360,6 +362,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         onDelete={(id) => {
           setActiveReportDetails(null);
           onDeleteReport(id);
+        }}
+        onUpdateReport={async (updated) => {
+          setActiveReportDetails(updated);
+          if (onUpdateReport) {
+            await onUpdateReport(updated);
+          }
         }}
       />
 

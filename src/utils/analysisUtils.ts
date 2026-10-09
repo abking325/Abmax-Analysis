@@ -297,6 +297,8 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     'Crossed Liquidity',
     'Supply & Demand Levels',
     'Overall Notes',
+    'Planned Scenarios',
+    'Trades Taken',
     'Status',
     'Created At',
     'Updated At',
@@ -307,6 +309,18 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     const crossedLiq = (r.crossedLiquidity || []).join('; ');
     const sdLevels = (r.supplyDemandLevels || [])
       .map((sd) => `${sd.timeframe}: S[${sd.supply || '-'}] D[${sd.demand || '-'}]`)
+      .join('; ');
+    const scenariosText = (r.scenarios || [])
+      .map(
+        (s) =>
+          `[${s.label}: ${s.direction || '-'} | Strategy: ${s.strategy || '-'} | Rules: ${s.entryConditions || '-'} | Invalidation: ${s.invalidationConditions || '-'}]`
+      )
+      .join('; ');
+    const tradesText = (r.trades || [])
+      .map(
+        (t) =>
+          `[${t.direction || '-'} (${t.scenarioLabel || 'Trade'}) | Entry: ${t.entryPrice || '-'} SL: ${t.stopLoss || '-'} TP: ${t.takeProfit || '-'} Outcome: ${t.outcome || '-'} Rules: ${t.rulesFollowed ? 'Followed' : 'Broken'}]`
+      )
       .join('; ');
 
     return [
@@ -335,6 +349,8 @@ export function generateReportsCsv(reports: SavedReport[]): string {
       escapeCsvCell(crossedLiq),
       escapeCsvCell(sdLevels),
       escapeCsvCell(r.overallNotes || ''),
+      escapeCsvCell(scenariosText),
+      escapeCsvCell(tradesText),
       escapeCsvCell(r.status || 'Original'),
       escapeCsvCell(new Date(r.createdAt).toISOString()),
       escapeCsvCell(new Date(r.updatedAt).toISOString()),

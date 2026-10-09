@@ -1,26 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Sun, Moon, User } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { Settings } from 'lucide-react';
 
 export type ActiveView = 'home' | 'analysis' | 'reports';
 
 interface HeaderProps {
   activeView: ActiveView;
   onNavigate: (view: ActiveView) => void;
-  theme: 'light' | 'dark';
-  onToggleTheme: () => void;
-  onOpenAuth: () => void;
+  onOpenSettings: () => void;
   hasUnsavedDraft?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   activeView,
   onNavigate,
-  theme,
-  onToggleTheme,
-  onOpenAuth,
+  onOpenSettings,
 }) => {
-  const { user } = useAuth();
 
   // Local state tracking whether header is visible (only when on top of page <= 80px)
   const [isVisible, setIsVisible] = useState(true);
@@ -112,14 +106,11 @@ export const Header: React.FC<HeaderProps> = ({
             type="button"
             tabIndex={buttonTabIndex}
             onClick={() => onNavigate('home')}
-            className="flex items-center gap-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500 rounded group"
+            className="flex items-center gap-2 text-left focus-visible:ring-2 focus-visible:ring-emerald-500 rounded-md transition-colors"
             title="Go to Home"
           >
-            <span className="font-extrabold text-lg sm:text-xl tracking-tight text-emerald-theme group-hover:opacity-90 transition-opacity">
-              ABMAX
-            </span>
-            <span className="font-semibold text-lg sm:text-xl tracking-tight text-app-main">
-              ANALYSIS
+            <span className="font-bold text-base sm:text-lg tracking-tight text-app-main">
+              ABMAX <span className="text-emerald-theme font-semibold">ANALYSIS</span>
             </span>
           </button>
 
@@ -168,44 +159,16 @@ export const Header: React.FC<HeaderProps> = ({
 
             <div className="h-4 w-px border-r border-app mx-1" aria-hidden="true" />
 
-            {/* Account Control (Clean outline user icon with min 44px touch target) */}
+            {/* Settings button (clean outline gear icon with accessible label & desktop tooltip) */}
             <button
               type="button"
               tabIndex={buttonTabIndex}
-              onClick={onOpenAuth}
-              aria-label={user ? 'Open account' : 'Sign in'}
-              title={
-                user
-                  ? user.email
-                    ? `Open account (${user.email})`
-                    : 'Open account'
-                  : 'Sign in'
-              }
-              className="relative min-w-[44px] min-h-[44px] w-11 h-11 inline-flex items-center justify-center rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+              onClick={onOpenSettings}
+              aria-label="Open settings"
+              title="Settings"
+              className="min-w-[44px] min-h-[44px] w-11 h-11 inline-flex items-center justify-center rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500"
             >
-              <User className="w-5 h-5 text-current" strokeWidth={1.75} />
-              {user && (
-                <span
-                  className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900"
-                  aria-hidden="true"
-                />
-              )}
-            </button>
-
-            {/* Light / Dark Mode Toggle with 44px touch target */}
-            <button
-              type="button"
-              tabIndex={buttonTabIndex}
-              onClick={onToggleTheme}
-              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-              className="min-w-[44px] min-h-[44px] w-11 h-11 inline-flex items-center justify-center rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
-            >
-              {theme === 'light' ? (
-                <Moon className="w-4 h-4 text-slate-600" />
-              ) : (
-                <Sun className="w-4 h-4 text-amber-400" />
-              )}
+              <Settings className="w-5 h-5 text-current" strokeWidth={1.75} />
             </button>
           </div>
         </div>

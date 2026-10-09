@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
-  Printer,
   Edit,
   Copy,
   Trash2,
@@ -13,8 +12,16 @@ import {
   ArrowLeft,
   Loader2,
   AlertCircle,
+  TrendingUp,
+  Plus,
 } from 'lucide-react';
-import { SavedReport, TIMEFRAME_ORDER, TimeframeId } from '../types/journal';
+import {
+  PlannedScenario,
+  RecordedTrade,
+  SavedReport,
+  TIMEFRAME_ORDER,
+  TimeframeId,
+} from '../types/journal';
 import {
   calculateOverallAlignment,
   findMatchingValues,
@@ -24,6 +31,8 @@ import { useAuth } from '../context/AuthContext';
 import { ImageViewerModal } from './ImageViewerModal';
 import { OrganizedReportView } from './OrganizedReportView';
 import { downloadReportPdf } from '../services/pdfExport';
+import { EditScenariosModal } from './EditScenariosModal';
+import { TakeTradeModal } from './TakeTradeModal';
 
 interface ReportDetailsModalProps {
   isOpen: boolean;
@@ -32,6 +41,7 @@ interface ReportDetailsModalProps {
   onModify: (report: SavedReport) => void;
   onCopy: (report: SavedReport) => void;
   onDelete: (id: string) => void;
+  onUpdateReport?: (updated: SavedReport) => Promise<void>;
 }
 
 export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
@@ -41,6 +51,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   onModify,
   onCopy,
   onDelete,
+  onUpdateReport,
 }) => {
   const { user } = useAuth();
   const [viewMode, setViewMode] = useState<'standard' | 'organized'>('standard');
@@ -60,6 +71,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
     null
   );
+  const [isTakeTradeOpen, setIsTakeTradeOpen] = useState(false);
+  const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -616,6 +629,225 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* 3. PLANNED SCENARIOS */}
+              <div className="space-y-3 border-t border-app/60 pt-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-app-main uppercase tracking-wider">
+                      PLANNED SCENARIOS
+                    </span>
+                    {report.scenarios && report.scenarios.length > 0 && (
+                      <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
+                        {report.scenarios.length}
+                      </span>
+                    )}
+                  </div>
+                  {onUpdateReport && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditScenariosOpen(true)}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-theme hover:underline cursor-pointer"
+                    >
+                      <Edit className="w-3 h-3" />
+                      {report.scenarios && report.scenarios.length > 0
+                        ? 'Edit Scenarios'
+                        : 'Add Scenario'}
+                    </button>
+                  )}
+                </div>
+
+                {report.scenarios && report.scenarios.length > 0 ? (
+                  <div className="space-y-3">
+                    {report.scenarios.map((sc, idx) => (
+                      <div
+                        key={sc.id || idx}
+                        className="p-3.5 rounded-lg border border-app bg-app-field space-y-2 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap pb-1.5 border-b border-app/60">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-app-main">
+                              {sc.label || `Scenario ${idx + 1}`}
+                            </span>
+                            {sc.strategy && (
+                              <span className="text-app-secondary">— {sc.strategy}</span>
+                            )}
+                          </div>
+                          {sc.direction && (
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
+                                sc.direction === 'Buy'
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700'
+                                  : 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-700'
+                              }`}
+                            >
+                              {sc.direction}
+                            </span>
+                          )}
+                        </div>
+
+                        {sc.description && (
+                          <div className="text-app-main leading-relaxed">
+                            <span className="font-semibold text-app-secondary">Description: </span>
+                            <span className="whitespace-pre-wrap">{sc.description}</span>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
+                          {sc.entryConditions && (
+                            <div className="p-2 rounded bg-app-main border border-app/60">
+                              <span className="font-bold text-app-main block mb-0.5">
+                                Entry Conditions / Rules:
+                              </span>
+                              <span className="text-app-secondary whitespace-pre-wrap">
+                                {sc.entryConditions}
+                              </span>
+                            </div>
+                          )}
+                          {sc.invalidationConditions && (
+                            <div className="p-2 rounded bg-app-main border border-app/60">
+                              <span className="font-bold text-rose-600 dark:text-rose-400 block mb-0.5">
+                                Invalidation Conditions:
+                              </span>
+                              <span className="text-app-secondary whitespace-pre-wrap">
+                                {sc.invalidationConditions}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-app-secondary italic">No scenarios recorded.</p>
+                )}
+              </div>
+
+              {/* 4. TRADES TAKEN */}
+              <div className="space-y-3 border-t border-app/60 pt-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-app-main uppercase tracking-wider">
+                      TRADES TAKEN
+                    </span>
+                    {report.trades && report.trades.length > 0 && (
+                      <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
+                        {report.trades.length}
+                      </span>
+                    )}
+                  </div>
+                  {onUpdateReport && (
+                    <button
+                      type="button"
+                      onClick={() => setIsTakeTradeOpen(true)}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-theme hover:underline cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Record Trade
+                    </button>
+                  )}
+                </div>
+
+                {report.trades && report.trades.length > 0 ? (
+                  <div className="space-y-2.5">
+                    {report.trades.map((trd, idx) => (
+                      <div
+                        key={trd.id || idx}
+                        className="p-3 rounded-lg border border-app bg-app-field space-y-2 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
+                                trd.direction === 'Buy'
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700'
+                                  : 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-700'
+                              }`}
+                            >
+                              {trd.direction}
+                            </span>
+                            <span className="font-bold text-app-main">
+                              {trd.scenarioLabel || 'Planned Execution'}
+                            </span>
+                            {trd.timeframeTaken && (
+                              <span className="text-app-secondary font-mono text-[11px]">
+                                [{trd.timeframeTaken}]
+                              </span>
+                            )}
+                            {trd.session && (
+                              <span className="text-app-secondary text-[11px]">{trd.session}</span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {trd.outcome && (
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${
+                                  trd.outcome === 'Win'
+                                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border-emerald-400'
+                                    : trd.outcome === 'Loss'
+                                    ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-200 border-rose-400'
+                                    : trd.outcome === 'Break-even'
+                                    ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200 border-amber-400'
+                                    : 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-200 border-blue-400'
+                                }`}
+                              >
+                                {trd.outcome}
+                              </span>
+                            )}
+                            <span
+                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+                                trd.rulesFollowed !== false
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-300'
+                                  : 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-300'
+                              }`}
+                            >
+                              {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Price metrics */}
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-app-secondary bg-app-main p-2 rounded border border-app/60">
+                          {trd.entryPrice && (
+                            <span>
+                              Entry: <strong className="text-app-main">{trd.entryPrice}</strong>
+                            </span>
+                          )}
+                          {trd.stopLoss && (
+                            <span>
+                              SL: <strong className="text-rose-600 dark:text-rose-400">{trd.stopLoss}</strong>
+                            </span>
+                          )}
+                          {trd.takeProfit && (
+                            <span>
+                              TP: <strong className="text-emerald-600 dark:text-emerald-400">{trd.takeProfit}</strong>
+                            </span>
+                          )}
+                          {trd.exitPrice && (
+                            <span>
+                              Exit: <strong className="text-app-main">{trd.exitPrice}</strong>
+                            </span>
+                          )}
+                          {trd.riskReward && (
+                            <span>
+                              R:R: <strong className="text-app-main">{trd.riskReward}</strong>
+                            </span>
+                          )}
+                        </div>
+
+                        {trd.notes && (
+                          <div className="text-app-secondary whitespace-pre-wrap italic pt-0.5 text-[11px]">
+                            &ldquo;{trd.notes}&rdquo;
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-app-secondary italic">No trades recorded.</p>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -646,34 +878,35 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   {exportingPdf ? 'Exporting PDF...' : 'Download PDF'}
                 </button>
 
+                {/* Take Trade button (Replaces bottom Print / Save as PDF button per Phase 3) */}
                 <button
                   type="button"
-                  onClick={handlePrint}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-app-main border border-app hover:bg-app-field rounded text-app-main transition-colors cursor-pointer"
-                  title="Print or Save as PDF via browser print dialog"
+                  onClick={() => setIsTakeTradeOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-emerald-theme bg-emerald-theme-hover text-white rounded shadow-2xs transition-colors cursor-pointer"
+                  title="Record an executed trade linked to this report"
                 >
-                  <Printer className="w-3.5 h-3.5 text-app-secondary" />
-                  Print / Save as PDF
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  Take Trade
                 </button>
 
-                  <button
-                    type="button"
-                    onClick={() => onModify(report)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors"
-                  >
-                    <Edit className="w-3.5 h-3.5" />
-                    Modify Report
-                  </button>
+                <button
+                  type="button"
+                  onClick={() => onModify(report)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-app-field text-app-main border border-app hover:bg-slate-200 dark:hover:bg-slate-800 rounded shadow-2xs transition-colors"
+                >
+                  <Edit className="w-3.5 h-3.5 text-app-secondary" />
+                  Modify Report
+                </button>
 
-                  <button
-                    type="button"
-                    onClick={() => onCopy(report)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-app-field text-app-main border border-app hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors"
-                  >
-                    <Copy className="w-3.5 h-3.5 text-app-secondary" />
-                    Copy Report
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => onCopy(report)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-app-field text-app-main border border-app hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors"
+                >
+                  <Copy className="w-3.5 h-3.5 text-app-secondary" />
+                  Copy Report
+                </button>
+              </div>
 
                 <div className="flex items-center gap-2">
                   {!showDeleteConfirm ? (
@@ -732,6 +965,45 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
           onClose={() => setActiveViewerImage(null)}
           imageUrl={activeViewerImage.url}
           title={activeViewerImage.title}
+        />
+      )}
+
+      {/* Edit Scenarios Modal */}
+      {isEditScenariosOpen && (
+        <EditScenariosModal
+          isOpen={isEditScenariosOpen}
+          onClose={() => setIsEditScenariosOpen(false)}
+          scenarios={report.scenarios || []}
+          onSave={async (updatedScenarios) => {
+            if (onUpdateReport) {
+              const updatedReport: SavedReport = {
+                ...report,
+                scenarios: updatedScenarios,
+                updatedAt: Date.now(),
+              };
+              await onUpdateReport(updatedReport);
+            }
+          }}
+        />
+      )}
+
+      {/* Take Trade Modal */}
+      {isTakeTradeOpen && (
+        <TakeTradeModal
+          isOpen={isTakeTradeOpen}
+          onClose={() => setIsTakeTradeOpen(false)}
+          report={report}
+          onSaveTrade={async (newTrade) => {
+            if (onUpdateReport) {
+              const currentTrades = report.trades || [];
+              const updatedReport: SavedReport = {
+                ...report,
+                trades: [...currentTrades, newTrade],
+                updatedAt: Date.now(),
+              };
+              await onUpdateReport(updatedReport);
+            }
+          }}
         />
       )}
     </>

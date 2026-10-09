@@ -93,7 +93,11 @@ const MOVING_CANDLES: CandleData[] = [
   ...REALISTIC_CYCLE_CANDLES,
 ];
 
-export const HeroVisual: React.FC = () => {
+interface HeroVisualProps {
+  isPaused?: boolean;
+}
+
+export const HeroVisual: React.FC<HeroVisualProps> = ({ isPaused = false }) => {
   return (
     <div
       className="w-full max-w-[480px] mx-auto select-none pointer-events-none my-2 sm:my-3.5 relative flex items-center justify-center"
@@ -120,7 +124,10 @@ export const HeroVisual: React.FC = () => {
           preserveAspectRatio="xMidYMid meet"
         >
           {/* Continuous seamlessly moving candlestick track */}
-          <g className="chart-moving-track">
+          <g
+            className={`chart-moving-track ${isPaused ? 'chart-animation-paused' : ''}`}
+            style={isPaused ? { animationPlayState: 'paused' } : undefined}
+          >
             {MOVING_CANDLES.map((c, idx) => {
               const x = idx * CANDLE_STEP + 8;
               // In SVG coordinates: smaller Y = higher price (top of screen)

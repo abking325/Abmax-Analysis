@@ -13,6 +13,7 @@ interface HomeViewProps {
     date: string;
     time: string;
   } | null;
+  isAnimationPaused?: boolean;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({
@@ -21,6 +22,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onViewReports,
   hasDraft,
   draftSummary,
+  isAnimationPaused = false,
 }) => {
   const [quoteList, setQuoteList] = useState<DisciplineQuote[]>(() => getShuffledQuotes());
   const [quoteIndex, setQuoteIndex] = useState(0);
@@ -63,7 +65,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </h1>
 
           {/* Polished Hero Illustration with subtle 3D / isometric depth */}
-          <HeroVisual />
+          <HeroVisual isPaused={isAnimationPaused} />
 
           {/* Rotating discipline quote */}
           <div className="w-full max-w-xl bg-app-secondary border border-app rounded-lg p-3 sm:p-4 my-2 sm:my-3 text-left relative transition-colors shadow-2xs">
@@ -139,7 +141,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
       {/* Subtle minimalist footer */}
       <footer className="border-t border-app py-2.5 sm:py-3 text-center text-[11px] sm:text-xs text-app-secondary bg-app-main shrink-0">
-        ABMAX ANALYSIS — Professional Trading Journal
+        ABMAX ANALYSIS — Professional Trading Analysis Maker
       </footer>
     </div>
   );

@@ -85,6 +85,42 @@ export const MAJOR_LIQUIDITY_ITEMS = [
 
 export type MajorLiquidityItem = typeof MAJOR_LIQUIDITY_ITEMS[number];
 
+export interface PlannedScenario {
+  id: string; // stable UUID or unique id (e.g. scn_...)
+  label: string; // "Scenario 1", "Scenario 2", etc.
+  strategy: string; // Strategy Used
+  direction: 'Buy' | 'Sell' | '';
+  description: string; // Scenario Description
+  entryConditions: string; // Entry Conditions / Rules
+  invalidationConditions: string; // Invalidation Conditions
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type TradeOutcome = 'Win' | 'Loss' | 'Break-even' | 'Open' | '';
+
+export interface RecordedTrade {
+  id: string; // stable UUID or unique id (e.g. trd_...)
+  scenarioId?: string; // linked planned scenario ID (or empty if unlinked)
+  scenarioLabel?: string; // display snapshot of scenario label
+  pair: TradingPair;
+  direction: 'Buy' | 'Sell' | '';
+  session?: TradingSession;
+  timeframeTaken?: TimeframeId | '';
+  entryPrice?: string;
+  stopLoss?: string;
+  takeProfit?: string;
+  exitPrice?: string;
+  riskReward?: string;
+  outcome?: TradeOutcome;
+  rulesFollowed?: boolean;
+  notes?: string;
+  date: string; // YYYY-MM-DD
+  time?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AnalysisData {
   id: string; // Report ID or 'draft'
   pair: TradingPair;
@@ -96,6 +132,8 @@ export interface AnalysisData {
   timeframes: Record<TimeframeId, TimeframeData>;
   crossedLiquidity: MajorLiquidityItem[];
   supplyDemandLevels: SupplyDemandLevel[];
+  scenarios?: PlannedScenario[];
+  trades?: RecordedTrade[];
   overallNotes: string;
   createdAt: number;
   updatedAt: number;
@@ -112,7 +150,7 @@ export interface SavedTemplate {
   name: string;
   createdAt: number;
   updatedAt: number;
-  data: Omit<AnalysisData, 'id' | 'createdAt' | 'updatedAt' | 'date' | 'time'>;
+  data: Omit<AnalysisData, 'id' | 'createdAt' | 'updatedAt' | 'date' | 'time' | 'trades'>;
   imageMap?: Record<TimeframeId, string>; // base64 or IDB image reference
 }
 
@@ -184,6 +222,8 @@ export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD'): Analysi
     timeframes,
     crossedLiquidity: [],
     supplyDemandLevels: [],
+    scenarios: [],
+    trades: [],
     overallNotes: '',
     createdAt: Date.now(),
     updatedAt: Date.now(),

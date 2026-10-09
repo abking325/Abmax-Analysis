@@ -158,6 +158,10 @@
   will-change: transform;
 }
 
+.chart-animation-paused {
+  animation-play-state: paused !important;
+}
+
 .chart-live-ticker {
   animation: chartLivePulse 2.6s ease-in-out infinite;
   will-change: transform;

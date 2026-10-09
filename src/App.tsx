@@ -5,6 +5,7 @@ import { AnalysisView } from './components/AnalysisView';
 import { ReportsView } from './components/ReportsView';
 import { AuthModal } from './components/AuthModal';
 import { MigrationModal } from './components/MigrationModal';
+import { SettingsModal } from './components/SettingsModal';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import {
   AnalysisData,
@@ -43,9 +44,23 @@ function MainApp() {
   const [reportsList, setReportsList] = useState<SavedReport[]>([]);
 
   // Modals state
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
   const [showReplaceDraftDialog, setShowReplaceDraftDialog] = useState(false);
+
+  // Animation pause state (persisted in localStorage)
+  const [isAnimationPaused, setIsAnimationPaused] = useState<boolean>(() => {
+    return localStorage.getItem('abmax_anim_paused') === 'true';
+  });
+
+  const togglePauseAnimation = () => {
+    setIsAnimationPaused((prev) => {
+      const next = !prev;
+      localStorage.setItem('abmax_anim_paused', String(next));
+      return next;
+    });
+  };
 
   // If URL has recovery token (password reset link), open auth modal immediately
   useEffect(() => {
@@ -213,6 +228,19 @@ function MainApp() {
     }
   };
 
+  // Update report in-place (e.g. from scenario editor or recording trade)
+  const handleUpdateReportDirectly = async (updatedReport: SavedReport) => {
+    try {
+      await saveReport(updatedReport);
+      if (user) {
+        await uploadReportToCloud(user.id, updatedReport);
+      }
+      await refreshStorageData();
+    } catch (e) {
+      console.error('Failed to update report directly', e);
+    }
+  };
+
   // Delete report
   const handleDeleteReport = async (id: string) => {
     try {
@@ -232,13 +260,11 @@ function MainApp() {
         activeView === 'home' ? 'h-screen h-[100dvh] overflow-hidden' : ''
       }`}
     >
-      {/* Compact Header with scroll hide / reveal & Account Control */}
+      {/* Compact Header with scroll hide / reveal & Settings Control */}
       <Header
         activeView={activeView}
         onNavigate={navigateTo}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-        onOpenAuth={() => setIsAuthModalOpen(true)}
+        onOpenSettings={() => setIsSettingsModalOpen(true)}
         hasUnsavedDraft={Boolean(savedDraft)}
       />
 
@@ -254,6 +280,7 @@ function MainApp() {
             onContinueAnalysis={handleContinueAnalysis}
             onViewReports={() => navigateTo('reports')}
             hasDraft={Boolean(savedDraft)}
+            isAnimationPaused={isAnimationPaused}
             draftSummary={
               savedDraft
                 ? {
@@ -284,6 +311,7 @@ function MainApp() {
             onModifyReport={handleModifyReport}
             onCopyReport={handleCopyReport}
             onDeleteReport={handleDeleteReport}
+            onUpdateReport={handleUpdateReportDirectly}
             onRefreshData={refreshStorageData}
           />
         )}
@@ -332,6 +360,17 @@ function MainApp() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         onOpenMigration={() => setIsMigrationModalOpen(true)}
+      />
+
+      {/* Settings Modal (Account, Theme Chooser, Candle Animation Pause/Play) */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenAccount={() => setIsAuthModalOpen(true)}
+        isAnimationPaused={isAnimationPaused}
+        onTogglePauseAnimation={togglePauseAnimation}
       />
 
       {/* Local to Cloud Journal Migration Modal */}

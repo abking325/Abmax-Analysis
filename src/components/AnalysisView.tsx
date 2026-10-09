@@ -13,6 +13,7 @@ import {
   AnalysisData,
   AnalysisTiming,
   MajorLiquidityItem,
+  PlannedScenario,
   SavedReport,
   SavedTemplate,
   SupplyDemandLevel,
@@ -32,6 +33,7 @@ import {
   MajorLiquiditySection,
   SupplyDemandSection,
 } from './LiquidityAndSupplyDemand';
+import { PlannedScenariosSection } from './PlannedScenariosSection';
 import { SaveTemplateModal, LoadTemplateModal } from './TemplatesModal';
 import { ImageViewerModal } from './ImageViewerModal';
 import {
@@ -419,6 +421,12 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         timeframes: data.timeframes,
         crossedLiquidity: data.crossedLiquidity,
         supplyDemandLevels: data.supplyDemandLevels,
+        scenarios: (data.scenarios || []).map((s) => ({
+          ...s,
+          id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
         overallNotes: data.overallNotes,
       },
     };
@@ -432,6 +440,14 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const handleLoadTemplate = (template: SavedTemplate) => {
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
+    // When loading templates, generate fresh scenario IDs and timestamps, never include trades
+    const templatedScenarios = (template.data.scenarios || []).map((s, idx) => ({
+      ...s,
+      id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${idx}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }));
+
     const newAnalysis: AnalysisData = {
       id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       pair: template.data.pair,
@@ -443,6 +459,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       timeframes: JSON.parse(JSON.stringify(template.data.timeframes)),
       crossedLiquidity: [...(template.data.crossedLiquidity || [])],
       supplyDemandLevels: JSON.parse(JSON.stringify(template.data.supplyDemandLevels || [])),
+      scenarios: templatedScenarios,
+      trades: [], // Templates must never include executed trades
       overallNotes: template.data.overallNotes || '',
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -695,6 +713,14 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           className="w-full px-3 py-2.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main resize-y transition-colors leading-relaxed"
         />
       </div>
+
+      {/* 14. Planned Scenarios (Pre-execution trading playbook) */}
+      <PlannedScenariosSection
+        scenarios={data.scenarios || []}
+        onChange={(updatedScenarios) =>
+          updateAnalysis((prev) => ({ ...prev, scenarios: updatedScenarios }))
+        }
+      />
 
       {/* Save report error indicator if any */}
       {saveReportError && (
