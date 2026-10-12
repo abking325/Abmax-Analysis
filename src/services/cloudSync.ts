@@ -33,9 +33,11 @@ function dataUrlToBlob(dataUrl: string): Blob {
   const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
   const binary = atob(parts[1]);
   const array = new Uint8Array(binary.length);
+
   for (let i = 0; i < binary.length; i++) {
     array[i] = binary.charCodeAt(i);
   }
+
   return new Blob([array], { type: mime });
 }
 
@@ -79,6 +81,7 @@ export async function getChartImageUrl(
       url: data.signedUrl,
       expiresAt: Date.now() + 50 * 60 * 1000,
     });
+
     return data.signedUrl;
   } catch (err) {
     console.warn('Failed to generate signed URL, falling back to local image', err);
@@ -124,18 +127,33 @@ export async function uploadChartImageToCloud(
 export async function uploadReportToCloud(
   userId: string,
   report: SavedReport
-): Promise<{ success: boolean; conflict?: boolean; error?: string }> {
-  if (!supabase) return { success: false, error: 'Supabase not configured' };
+): Promise<{
+  success: boolean;
+  conflict?: boolean;
+  error?: string;
+  revision?: number;
+}> {
+  if (!supabase) {
+    return { success: false, error: 'Supabase not configured' };
+  }
 
   try {
-    // 1. Upload any attached images to cloud storage if they haven't been uploaded yet
+    // Upload attached images if they haven't been uploaded yet.
     const sanitizedTimeframes = { ...report.timeframes };
+
     for (const tf of TIMEFRAME_ORDER) {
       const imgId = sanitizedTimeframes[tf]?.chartImageId;
+
       if (imgId && !imgId.includes('/')) {
         const localDataUrl = await getImage(imgId);
+
         if (localDataUrl && localDataUrl.startsWith('data:image')) {
-          const cloudPath = await uploadChartImageToCloud(userId, imgId, localDataUrl);
+          const cloudPath = await uploadChartImageToCloud(
+            userId,
+            imgId,
+            localDataUrl
+          );
+
           if (cloudPath) {
             sanitizedTimeframes[tf] = {
               ...sanitizedTimeframes[tf],
@@ -146,25 +164,53 @@ export async function uploadReportToCloud(
       }
     }
 
-    const currentRevision = (report as SavedReport & { revision?: number }).revision || 1;
+    const currentRevision =
+      (report as SavedReport & { revision?: number }).revision || 1;
 
-    // Check existing cloud record for optimistic concurrency
-    const { data: existing } = await supabase
+    // Check the current cloud record before updating it.
+    const { data: existing, error: fetchError } = await supabase
       .from('analyses')
       .select('revision, updated_at')
       .eq('user_id', userId)
       .eq('id', report.id)
       .maybeSingle();
 
-    if (existing && existing.revision > currentRevision) {
-      // Cloud has a newer revision!
+    if (fetchError) {
+      return { success: false, error: fetchError.message };
+    }
+
+    const cloudRevision = Number(existing?.revision || 0);
+    const localUpdatedAt = Date.parse(report.updatedAt);
+    const cloudUpdatedAt = existing?.updated_at
+      ? Date.parse(existing.updated_at)
+      : 0;
+
+    const localIsNewerByTime =
+      Number.isFinite(localUpdatedAt) &&
+      Number.isFinite(cloudUpdatedAt) &&
+      localUpdatedAt > cloudUpdatedAt;
+
+    const cloudIsNewerByTime =
+      Number.isFinite(localUpdatedAt) &&
+      Number.isFinite(cloudUpdatedAt) &&
+      cloudUpdatedAt > localUpdatedAt;
+
+    // Keep a newer cloud version safe. If the local report has a newer
+    // timestamp, allow it to sync even if its stored revision is behind.
+    if (
+      existing &&
+      (cloudIsNewerByTime ||
+        (cloudRevision > currentRevision && !localIsNewerByTime))
+    ) {
       return { success: false, conflict: true };
     }
+
+    const nextRevision = Math.max(currentRevision, cloudRevision) + 1;
 
     const payload = {
       ...report,
       timeframes: sanitizedTimeframes,
-      revision: currentRevision + 1,
+      revision: nextRevision,
     };
 
     const row = {
@@ -180,7 +226,7 @@ export async function uploadReportToCloud(
       is_modified: report.isModified || false,
       copied_from_id: report.copiedFromId || null,
       payload,
-      revision: currentRevision + 1,
+      revision: nextRevision,
       created_at: new Date(report.createdAt).toISOString(),
       updated_at: new Date(report.updatedAt).toISOString(),
     };
@@ -193,7 +239,18 @@ export async function uploadReportToCloud(
       return { success: false, error: error.message };
     }
 
-    return { success: true };
+    // Keep the revision in local IndexedDB so the next save uses it.
+    // Keep local image IDs here; the cloud payload uses the cloud image paths.
+    try {
+      await saveReport({
+        ...report,
+        revision: nextRevision,
+      } as SavedReport);
+    } catch (localSaveError) {
+      console.warn('Cloud report saved, but local revision update failed', localSaveError);
+    }
+
+    return { success: true, revision: nextRevision };
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
@@ -242,6 +299,7 @@ export async function uploadDraftToCloud(
 
 export async function clearDraftFromCloud(userId: string): Promise<void> {
   if (!supabase) return;
+
   try {
     await supabase.from('drafts').delete().eq('user_id', userId);
   } catch (err) {
@@ -276,8 +334,13 @@ export async function deleteTemplateFromCloud(
   templateId: string
 ): Promise<void> {
   if (!supabase) return;
+
   try {
-    await supabase.from('templates').delete().eq('user_id', userId).eq('id', templateId);
+    await supabase
+      .from('templates')
+      .delete()
+      .eq('user_id', userId)
+      .eq('id', templateId);
   } catch (err) {
     console.error('Failed to delete cloud template', err);
   }
@@ -352,6 +415,7 @@ export async function migrateLocalDataToCloud(
   if (!supabase) throw new Error('Supabase is not configured.');
 
   onProgress?.('Reading local journal records...', 10);
+
   const [reports, templates, draft, images] = await Promise.all([
     getAllReports(),
     getAllTemplates(),
@@ -365,13 +429,24 @@ export async function migrateLocalDataToCloud(
   let uploadedTemplates = 0;
 
   // 1. Upload screenshots first
-  const imageMap = new Map<string, string>(); // localId -> cloudPath
+  const imageMap = new Map<string, string>();
   const totalImages = images.length;
+
   for (let i = 0; i < totalImages; i++) {
     const img = images[i];
-    onProgress?.(`Uploading chart image ${i + 1}/${totalImages}...`, 10 + Math.round((i / (totalImages || 1)) * 30));
+
+    onProgress?.(
+      `Uploading chart image ${i + 1}/${totalImages}...`,
+      10 + Math.round((i / (totalImages || 1)) * 30)
+    );
+
     try {
-      const cloudPath = await uploadChartImageToCloud(userId, img.id, img.dataUrl);
+      const cloudPath = await uploadChartImageToCloud(
+        userId,
+        img.id,
+        img.dataUrl
+      );
+
       if (cloudPath) {
         imageMap.set(img.id, cloudPath);
         uploadedImages++;
@@ -381,16 +456,23 @@ export async function migrateLocalDataToCloud(
     }
   }
 
-  // 2. Upload reports (avoid duplicate overwriting of newer cloud records)
+  // 2. Upload reports
   const totalReports = reports.length;
+
   for (let i = 0; i < totalReports; i++) {
     const rep = reports[i];
-    onProgress?.(`Uploading report ${i + 1}/${totalReports}...`, 40 + Math.round((i / (totalReports || 1)) * 35));
 
-    // Remap local image IDs to cloud paths in payload
+    onProgress?.(
+      `Uploading report ${i + 1}/${totalReports}...`,
+      40 + Math.round((i / (totalReports || 1)) * 35)
+    );
+
+    // Remap local image IDs to cloud paths in the uploaded payload.
     const updatedTfs = { ...rep.timeframes };
+
     for (const tf of TIMEFRAME_ORDER) {
       const imgId = updatedTfs[tf]?.chartImageId;
+
       if (imgId && imageMap.has(imgId)) {
         updatedTfs[tf] = {
           ...updatedTfs[tf],
@@ -405,6 +487,7 @@ export async function migrateLocalDataToCloud(
     };
 
     const res = await uploadReportToCloud(userId, payloadToUpload);
+
     if (res.success) {
       uploadedReports++;
     } else {
@@ -414,9 +497,15 @@ export async function migrateLocalDataToCloud(
 
   // 3. Upload templates
   const totalTmpls = templates.length;
+
   for (let i = 0; i < totalTmpls; i++) {
     const tmpl = templates[i];
-    onProgress?.(`Uploading template ${i + 1}/${totalTmpls}...`, 75 + Math.round((i / (totalTmpls || 1)) * 15));
+
+    onProgress?.(
+      `Uploading template ${i + 1}/${totalTmpls}...`,
+      75 + Math.round((i / (totalTmpls || 1)) * 15)
+    );
+
     await uploadTemplateToCloud(userId, tmpl);
     uploadedTemplates++;
   }
