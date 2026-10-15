@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   Search,
   Download,
@@ -45,6 +45,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
+  // Keep activeReportDetails in sync when reports array updates
+  useEffect(() => {
+    if (activeReportDetails) {
+      const refreshed = reports.find((r) => r.id === activeReportDetails.id);
+      if (refreshed) {
+        setActiveReportDetails(refreshed);
+      }
+    }
+  }, [reports]);
+
   // Filter reports
   const filteredReports = useMemo(() => {
     return reports.filter((r) => {
@@ -52,15 +62,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       if (selectedPair !== 'All' && r.pair !== selectedPair) {
         return false;
       }
-      // Search query across pair, notes, session, id
+      // Search query across title, pair, notes, session, date, id
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
-        const matchesPair = r.pair.toLowerCase().includes(q);
+        const matchesTitle = (r.title || '').toLowerCase().includes(q);
+        const matchesPair = (r.pair || '').toLowerCase().includes(q);
         const matchesNotes = (r.overallNotes || '').toLowerCase().includes(q);
-        const matchesSession = r.session.toLowerCase().includes(q);
-        const matchesDate = r.date.toLowerCase().includes(q);
-        const matchesId = r.id.toLowerCase().includes(q);
-        if (!matchesPair && !matchesNotes && !matchesSession && !matchesDate && !matchesId) {
+        const matchesSession = (r.session || '').toLowerCase().includes(q);
+        const matchesDate = (r.date || '').toLowerCase().includes(q);
+        const matchesId = (r.id || '').toLowerCase().includes(q);
+        if (!matchesTitle && !matchesPair && !matchesNotes && !matchesSession && !matchesDate && !matchesId) {
           return false;
         }
       }
@@ -72,10 +83,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const groupedReports = useMemo(() => {
     const groups: Record<string, SavedReport[]> = {};
     for (const r of filteredReports) {
-      if (!groups[r.date]) {
-        groups[r.date] = [];
+      const dateKey = r.date?.trim() || (r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : 'Unspecified Date');
+      if (!groups[dateKey]) {
+        groups[dateKey] = [];
       }
-      groups[r.date].push(r);
+      groups[dateKey].push(r);
     }
 
     // Sort dates descending
@@ -200,6 +212,28 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
       </div>
 
+      {/* Active Filter Summary Bar */}
+      {reports.length > 0 && (selectedPair !== 'All' || searchQuery.trim() !== '') && (
+        <div className="flex items-center justify-between gap-2 px-3 py-2 mb-4 bg-app-field border border-app rounded text-xs">
+          <span className="text-app-main font-medium">
+            Showing <strong className="text-emerald-theme">{filteredReports.length}</strong> of{' '}
+            <strong className="text-app-main">{reports.length}</strong> total saved reports
+            {selectedPair !== 'All' ? ` (Pair: ${selectedPair})` : ''}
+            {searchQuery.trim() ? ` (Search: &ldquo;${searchQuery}&rdquo;)` : ''}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedPair('All');
+              setSearchQuery('');
+            }}
+            className="text-xs font-semibold text-emerald-theme hover:underline cursor-pointer"
+          >
+            Show All
+          </button>
+        </div>
+      )}
+
       {/* Reports List */}
       {reports.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-app rounded-lg bg-app-secondary/30">
@@ -209,47 +243,77 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           </p>
         </div>
       ) : groupedReports.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-app rounded-lg">
-          <p className="text-xs text-app-secondary">No reports match the current filter or search.</p>
+        <div className="text-center py-12 border border-dashed border-app rounded-lg space-y-3 bg-app-secondary/20">
+          <p className="text-sm font-semibold text-app-main">No reports match the current filter or search.</p>
+          <p className="text-xs text-app-secondary">
+            You have {reports.length} saved {reports.length === 1 ? 'report' : 'reports'} in your journal.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedPair('All');
+              setSearchQuery('');
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-theme hover:bg-emerald-700 rounded transition-colors cursor-pointer"
+          >
+            Clear Filters &amp; Show All ({reports.length})
+          </button>
         </div>
       ) : (
         <div className="space-y-6">
-          {groupedReports.map(({ date, items }) => (
-            <div key={date} className="space-y-2.5">
-              {/* One bold boxed date heading per day */}
-              <div className="inline-block px-3 py-1 bg-app-secondary border border-app rounded text-xs font-bold text-app-main tracking-wide">
-                {date}
-              </div>
+          {groupedReports.map(({ date, items }, groupIdx) => (
+            <React.Fragment key={date}>
+              {/* Bold separator between date groups (not between reports within the same day) */}
+              {groupIdx > 0 && (
+                <div
+                  className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+                  role="separator"
+                  aria-orientation="horizontal"
+                />
+              )}
+              <div className="space-y-2.5">
+                {/* One bold boxed date heading per day */}
+                <div className="inline-block px-3 py-1 bg-app-secondary border border-app rounded text-xs font-bold text-app-main tracking-wide">
+                  {date}
+                </div>
 
-              {/* Compact full-width report cards beneath each date (not repeating analysis date inside) */}
-              <div className="space-y-2">
-                {items.map((r) => {
-                  const alignment = calculateOverallAlignment(r.timeframes);
-                  const biasSummary = getReportBiasSummary(r);
+                {/* Compact full-width report cards beneath each date (not repeating analysis date inside) */}
+                <div className="space-y-2">
+                  {items.map((r) => {
+                    const alignment = calculateOverallAlignment(r.timeframes);
+                    const biasSummary = getReportBiasSummary(r);
 
-                  return (
-                    <div
-                      key={r.id}
-                      className="border border-app rounded-md p-3 sm:px-4 sm:py-3.5 bg-app-main hover:border-emerald-600/40 transition-colors shadow-2xs"
-                    >
-                      {/* First line: pair, overall bias, alignment */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-app/60">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                          <span className="font-extrabold text-base text-app-main tracking-tight">
-                            {r.pair}
-                          </span>
-                          <span className="text-app-secondary text-xs select-none">·</span>
-                          <span className="text-xs text-app-main">
-                            Bias:{' '}
-                            <span className={getBiasTextColor(biasSummary.summary)}>
-                              {biasSummary.summary}
+                    return (
+                      <div
+                        key={r.id}
+                        className="border border-app rounded-md p-3 sm:px-4 sm:py-3.5 bg-app-main hover:border-emerald-600/40 transition-colors shadow-2xs"
+                      >
+                        {/* First line: title (if any), pair, overall bias, alignment */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-app/60">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                            {r.title && (
+                              <>
+                                <span className="font-extrabold text-base text-app-main tracking-tight">
+                                  {r.title}
+                                </span>
+                                <span className="text-app-secondary text-xs select-none">·</span>
+                              </>
+                            )}
+                            <span className="font-bold text-sm text-app-main tracking-tight">
+                              {r.pair}
                             </span>
-                          </span>
-                          <span className="text-app-secondary text-xs select-none">·</span>
-                          <span className="text-xs text-app-main">
-                            Alignment: <span className="font-medium">{alignment.label}</span>
-                          </span>
-                        </div>
+                            <span className="text-app-secondary text-xs select-none">·</span>
+                            <span className="text-xs text-app-main">
+                              Bias:{' '}
+                              <span className={getBiasTextColor(biasSummary.summary)}>
+                                {biasSummary.summary}
+                              </span>
+                            </span>
+                            <span className="text-app-secondary text-xs select-none">·</span>
+                            <span className="text-xs text-app-main">
+                              Alignment: <span className="font-medium">{alignment.label}</span>
+                            </span>
+                          </div>
 
                         {/* Actions: View Details, Modify, and quiet Delete */}
                         <div className="flex items-center gap-1.5 flex-wrap">
@@ -342,7 +406,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 })}
               </div>
             </div>
-          ))}
+          </React.Fragment>
+        ))}
         </div>
       )}
 

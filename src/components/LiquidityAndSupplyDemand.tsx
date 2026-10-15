@@ -23,13 +23,25 @@ import {
 interface MajorLiquidityProps {
   selectedItems: MajorLiquidityItem[];
   onToggleItem: (item: MajorLiquidityItem) => void;
+  watchlist?: string;
+  onChangeWatchlist?: (val: string) => void;
+  showChecklist?: boolean;
+  showWatchlist?: boolean;
 }
 
 export const MajorLiquiditySection: React.FC<MajorLiquidityProps> = ({
   selectedItems,
   onToggleItem,
+  watchlist = '',
+  onChangeWatchlist,
+  showChecklist = true,
+  showWatchlist = true,
 }) => {
   const [isOpen, setIsOpen] = useState(true);
+
+  if (!showChecklist && !showWatchlist) {
+    return null;
+  }
 
   return (
     <section className="border border-app rounded-lg bg-app-main mb-4 transition-colors shadow-2xs overflow-hidden">
@@ -41,9 +53,11 @@ export const MajorLiquiditySection: React.FC<MajorLiquidityProps> = ({
           <h3 className="text-base sm:text-lg font-bold text-app-main tracking-tight">
             Major Liquidity
           </h3>
-          <span className="text-xs text-app-secondary">
-            ({selectedItems.length} crossed)
-          </span>
+          {showChecklist && (
+            <span className="text-xs text-app-secondary">
+              ({selectedItems.length} crossed)
+            </span>
+          )}
         </div>
 
         <button
@@ -56,40 +70,61 @@ export const MajorLiquiditySection: React.FC<MajorLiquidityProps> = ({
       </div>
 
       {isOpen && (
-        <div className="p-3.5 sm:p-5 bg-app-main">
-          <p className="text-xs text-app-secondary mb-3 leading-normal">
-            Toggle key liquidity pools that price has swept, mitigated, or crossed:
-          </p>
-          <div className="flex flex-wrap gap-1.5 sm:gap-2">
-            {MAJOR_LIQUIDITY_ITEMS.map((item) => {
-              const isSelected = selectedItems.includes(item);
-              return (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => onToggleItem(item)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border transition-colors ${
-                    isSelected
-                      ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
-                      : 'bg-app-field border-app text-app-main hover:bg-slate-200 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  <span
-                    className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border text-[10px] ${
-                      isSelected
-                        ? 'border-emerald-600 bg-emerald-600 text-white'
-                        : 'border-slate-400 dark:border-slate-600'
-                    }`}
-                  >
-                    {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
-                  </span>
-                  <span className={isSelected ? 'line-through decoration-emerald-700 decoration-1' : ''}>
-                    {item}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+        <div className="p-3.5 sm:p-5 bg-app-main space-y-4">
+          {/* Major Liquidity to Watch Today (Phase 7) */}
+          {showWatchlist && (
+            <div>
+              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                Major Liquidity to Watch Today
+              </label>
+              <textarea
+                rows={3}
+                value={watchlist}
+                onChange={(e) => onChangeWatchlist?.(e.target.value)}
+                placeholder="List the important liquidity levels and observations to watch today…"
+                className="w-full px-3 py-2 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors resize-y font-mono"
+              />
+            </div>
+          )}
+
+          {/* Major Liquidity Checklist */}
+          {showChecklist && (
+            <div className={showWatchlist ? 'pt-3 border-t border-app/60' : ''}>
+              <p className="text-xs text-app-secondary mb-2.5 leading-normal">
+                Toggle key liquidity pools that price has swept, mitigated, or crossed:
+              </p>
+              <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                {MAJOR_LIQUIDITY_ITEMS.map((item) => {
+                  const isSelected = selectedItems.includes(item);
+                  return (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => onToggleItem(item)}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
+                          : 'bg-app-field border-app text-app-main hover:bg-slate-200 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      <span
+                        className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border text-[10px] ${
+                          isSelected
+                            ? 'border-emerald-600 bg-emerald-600 text-white'
+                            : 'border-slate-400 dark:border-slate-600'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                      </span>
+                      <span className={isSelected ? 'line-through decoration-emerald-700 decoration-1' : ''}>
+                        {item}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>

@@ -100,75 +100,73 @@ export const Header: React.FC<HeaderProps> = ({
           isVisible ? 'header-visible shadow-2xs' : 'header-hidden pointer-events-none'
         }`}
       >
-        <div className="max-w-[1100px] mx-auto px-3.5 sm:px-6 py-2.5 sm:py-3 flex flex-wrap items-center justify-between gap-y-2 gap-x-4">
-          {/* Brand Zone */}
+        <div className="w-full px-3.5 sm:px-6 py-1.5 sm:py-2 flex items-center justify-between gap-x-2 sm:gap-x-4 pl-[max(0.875rem,env(safe-area-inset-left,0px))] pr-[max(0.875rem,env(safe-area-inset-right,0px))]">
+          {/* Left: Brand Zone */}
           <button
             type="button"
             tabIndex={buttonTabIndex}
             onClick={() => onNavigate('home')}
-            className="flex items-center gap-2 text-left focus-visible:ring-2 focus-visible:ring-emerald-500 rounded-md transition-colors"
+            className="flex items-center gap-1.5 sm:gap-2 text-left focus-visible:ring-2 focus-visible:ring-emerald-500 rounded-md transition-colors shrink-0"
             title="Go to Home"
           >
-            <span className="font-bold text-base sm:text-lg tracking-tight text-app-main">
+            <span className="font-bold text-sm sm:text-lg tracking-tight text-app-main whitespace-nowrap">
               ABMAX <span className="text-emerald-theme font-semibold">ANALYSIS</span>
             </span>
           </button>
 
-          {/* Navigation & Controls */}
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <nav className="flex items-center gap-1 sm:gap-1.5" aria-label="Main Navigation">
-              <button
-                type="button"
-                tabIndex={buttonTabIndex}
-                onClick={() => onNavigate('home')}
-                className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                  activeView === 'home'
-                    ? 'bg-emerald-pale text-emerald-theme font-semibold'
-                    : 'text-app-secondary hover:text-app-main hover:bg-app-field'
-                }`}
-              >
-                Home
-              </button>
+          {/* Center / Navigation */}
+          <nav className="flex items-center gap-1 sm:gap-1.5 shrink-0" aria-label="Main Navigation">
+            <button
+              type="button"
+              tabIndex={buttonTabIndex}
+              onClick={() => onNavigate('home')}
+              className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                activeView === 'home'
+                  ? 'bg-emerald-pale text-emerald-theme font-semibold'
+                  : 'text-app-secondary hover:text-app-main hover:bg-app-field'
+              }`}
+            >
+              Home
+            </button>
 
-              <button
-                type="button"
-                tabIndex={buttonTabIndex}
-                onClick={() => onNavigate('analysis')}
-                className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                  activeView === 'analysis'
-                    ? 'bg-emerald-pale text-emerald-theme font-semibold'
-                    : 'text-app-secondary hover:text-app-main hover:bg-app-field'
-                }`}
-              >
-                Analysis
-              </button>
+            <button
+              type="button"
+              tabIndex={buttonTabIndex}
+              onClick={() => onNavigate('analysis')}
+              className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                activeView === 'analysis'
+                  ? 'bg-emerald-pale text-emerald-theme font-semibold'
+                  : 'text-app-secondary hover:text-app-main hover:bg-app-field'
+              }`}
+            >
+              Analysis
+            </button>
 
-              <button
-                type="button"
-                tabIndex={buttonTabIndex}
-                onClick={() => onNavigate('reports')}
-                className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                  activeView === 'reports'
-                    ? 'bg-emerald-pale text-emerald-theme font-semibold'
-                    : 'text-app-secondary hover:text-app-main hover:bg-app-field'
-                }`}
-              >
-                Reports
-              </button>
-            </nav>
+            <button
+              type="button"
+              tabIndex={buttonTabIndex}
+              onClick={() => onNavigate('reports')}
+              className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                activeView === 'reports'
+                  ? 'bg-emerald-pale text-emerald-theme font-semibold'
+                  : 'text-app-secondary hover:text-app-main hover:bg-app-field'
+              }`}
+            >
+              Reports
+            </button>
+          </nav>
 
-            <div className="h-4 w-px border-r border-app mx-1" aria-hidden="true" />
-
-            {/* Settings button (clean outline gear icon with accessible label & desktop tooltip) */}
+          {/* Right: Clearly Visible Outline Settings Gear Button */}
+          <div className="flex items-center shrink-0">
             <button
               type="button"
               tabIndex={buttonTabIndex}
               onClick={onOpenSettings}
               aria-label="Open settings"
               title="Settings"
-              className="min-w-[44px] min-h-[44px] w-11 h-11 inline-flex items-center justify-center rounded-md text-app-secondary hover:text-app-main hover:bg-app-field border border-app transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500"
+              className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-app bg-app-field/60 hover:bg-app-field text-app-main hover:text-emerald-theme transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0"
             >
-              <Settings className="w-5 h-5 text-current" strokeWidth={1.75} />
+              <Settings className="w-[19px] h-[19px] text-current shrink-0" strokeWidth={1.75} />
             </button>
           </div>
         </div>

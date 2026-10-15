@@ -9,7 +9,9 @@ import { SettingsModal } from './components/SettingsModal';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import {
   AnalysisData,
+  DEFAULT_VISIBILITY_CONFIG,
   SavedReport,
+  WorkspaceVisibilityConfig,
   createInitialAnalysisData,
 } from './types/journal';
 import {
@@ -17,14 +19,21 @@ import {
   deleteReport,
   getAllReports,
   getDraft,
+  getUserVisibilityConfig,
+  saveDraft,
   saveReport,
   saveTemplate,
+  saveUserVisibilityConfig,
 } from './services/db';
 import {
   deleteReportFromCloud,
   fetchAllUserCloudData,
-  uploadReportToCloud,
+  fetchPreferencesFromCloud,
   getLocalDataCounts,
+  syncBidirectionalWithCloud,
+  clearDraftFromCloud,
+  uploadPreferencesToCloud,
+  uploadReportToCloud,
 } from './services/cloudSync';
 
 function MainApp() {
@@ -36,8 +45,12 @@ function MainApp() {
     return 'light';
   });
 
+  const [visibilityConfig, setVisibilityConfig] = useState<WorkspaceVisibilityConfig>(() => {
+    return JSON.parse(JSON.stringify(DEFAULT_VISIBILITY_CONFIG));
+  });
+
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData>(() =>
-    createInitialAnalysisData('XAUUSD')
+    createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG)
   );
   const [savedDraft, setSavedDraft] = useState<AnalysisData | null>(null);
   const [isEditingExistingReport, setIsEditingExistingReport] = useState(false);
@@ -53,6 +66,15 @@ function MainApp() {
   const [isAnimationPaused, setIsAnimationPaused] = useState<boolean>(() => {
     return localStorage.getItem('abmax_anim_paused') === 'true';
   });
+
+  // Load visibility preferences from local DB on mount
+  useEffect(() => {
+    getUserVisibilityConfig().then((cfg) => {
+      if (cfg) {
+        setVisibilityConfig(cfg);
+      }
+    });
+  }, []);
 
   const togglePauseAnimation = () => {
     setIsAnimationPaused((prev) => {
@@ -86,47 +108,54 @@ function MainApp() {
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   };
 
-  // Load draft and reports from IndexedDB
+  // Load draft and reports from IndexedDB without overriding active analysis
   const refreshStorageData = useCallback(async () => {
     try {
       const [draft, reports] = await Promise.all([getDraft(), getAllReports()]);
       setSavedDraft(draft);
       setReportsList(reports);
-      if (draft && !isEditingExistingReport) {
-        setCurrentAnalysis(draft);
-      }
     } catch (e) {
-      console.error('Failed to load initial data from IndexedDB', e);
+      console.error('Failed to load storage data from IndexedDB', e);
     }
-  }, [isEditingExistingReport]);
+  }, []);
 
+  // Hydrate on mount
   useEffect(() => {
-    refreshStorageData();
-  }, [refreshStorageData]);
+    let isMounted = true;
+    (async () => {
+      try {
+        const [draft, reports] = await Promise.all([getDraft(), getAllReports()]);
+        if (!isMounted) return;
+        setSavedDraft(draft);
+        setReportsList(reports);
+        if (draft) {
+          setCurrentAnalysis(draft);
+        }
+      } catch (e) {
+        console.error('Failed to hydrate storage on initial mount', e);
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Handle user authentication change: fetch cloud data & check migration offer
   useEffect(() => {
-    if (!user) return;
+    const userId = user?.id;
+    if (!userId) return;
 
     let isMounted = true;
     const syncAccountData = async () => {
       try {
-        // 1. Fetch all cloud reports and templates for this user
-        const cloudData = await fetchAllUserCloudData(user.id);
+        // Run safe bidirectional sync: preserves all newer local data and uploads unsynced work
+        await syncBidirectionalWithCloud(userId);
         if (!isMounted) return;
-
-        // Merge cloud reports into local store
-        for (const cloudRep of cloudData.reports) {
-          await saveReport(cloudRep);
-        }
-        for (const cloudTmpl of cloudData.templates) {
-          await saveTemplate(cloudTmpl);
-        }
 
         await refreshStorageData();
 
-        // 2. Check if user has unmigrated local records
-        const migrationKey = `abmax_migrated_prompt_${user.id}`;
+        // Check if user has unmigrated local records
+        const migrationKey = `abmax_migrated_prompt_${userId}`;
         const hasPrompted = localStorage.getItem(migrationKey);
 
         if (!hasPrompted) {
@@ -146,7 +175,38 @@ function MainApp() {
     return () => {
       isMounted = false;
     };
-  }, [user, refreshStorageData]);
+  }, [user?.id, refreshStorageData]);
+
+  // When user signs in, load cloud preferences if any
+  useEffect(() => {
+    if (user) {
+      fetchPreferencesFromCloud(user.id).then((cloudPref) => {
+        if (cloudPref?.preferences?.visibilityConfig) {
+          setVisibilityConfig(cloudPref.preferences.visibilityConfig);
+          saveUserVisibilityConfig(cloudPref.preferences.visibilityConfig);
+        }
+      });
+    }
+  }, [user]);
+
+  const handleUpdateVisibilityConfig = (newCfg: WorkspaceVisibilityConfig) => {
+    setVisibilityConfig(newCfg);
+    saveUserVisibilityConfig(newCfg);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { visibilityConfig: newCfg });
+    }
+  };
+
+  const handleApplyVisibilityToCurrentAnalysis = () => {
+    setCurrentAnalysis((prev) => {
+      const updated = {
+        ...prev,
+        visibilityConfig: JSON.parse(JSON.stringify(visibilityConfig)),
+      };
+      saveDraft(updated).catch(console.error);
+      return updated;
+    });
+  };
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
@@ -157,7 +217,7 @@ function MainApp() {
     if (savedDraft) {
       setShowReplaceDraftDialog(true);
     } else {
-      const fresh = createInitialAnalysisData('XAUUSD');
+      const fresh = createInitialAnalysisData('XAUUSD', visibilityConfig);
       setCurrentAnalysis(fresh);
       setIsEditingExistingReport(false);
       navigateTo('analysis');
@@ -167,7 +227,7 @@ function MainApp() {
   const confirmStartFreshAnalysis = async () => {
     await clearDraft();
     setSavedDraft(null);
-    const fresh = createInitialAnalysisData('XAUUSD');
+    const fresh = createInitialAnalysisData('XAUUSD', visibilityConfig);
     setCurrentAnalysis(fresh);
     setIsEditingExistingReport(false);
     setShowReplaceDraftDialog(false);
@@ -231,9 +291,9 @@ function MainApp() {
   // Update report in-place (e.g. from scenario editor or recording trade)
   const handleUpdateReportDirectly = async (updatedReport: SavedReport) => {
     try {
-      await saveReport(updatedReport);
+      const saved = await saveReport(updatedReport);
       if (user) {
-        await uploadReportToCloud(user.id, updatedReport);
+        await uploadReportToCloud(user.id, saved);
       }
       await refreshStorageData();
     } catch (e) {
@@ -302,6 +362,7 @@ function MainApp() {
               navigateTo('home');
             }}
             onReportSavedSuccessfully={handleReportSavedSuccessfully}
+            workspaceVisibility={visibilityConfig}
           />
         )}
 
@@ -362,7 +423,7 @@ function MainApp() {
         onOpenMigration={() => setIsMigrationModalOpen(true)}
       />
 
-      {/* Settings Modal (Account, Theme Chooser, Candle Animation Pause/Play) */}
+      {/* Settings Modal (Account, Theme Chooser, Admin Panel Workspace Visibility, Candle Animation) */}
       <SettingsModal
         isOpen={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
@@ -371,6 +432,10 @@ function MainApp() {
         onOpenAccount={() => setIsAuthModalOpen(true)}
         isAnimationPaused={isAnimationPaused}
         onTogglePauseAnimation={togglePauseAnimation}
+        visibilityConfig={visibilityConfig}
+        onChangeVisibilityConfig={handleUpdateVisibilityConfig}
+        onApplyVisibilityToCurrentAnalysis={handleApplyVisibilityToCurrentAnalysis}
+        hasActiveAnalysis={Boolean(currentAnalysis)}
       />
 
       {/* Local to Cloud Journal Migration Modal */}

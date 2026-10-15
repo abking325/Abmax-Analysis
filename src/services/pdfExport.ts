@@ -12,6 +12,7 @@ interface ExportPdfOptions {
 }
 
 const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
+  Monthly: 'MONTHLY',
   Weekly: 'WEEKLY',
   Daily: 'DAILY',
   '4H': '4-HOUR',
@@ -55,13 +56,25 @@ export async function downloadReportPdf({
   const drawPageHeader = () => {
     let curY = marginY + 4;
 
-    // Document Title
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    doc.setTextColor(...emeraldMuted);
-    doc.text(`ABMAX | ${report.pair} ANALYSIS`, marginX, curY);
+    // Optional Report Title or standard document title
+    if (report.title) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(...textDark);
+      doc.text(report.title, marginX, curY);
+      curY += 5.5;
 
-    curY += 6;
+      doc.setFontSize(11);
+      doc.setTextColor(...emeraldMuted);
+      doc.text(`ABMAX | ${report.pair} ANALYSIS`, marginX, curY);
+      curY += 5;
+    } else {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.setTextColor(...emeraldMuted);
+      doc.text(`ABMAX | ${report.pair} ANALYSIS`, marginX, curY);
+      curY += 6;
+    }
 
     // Metadata line 1
     doc.setFont('helvetica', 'normal');
@@ -127,22 +140,30 @@ export async function downloadReportPdf({
     const d = report.timeframes[tf];
     if (!d) return false;
     const hasBias = Boolean(d.overallBias || d.biasSpecific);
+    const hasPriceLoc = Boolean(d.priceLocation?.location || d.priceLocation?.levelRange);
     const hasSwing = Boolean(d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt);
     const hasInternal = Boolean(
       d.internal.direction || d.internal.high || d.internal.low || d.internal.ibosAt
     );
     const hasFractal = Boolean(d.fractal.direction || d.fractal.fractalBosAt);
+    const hasStructuredLevels = Boolean(
+      (d.supplyLevels && d.supplyLevels.length > 0) ||
+      (d.demandLevels && d.demandLevels.length > 0) ||
+      (d.supportLevels && d.supportLevels.length > 0) ||
+      (d.resistanceLevels && d.resistanceLevels.length > 0) ||
+      (d.liquidityLevels && d.liquidityLevels.length > 0)
+    );
     const hasNote = Boolean(d.note && d.note.trim());
     const hasChart = Boolean(d.chartImageId);
     const hasSD = (report.supplyDemandLevels || []).some((sd) => sd.timeframe === tf);
-    return hasBias || hasSwing || hasInternal || hasFractal || hasNote || hasChart || hasSD;
+    return hasBias || hasPriceLoc || hasSwing || hasInternal || hasFractal || hasStructuredLevels || hasNote || hasChart || hasSD;
   };
 
   // Helper to compile timeframe content lines
   const getTimeframeLines = (tf: TimeframeId): Array<{ type: 'heading' | 'body' | 'rule'; text: string }> => {
     const items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
     const d = report.timeframes[tf];
-    const tfLabel = TIMEFRAME_DISPLAY_NAMES[tf];
+    const tfLabel = TIMEFRAME_DISPLAY_NAMES[tf] || tf.toUpperCase();
     const biasStr = d?.overallBias ? d.overallBias : '—';
 
     items.push({
@@ -165,7 +186,17 @@ export async function downloadReportPdf({
       items.push({ type: 'body', text: 'Bias: —' });
     }
 
-    // 2. Swing: [direction] | High [value] | Low [value] | BOS [value]
+    // 2. Price Location (Equilibrium / Discount / Premium)
+    if (d.priceLocation?.location || d.priceLocation?.levelRange) {
+      const loc = d.priceLocation.location || '—';
+      const range = d.priceLocation.levelRange ? ` (${d.priceLocation.levelRange})` : '';
+      items.push({
+        type: 'body',
+        text: `Price Location: ${loc}${range}`,
+      });
+    }
+
+    // 3. Swing: [direction] | High [value] | Low [value] | BOS [value]
     const swingHasContent = Boolean(
       d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt
     );
@@ -180,7 +211,7 @@ export async function downloadReportPdf({
       });
     }
 
-    // 3. Internal: [direction] | High [value] | Low [value] | iBOS [value]
+    // 4. Internal: [direction] | High [value] | Low [value] | iBOS [value]
     const internalHasContent = Boolean(
       d.internal.direction || d.internal.high || d.internal.low || d.internal.ibosAt
     );
@@ -195,7 +226,7 @@ export async function downloadReportPdf({
       });
     }
 
-    // 4. Fractal: [direction] | BOS [value]
+    // 5. Fractal: [direction] | BOS [value]
     const fractalHasContent = Boolean(d.fractal.direction || d.fractal.fractalBosAt);
     if (fractalHasContent) {
       const fDir = d.fractal.direction || '—';
@@ -206,7 +237,7 @@ export async function downloadReportPdf({
       });
     }
 
-    // 5. Deep alignment: [derived from existing logic, when applicable]
+    // 6. Deep alignment
     if (d.swing.direction && d.internal.direction && d.fractal.direction) {
       if (isDeepAnalysisAligned(d)) {
         items.push({
@@ -221,7 +252,29 @@ export async function downloadReportPdf({
       }
     }
 
-    // 6. Supply / Demand
+    // 7. Structured Deep Levels (Supply, Demand, Support, Resistance, Liquidity)
+    if (d.supplyLevels && d.supplyLevels.length > 0) {
+      const str = d.supplyLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ');
+      items.push({ type: 'body', text: `Supply Levels: ${str}` });
+    }
+    if (d.demandLevels && d.demandLevels.length > 0) {
+      const str = d.demandLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ');
+      items.push({ type: 'body', text: `Demand Levels: ${str}` });
+    }
+    if (d.supportLevels && d.supportLevels.length > 0) {
+      const str = d.supportLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ');
+      items.push({ type: 'body', text: `Support Levels: ${str}` });
+    }
+    if (d.resistanceLevels && d.resistanceLevels.length > 0) {
+      const str = d.resistanceLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ');
+      items.push({ type: 'body', text: `Resistance Levels: ${str}` });
+    }
+    if (d.liquidityLevels && d.liquidityLevels.length > 0) {
+      const str = d.liquidityLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ');
+      items.push({ type: 'body', text: `Liquidity Levels: ${str}` });
+    }
+
+    // 8. Supply / Demand (General)
     const sdLevels = (report.supplyDemandLevels || []).filter((sd) => sd.timeframe === tf);
     if (sdLevels.length > 0) {
       const sdStrings = sdLevels.map((sd, i) => {
@@ -236,7 +289,7 @@ export async function downloadReportPdf({
       });
     }
 
-    // 7. Note
+    // 9. Note
     if (d.note && d.note.trim()) {
       items.push({
         type: 'body',
@@ -244,7 +297,7 @@ export async function downloadReportPdf({
       });
     }
 
-    // 8. Chart indicator
+    // 10. Chart indicator
     if (d.chartImageId) {
       items.push({
         type: 'body',
@@ -256,7 +309,7 @@ export async function downloadReportPdf({
     return items;
   };
 
-  // Compile Column 1: External Liquidity, Weekly, Daily
+  // Compile Column 1: External Liquidity, Watchlist, Monthly, Weekly, Daily
   const col1Items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
   col1Items.push({ type: 'heading', text: 'EXTERNAL LIQUIDITY' });
   const liq = report.crossedLiquidity || [];
@@ -266,6 +319,14 @@ export async function downloadReportPdf({
     col1Items.push({ type: 'body', text: 'None recorded' });
   }
   col1Items.push({ type: 'rule', text: '' });
+
+  if (report.majorLiquidityWatchlist && report.majorLiquidityWatchlist.trim()) {
+    col1Items.push({ type: 'heading', text: 'MAJOR LIQUIDITY WATCHLIST' });
+    col1Items.push({ type: 'body', text: report.majorLiquidityWatchlist.trim() });
+    col1Items.push({ type: 'rule', text: '' });
+  }
+
+  col1Items.push(...getTimeframeLines('Monthly'));
   col1Items.push(...getTimeframeLines('Weekly'));
   col1Items.push(...getTimeframeLines('Daily'));
 
@@ -405,9 +466,10 @@ export async function downloadReportPdf({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(...textDark);
+      const imgCountText = sc.images && sc.images.length > 0 ? ` [${sc.images.length} chart(s)]` : '';
       const scHeader = `${sc.label || 'Scenario'}${sc.direction ? ` [${sc.direction.toUpperCase()}]` : ''}${
         sc.strategy ? ` — ${sc.strategy}` : ''
-      }`;
+      }${imgCountText}`;
       doc.text(scHeader, marginX, endingY);
       endingY += 3.5;
 
@@ -473,7 +535,8 @@ export async function downloadReportPdf({
       doc.setTextColor(...textDark);
       const outcomeText = trd.outcome ? ` | Outcome: ${trd.outcome}` : '';
       const rulesText = trd.rulesFollowed !== false ? ' [Rules Followed]' : ' [Rules Broken]';
-      const trdHeader = `• ${trd.direction || 'Trade'} — ${trd.scenarioLabel || 'Execution'}${outcomeText}${rulesText}`;
+      const imgText = trd.images && trd.images.length > 0 ? ` [${trd.images.length} screenshot(s)]` : '';
+      const trdHeader = `• ${trd.direction || 'Trade'} — ${trd.scenarioLabel || 'Execution'}${outcomeText}${rulesText}${imgText}`;
       doc.text(trdHeader, marginX, endingY);
       endingY += 3.5;
 
@@ -593,6 +656,110 @@ export async function downloadReportPdf({
         marginX,
         pageHeight - marginY
       );
+    }
+  }
+
+  // SCENARIO ATTACHMENT PAGES (APPENDIX)
+  if (report.scenarios) {
+    for (const sc of report.scenarios) {
+      if (sc.images && sc.images.length > 0) {
+        for (let i = 0; i < sc.images.length; i++) {
+          const img = sc.images[i];
+          if (img.dataUrl) {
+            doc.addPage();
+            let pageY = marginY + 4;
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(13);
+            doc.setTextColor(...emeraldMuted);
+            doc.text(`SCENARIO APPENDIX — ${sc.label || 'Scenario'} (Chart ${i + 1}/${sc.images.length})`, marginX, pageY);
+            pageY += 5;
+
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(...textMuted);
+            const captionStr = img.caption ? `Caption: "${img.caption}"  •  ` : '';
+            doc.text(`${captionStr}Strategy: ${sc.strategy || 'N/A'}  •  Direction: ${sc.direction || 'N/A'}`, marginX, pageY);
+            pageY += 3;
+
+            doc.setDrawColor(...ruleGray);
+            doc.setLineWidth(0.3);
+            doc.line(marginX, pageY, marginX + usableWidth, pageY);
+            pageY += 6;
+
+            try {
+              const maxImgWidth = usableWidth;
+              const maxImgHeight = pageHeight - pageY - marginY - 10;
+              doc.addImage(img.dataUrl, 'JPEG', marginX, pageY, maxImgWidth, maxImgHeight, undefined, 'FAST');
+            } catch (err) {
+              console.warn(`Could not render scenario image in PDF:`, err);
+              doc.setFontSize(8);
+              doc.setTextColor(...textMuted);
+              doc.text(`[Scenario chart for ${sc.label} could not be rendered in PDF]`, marginX, pageY + 10);
+            }
+
+            doc.setFontSize(7);
+            doc.setTextColor(...textMuted);
+            doc.text(
+              `ABMAX ANALYSIS — Planned Scenario Setup Chart`,
+              marginX,
+              pageHeight - marginY
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // TRADE SCREENSHOT ATTACHMENT PAGES (APPENDIX)
+  if (report.trades) {
+    for (const trd of report.trades) {
+      if (trd.images && trd.images.length > 0) {
+        for (let i = 0; i < trd.images.length; i++) {
+          const img = trd.images[i];
+          if (img.dataUrl) {
+            doc.addPage();
+            let pageY = marginY + 4;
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(13);
+            doc.setTextColor(...emeraldMuted);
+            doc.text(`TRADE APPENDIX — ${trd.direction || 'Trade'} Execution (Screenshot ${i + 1}/${trd.images.length})`, marginX, pageY);
+            pageY += 5;
+
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(...textMuted);
+            const captionStr = img.caption ? `Caption: "${img.caption}"  •  ` : '';
+            doc.text(`${captionStr}Plan: ${trd.scenarioLabel || 'Execution'}  •  Outcome: ${trd.outcome || 'N/A'}`, marginX, pageY);
+            pageY += 3;
+
+            doc.setDrawColor(...ruleGray);
+            doc.setLineWidth(0.3);
+            doc.line(marginX, pageY, marginX + usableWidth, pageY);
+            pageY += 6;
+
+            try {
+              const maxImgWidth = usableWidth;
+              const maxImgHeight = pageHeight - pageY - marginY - 10;
+              doc.addImage(img.dataUrl, 'JPEG', marginX, pageY, maxImgWidth, maxImgHeight, undefined, 'FAST');
+            } catch (err) {
+              console.warn(`Could not render trade screenshot in PDF:`, err);
+              doc.setFontSize(8);
+              doc.setTextColor(...textMuted);
+              doc.text(`[Trade screenshot for ${trd.direction} execution could not be rendered in PDF]`, marginX, pageY + 10);
+            }
+
+            doc.setFontSize(7);
+            doc.setTextColor(...textMuted);
+            doc.text(
+              `ABMAX ANALYSIS — Executed Trade Screenshot`,
+              marginX,
+              pageHeight - marginY
+            );
+          }
+        }
+      }
     }
   }
 

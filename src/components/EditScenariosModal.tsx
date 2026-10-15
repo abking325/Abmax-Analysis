@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { X, Plus, Trash2, CheckCircle2 } from 'lucide-react';
 import { PlannedScenario } from '../types/journal';
+import { ImageAttachmentManager } from './ImageAttachmentManager';
+import { ImageViewerModal } from './ImageViewerModal';
 
 interface EditScenariosModalProps {
   isOpen: boolean;
@@ -21,6 +23,9 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
+    null
+  );
 
   if (!isOpen) return null;
 
@@ -34,6 +39,7 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
       description: '',
       entryConditions: '',
       invalidationConditions: '',
+      images: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -254,6 +260,16 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
                       />
                     </div>
                   </div>
+
+                  {/* Scenario Charts & Markups */}
+                  <div className="pt-2 border-t border-app/60">
+                    <ImageAttachmentManager
+                      attachments={s.images || []}
+                      onChange={(imgs) => handleUpdate(s.id, { images: imgs })}
+                      onViewImage={(url, title) => setActiveViewerImage({ url, title })}
+                      label="Scenario Charts & Setup Markups"
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -279,6 +295,16 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Fullscreen Image Viewer Modal */}
+      {activeViewerImage && (
+        <ImageViewerModal
+          isOpen={Boolean(activeViewerImage)}
+          onClose={() => setActiveViewerImage(null)}
+          imageUrl={activeViewerImage.url}
+          title={activeViewerImage.title}
+        />
+      )}
     </div>
   );
 };

@@ -1,19 +1,22 @@
-import React, { useState } from 'react';
-import { X, CheckCircle2, TrendingUp, AlertCircle, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, TrendingUp, AlertCircle, Edit3, Image as ImageIcon } from 'lucide-react';
 import {
+  ImageAttachment,
   PlannedScenario,
   RecordedTrade,
   SavedReport,
   TimeframeId,
-  TradingPair,
   TradingSession,
   TradeOutcome,
 } from '../types/journal';
+import { ImageAttachmentManager } from './ImageAttachmentManager';
+import { ImageViewerModal } from './ImageViewerModal';
 
 interface TakeTradeModalProps {
   isOpen: boolean;
   onClose: () => void;
   report: SavedReport;
+  tradeToEdit?: RecordedTrade | null;
   onSaveTrade: (trade: RecordedTrade) => Promise<void>;
 }
 
@@ -21,20 +24,15 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   isOpen,
   onClose,
   report,
+  tradeToEdit = null,
   onSaveTrade,
 }) => {
+  const isEditing = Boolean(tradeToEdit);
   const scenarios = report.scenarios || [];
 
   // Form state
-  const [selectedScenarioId, setSelectedScenarioId] = useState<string>(
-    scenarios.length > 0 ? scenarios[0].id : 'manual'
-  );
-  const [direction, setDirection] = useState<'Buy' | 'Sell'>(() => {
-    if (scenarios.length > 0 && scenarios[0].direction) {
-      return scenarios[0].direction;
-    }
-    return 'Buy';
-  });
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string>('manual');
+  const [direction, setDirection] = useState<'Buy' | 'Sell'>('Buy');
   const [session, setSession] = useState<TradingSession>(report.session || 'London');
   const [timeframeTaken, setTimeframeTaken] = useState<TimeframeId>('5M');
   const [entryPrice, setEntryPrice] = useState('');
@@ -45,6 +43,10 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   const [outcome, setOutcome] = useState<TradeOutcome>('Open');
   const [rulesFollowed, setRulesFollowed] = useState<boolean>(true);
   const [notes, setNotes] = useState('');
+  const [images, setImages] = useState<ImageAttachment[]>([]);
+  const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
+    null
+  );
   const [tradeDate, setTradeDate] = useState(() => report.date || new Date().toISOString().slice(0, 10));
   const [tradeTime, setTradeTime] = useState(() => {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -52,16 +54,100 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
 
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
+
+  // Prepopulate form when modal opens or tradeToEdit changes
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (tradeToEdit) {
+      // Editing existing trade
+      setSelectedScenarioId(tradeToEdit.scenarioId || 'manual');
+      setDirection((tradeToEdit.direction as 'Buy' | 'Sell') || 'Buy');
+      setSession(tradeToEdit.session || report.session || 'London');
+      setTimeframeTaken((tradeToEdit.timeframeTaken as TimeframeId) || '5M');
+      setEntryPrice(tradeToEdit.entryPrice || '');
+      setStopLoss(tradeToEdit.stopLoss || '');
+      setTakeProfit(tradeToEdit.takeProfit || '');
+      setExitPrice(tradeToEdit.exitPrice || '');
+      setRiskReward(tradeToEdit.riskReward || '');
+      setOutcome(tradeToEdit.outcome || 'Open');
+      setRulesFollowed(tradeToEdit.rulesFollowed !== false);
+      setNotes(tradeToEdit.notes || '');
+      setImages(tradeToEdit.images ? JSON.parse(JSON.stringify(tradeToEdit.images)) : []);
+      setTradeDate(tradeToEdit.date || report.date || new Date().toISOString().slice(0, 10));
+      setTradeTime(tradeToEdit.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+    } else {
+      // New trade mode
+      const defaultScnId = scenarios.length > 0 ? scenarios[0].id : 'manual';
+      setSelectedScenarioId(defaultScnId);
+      if (scenarios.length > 0 && scenarios[0].direction) {
+        setDirection(scenarios[0].direction as 'Buy' | 'Sell');
+      } else {
+        setDirection('Buy');
+      }
+      setSession(report.session || 'London');
+      setTimeframeTaken('5M');
+      setEntryPrice('');
+      setStopLoss('');
+      setTakeProfit('');
+      setExitPrice('');
+      setRiskReward('');
+      setOutcome('Open');
+      setRulesFollowed(true);
+      setNotes('');
+      setImages([]);
+      setTradeDate(report.date || new Date().toISOString().slice(0, 10));
+      setTradeTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+    }
+    setError(null);
+    setShowUnsavedWarning(false);
+  }, [isOpen, tradeToEdit, report]);
 
   if (!isOpen) return null;
 
-  // When scenario changes, auto-fill direction if the scenario has one
+  // Detect dirty state for dismissal warning
+  const isDirty = () => {
+    if (isEditing && tradeToEdit) {
+      const origImagesJson = JSON.stringify(tradeToEdit.images || []);
+      const curImagesJson = JSON.stringify(images);
+      return (
+        direction !== tradeToEdit.direction ||
+        session !== (tradeToEdit.session || report.session) ||
+        timeframeTaken !== (tradeToEdit.timeframeTaken || '5M') ||
+        entryPrice !== (tradeToEdit.entryPrice || '') ||
+        stopLoss !== (tradeToEdit.stopLoss || '') ||
+        takeProfit !== (tradeToEdit.takeProfit || '') ||
+        exitPrice !== (tradeToEdit.exitPrice || '') ||
+        riskReward !== (tradeToEdit.riskReward || '') ||
+        outcome !== (tradeToEdit.outcome || 'Open') ||
+        rulesFollowed !== (tradeToEdit.rulesFollowed !== false) ||
+        notes !== (tradeToEdit.notes || '') ||
+        tradeDate !== (tradeToEdit.date || '') ||
+        tradeTime !== (tradeToEdit.time || '') ||
+        curImagesJson !== origImagesJson
+      );
+    }
+    return Boolean(entryPrice || stopLoss || takeProfit || exitPrice || notes || images.length > 0);
+  };
+
+  const handleAttemptClose = () => {
+    if (isDirty() && !showUnsavedWarning) {
+      setShowUnsavedWarning(true);
+      return;
+    }
+    setShowUnsavedWarning(false);
+    onClose();
+  };
+
+  // When scenario changes in New Trade mode, auto-fill direction if the scenario has one
   const handleScenarioChange = (scnId: string) => {
+    if (isEditing) return; // Keep scenario selection read-only in Edit mode
     setSelectedScenarioId(scnId);
     if (scnId !== 'manual') {
       const found = scenarios.find((s) => s.id === scnId);
       if (found && found.direction) {
-        setDirection(found.direction);
+        setDirection(found.direction as 'Buy' | 'Sell');
       }
     }
   };
@@ -70,39 +156,80 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return; // Prevent repeated submission
     setIsSaving(true);
     setError(null);
 
     try {
-      const newTrade: RecordedTrade = {
-        id: `trd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        scenarioId: selectedScenarioId !== 'manual' ? selectedScenarioId : undefined,
-        scenarioLabel:
-          selectedScenarioId !== 'manual' && selectedScenario
-            ? selectedScenario.label || 'Planned Scenario'
-            : 'Discretionary / No Scenario',
-        pair: report.pair,
-        direction,
-        session,
-        timeframeTaken,
-        entryPrice: entryPrice.trim(),
-        stopLoss: stopLoss.trim(),
-        takeProfit: takeProfit.trim(),
-        exitPrice: exitPrice.trim(),
-        riskReward: riskReward.trim(),
-        outcome,
-        rulesFollowed,
-        notes: notes.trim(),
-        date: tradeDate,
-        time: tradeTime,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
+      if (isEditing && tradeToEdit) {
+        // Save Changes: Update existing trade with original ID and preserved timestamps/snapshots
+        const updatedTrade: RecordedTrade = {
+          ...tradeToEdit,
+          direction,
+          session,
+          timeframeTaken,
+          entryPrice: entryPrice.trim(),
+          stopLoss: stopLoss.trim(),
+          takeProfit: takeProfit.trim(),
+          exitPrice: exitPrice.trim(),
+          riskReward: riskReward.trim(),
+          outcome,
+          rulesFollowed,
+          notes: notes.trim(),
+          images,
+          date: tradeDate,
+          time: tradeTime,
+          updatedAt: Date.now(),
+        };
 
-      await onSaveTrade(newTrade);
-      onClose();
+        await onSaveTrade(updatedTrade);
+        onClose();
+      } else {
+        // New Trade: Capture scenario snapshot and fresh ID
+        const capturedSnapshot =
+          selectedScenarioId !== 'manual' && selectedScenario
+            ? {
+                strategy: selectedScenario.strategy,
+                direction: selectedScenario.direction,
+                description: selectedScenario.description,
+                entryConditions: selectedScenario.entryConditions,
+                invalidationConditions: selectedScenario.invalidationConditions,
+                images: selectedScenario.images ? [...selectedScenario.images] : undefined,
+              }
+            : undefined;
+
+        const newTrade: RecordedTrade = {
+          id: `trd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          scenarioId: selectedScenarioId !== 'manual' ? selectedScenarioId : undefined,
+          scenarioLabel:
+            selectedScenarioId !== 'manual' && selectedScenario
+              ? selectedScenario.label || 'Planned Scenario'
+              : 'Discretionary / No Scenario',
+          scenarioSnapshot: capturedSnapshot,
+          pair: report.pair,
+          direction,
+          session,
+          timeframeTaken,
+          entryPrice: entryPrice.trim(),
+          stopLoss: stopLoss.trim(),
+          takeProfit: takeProfit.trim(),
+          exitPrice: exitPrice.trim(),
+          riskReward: riskReward.trim(),
+          outcome,
+          rulesFollowed,
+          notes: notes.trim(),
+          images,
+          date: tradeDate,
+          time: tradeTime,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+
+        await onSaveTrade(newTrade);
+        onClose();
+      }
     } catch (err) {
-      setError((err as Error).message || 'Failed to record trade.');
+      setError((err as Error).message || 'Failed to save trade.');
     } finally {
       setIsSaving(false);
     }
@@ -112,52 +239,167 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Take Trade Dialog"
+      aria-label={isEditing ? 'Edit Trade' : 'Record Trade'}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-      onClick={onClose}
+      onClick={handleAttemptClose}
     >
       <div
-        className="w-full max-w-xl bg-app-main border border-app rounded-lg shadow-xl overflow-hidden max-h-[92vh] flex flex-col"
+        className="w-full max-w-xl bg-app-main border border-app rounded-lg shadow-xl overflow-hidden max-h-[92vh] flex flex-col text-app-main"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-app bg-app-secondary">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-app bg-app-secondary shrink-0">
           <div>
             <div className="text-sm font-bold text-app-main flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-emerald-theme" />
-              <span>Record Executed Trade</span>
+              {isEditing ? (
+                <>
+                  <Edit3 className="w-4 h-4 text-emerald-theme" />
+                  <span>Edit Trade</span>
+                </>
+              ) : (
+                <>
+                  <TrendingUp className="w-4 h-4 text-emerald-theme" />
+                  <span>Record Executed Trade</span>
+                </>
+              )}
               <span className="text-xs font-mono font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
                 {report.pair}
               </span>
             </div>
             <p className="text-[11px] text-app-secondary mt-0.5">
-              Disciplined logging: link this execution to your pre-market planned scenario.
+              {isEditing
+                ? `Updating trade record (ID: ${tradeToEdit?.id}). Scenario snapshot remains linked.`
+                : 'Disciplined logging: link this execution to your pre-market planned scenario.'}
             </p>
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="p-1 text-app-secondary hover:text-app-main rounded"
+            onClick={handleAttemptClose}
+            className="p-1.5 text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+            aria-label="Close dialog"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
+        {/* Unsaved changes warning alert if user tries to close with unsaved edits */}
+        {showUnsavedWarning && (
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-xs flex items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+              <span>You have unsaved changes. Discard edits and close?</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-semibold text-[11px] cursor-pointer"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowUnsavedWarning(false)}
+                className="px-2 py-1 text-app-secondary hover:text-app-main text-[11px] cursor-pointer"
+              >
+                Keep Editing
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-4 sm:p-6 overflow-y-auto space-y-4 text-xs flex-1">
           {error && (
-            <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs">
-              {error}
+            <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
             </div>
           )}
 
-          {/* First question: Which scenario was executed? */}
+          {/* Scenario Selection Section */}
           <div className="p-3.5 rounded border border-app bg-app-secondary/40 space-y-2">
-            <label className="block text-xs font-bold text-app-main uppercase tracking-wider">
-              Which scenario was executed?
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-app-main uppercase tracking-wider">
+                {isEditing ? 'Linked Planned Scenario (Read-Only)' : 'Which scenario was executed?'}
+              </label>
+              {isEditing && (
+                <span className="text-[10px] text-app-secondary font-medium uppercase tracking-wider">
+                  Locked to captured snapshot
+                </span>
+              )}
+            </div>
 
-            {scenarios.length > 0 ? (
+            {isEditing ? (
+              // In Edit mode: Scenario is read-only, showing the captured scenario snapshot
+              <div className="p-2.5 rounded bg-app-main border border-app text-[11px] space-y-1.5 text-app-secondary">
+                <div className="font-bold text-app-main text-xs flex items-center gap-2">
+                  <span>{tradeToEdit?.scenarioLabel || 'Planned Execution'}</span>
+                  {tradeToEdit?.scenarioSnapshot?.strategy && (
+                    <span className="font-normal text-app-secondary">
+                      — {tradeToEdit.scenarioSnapshot.strategy}
+                    </span>
+                  )}
+                </div>
+                {tradeToEdit?.scenarioSnapshot?.description && (
+                  <div>
+                    <span className="font-semibold text-app-main">Plan: </span>
+                    {tradeToEdit.scenarioSnapshot.description}
+                  </div>
+                )}
+                {tradeToEdit?.scenarioSnapshot?.entryConditions && (
+                  <div>
+                    <span className="font-semibold text-app-main">Entry Rules: </span>
+                    {tradeToEdit.scenarioSnapshot.entryConditions}
+                  </div>
+                )}
+                {tradeToEdit?.scenarioSnapshot?.invalidationConditions && (
+                  <div>
+                    <span className="font-semibold text-rose-600 dark:text-rose-400">
+                      Invalidation:
+                    </span>{' '}
+                    {tradeToEdit.scenarioSnapshot.invalidationConditions}
+                  </div>
+                )}
+                {tradeToEdit?.scenarioSnapshot?.images &&
+                  tradeToEdit.scenarioSnapshot.images.length > 0 && (
+                    <div className="pt-1.5 border-t border-app/60">
+                      <span className="font-semibold text-app-main block mb-1">
+                        Captured Setup Charts ({tradeToEdit.scenarioSnapshot.images.length}):
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        {tradeToEdit.scenarioSnapshot.images.map((img, i) => (
+                          <button
+                            key={img.id || i}
+                            type="button"
+                            onClick={() =>
+                              setActiveViewerImage({
+                                url: img.dataUrl,
+                                title: img.caption || img.name || 'Setup Chart',
+                              })
+                            }
+                            className="w-16 h-11 rounded border border-app overflow-hidden hover:opacity-80 transition-opacity bg-black/10 relative group cursor-pointer"
+                            title="View Setup Chart"
+                          >
+                            <img
+                              src={img.dataUrl}
+                              alt={img.caption || 'Setup'}
+                              className="w-full h-full object-cover"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                {!tradeToEdit?.scenarioSnapshot && selectedScenario && (
+                  <div>
+                    <span className="font-semibold text-app-main">Strategy: </span>
+                    {selectedScenario.strategy || selectedScenario.description || 'No strategy detail'}
+                  </div>
+                )}
+              </div>
+            ) : scenarios.length > 0 ? (
+              // In New Trade mode: Select which scenario was executed
               <div className="space-y-2">
                 <select
                   value={selectedScenarioId}
@@ -203,6 +445,33 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
                 No planned scenarios in this report. This trade will be recorded as a discretionary execution.
               </div>
             )}
+          </div>
+
+          {/* Execution Timing & Direction */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">
+                Execution Date
+              </label>
+              <input
+                type="date"
+                value={tradeDate}
+                onChange={(e) => setTradeDate(e.target.value)}
+                className="w-full px-3 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">
+                Execution Time
+              </label>
+              <input
+                type="text"
+                value={tradeTime}
+                onChange={(e) => setTradeTime(e.target.value)}
+                placeholder="HH:MM:SS"
+                className="w-full px-3 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+              />
+            </div>
           </div>
 
           {/* Direction & Session & Execution Timeframe */}
@@ -336,7 +605,7 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
                     key={st}
                     type="button"
                     onClick={() => setOutcome(st)}
-                    className={`py-1 text-xs font-semibold rounded border transition-colors ${
+                    className={`py-1 text-xs font-semibold rounded border transition-colors cursor-pointer ${
                       outcome === st
                         ? st === 'Win'
                           ? 'bg-emerald-600 text-white border-emerald-600'
@@ -368,7 +637,7 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
             </div>
           </div>
 
-          {/* Rules followed checkbox */}
+          {/* Rules followed checklist */}
           <div className="p-3 rounded border border-app bg-app-field flex items-center justify-between">
             <div>
               <div className="font-semibold text-app-main text-xs">Plan Discipline Checklist</div>
@@ -381,7 +650,7 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
                 type="checkbox"
                 checked={rulesFollowed}
                 onChange={(e) => setRulesFollowed(e.target.checked)}
-                className="w-4 h-4 text-emerald-600 rounded border-gray-300 focus:ring-emerald-500"
+                className="w-4 h-4 text-emerald-600 rounded border-gray-300 focus:ring-emerald-500 cursor-pointer"
               />
               <span>{rulesFollowed ? 'Rules Followed' : 'Rules Broken'}</span>
             </label>
@@ -401,24 +670,52 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
             />
           </div>
 
+          {/* Trade Images & Screenshots */}
+          <div className="p-3.5 rounded border border-app bg-app-secondary/30">
+            <ImageAttachmentManager
+              attachments={images}
+              onChange={setImages}
+              onViewImage={(url, title) => setActiveViewerImage({ url, title })}
+              label="Trade Charts & Screenshots (Entry, Exit, Execution)"
+            />
+          </div>
+
+          {/* Actions Bar */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-app">
             <button
               type="button"
-              onClick={onClose}
-              className="px-3.5 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded"
+              onClick={handleAttemptClose}
+              disabled={isSaving}
+              className="px-3.5 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded cursor-pointer disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSaving}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs disabled:opacity-50 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs disabled:opacity-50 cursor-pointer transition-colors"
             >
-              {isSaving ? 'Recording Trade...' : 'Record Trade'}
+              {isSaving
+                ? isEditing
+                  ? 'Saving Changes...'
+                  : 'Recording Trade...'
+                : isEditing
+                ? 'Save Changes'
+                : 'Record Trade'}
             </button>
           </div>
         </form>
       </div>
+
+      {/* Image Viewer Zoom Modal */}
+      {activeViewerImage && (
+        <ImageViewerModal
+          isOpen={Boolean(activeViewerImage)}
+          onClose={() => setActiveViewerImage(null)}
+          imageUrl={activeViewerImage.url}
+          title={activeViewerImage.title}
+        />
+      )}
     </div>
   );
 };

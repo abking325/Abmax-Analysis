@@ -16,28 +16,56 @@ export interface AlignmentResult {
 }
 
 /**
- * Calculates overall alignment across all 7 timeframes.
- * Show ALIGNED only when all seven overall bias selections are complete and identical (all Bullish or all Bearish).
+ * Calculates overall alignment across enabled timeframes (defaulting to present timeframes or all 8).
+ * Show ALIGNED only when all enabled overall bias selections are complete and identical (all Bullish or all Bearish).
  * Otherwise show Waiting / Mixed.
  */
 export function calculateOverallAlignment(
-  timeframes: Record<TimeframeId, TimeframeData>
+  timeframes: Record<TimeframeId, TimeframeData>,
+  enabledTimeframes?: TimeframeId[]
 ): AlignmentResult {
-  const biases = TIMEFRAME_ORDER.map((tf) => timeframes[tf]?.overallBias || '');
-  const answeredCount = biases.filter((b) => b !== '').length;
-
-  if (answeredCount < 7) {
+  if (!timeframes) {
     return {
       status: 'WAITING',
       label: 'Waiting / Incomplete',
       bias: null,
-      detail: `${answeredCount}/7 timeframes selected`,
+      detail: '0 of 8 timeframes selected',
       isComplete: false,
     };
   }
 
-  // All 7 answered
+  const activeTfs = (enabledTimeframes && enabledTimeframes.length > 0)
+    ? enabledTimeframes
+    : TIMEFRAME_ORDER.filter((tf) => Boolean(timeframes[tf]));
+
+  const total = activeTfs.length;
+  if (total === 0) {
+    return {
+      status: 'WAITING',
+      label: 'No timeframes selected',
+      bias: null,
+      detail: 'No timeframes are enabled in this analysis',
+      isComplete: false,
+    };
+  }
+
+  const answeredTfs = activeTfs.filter((tf) => Boolean(timeframes[tf]?.overallBias));
+  const answeredCount = answeredTfs.length;
+
+  if (answeredCount < total) {
+    return {
+      status: 'WAITING',
+      label: 'Waiting / Incomplete',
+      bias: null,
+      detail: `${answeredCount} of ${total} timeframes selected`,
+      isComplete: false,
+    };
+  }
+
+  // All enabled timeframes are answered
+  const biases = activeTfs.map((tf) => timeframes[tf]?.overallBias);
   const firstBias = biases[0];
+
   if (
     (firstBias === 'Bullish' || firstBias === 'Bearish') &&
     biases.every((b) => b === firstBias)
@@ -46,7 +74,7 @@ export function calculateOverallAlignment(
       status: 'ALIGNED',
       label: `ALIGNED (${firstBias.toUpperCase()})`,
       bias: firstBias,
-      detail: `All 7 timeframes confirm ${firstBias.toLowerCase()} bias`,
+      detail: `All ${total} timeframes confirm ${firstBias.toLowerCase()} bias`,
       isComplete: true,
     };
   }
@@ -273,6 +301,7 @@ export function escapeCsvCell(val: unknown): string {
 export function generateReportsCsv(reports: SavedReport[]): string {
   const headers = [
     'Report ID',
+    'Title',
     'Date',
     'Time',
     'Timezone',
@@ -280,6 +309,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     'Session',
     'Analysis Made',
     'Overall Alignment',
+    'Monthly Bias',
     'Weekly Bias',
     'Daily Bias',
     '4H Bias',
@@ -287,6 +317,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     '15M Bias',
     '5M Bias',
     '1M Bias',
+    'Monthly Note',
     'Weekly Note',
     'Daily Note',
     '4H Note',
@@ -295,6 +326,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     '5M Note',
     '1M Note',
     'Crossed Liquidity',
+    'Major Liquidity Watchlist',
     'Supply & Demand Levels',
     'Overall Notes',
     'Planned Scenarios',
@@ -325,6 +357,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
 
     return [
       escapeCsvCell(r.id),
+      escapeCsvCell(r.title || ''),
       escapeCsvCell(r.date),
       escapeCsvCell(r.time),
       escapeCsvCell(r.timezone),
@@ -332,6 +365,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
       escapeCsvCell(r.session),
       escapeCsvCell(r.analysisTiming),
       escapeCsvCell(alignment.label),
+      escapeCsvCell(r.timeframes?.['Monthly']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['Weekly']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['Daily']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['4H']?.overallBias || ''),
@@ -339,6 +373,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
       escapeCsvCell(r.timeframes?.['15M']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['5M']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['1M']?.overallBias || ''),
+      escapeCsvCell(r.timeframes?.['Monthly']?.note || ''),
       escapeCsvCell(r.timeframes?.['Weekly']?.note || ''),
       escapeCsvCell(r.timeframes?.['Daily']?.note || ''),
       escapeCsvCell(r.timeframes?.['4H']?.note || ''),
@@ -347,6 +382,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
       escapeCsvCell(r.timeframes?.['5M']?.note || ''),
       escapeCsvCell(r.timeframes?.['1M']?.note || ''),
       escapeCsvCell(crossedLiq),
+      escapeCsvCell(r.majorLiquidityWatchlist || ''),
       escapeCsvCell(sdLevels),
       escapeCsvCell(r.overallNotes || ''),
       escapeCsvCell(scenariosText),

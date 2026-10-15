@@ -1,6 +1,7 @@
-export type TimeframeId = 'Weekly' | 'Daily' | '4H' | '1H' | '15M' | '5M' | '1M';
+export type TimeframeId = 'Monthly' | 'Weekly' | 'Daily' | '4H' | '1H' | '15M' | '5M' | '1M';
 
 export const TIMEFRAME_ORDER: TimeframeId[] = [
+  'Monthly',
   'Weekly',
   'Daily',
   '4H',
@@ -34,13 +35,32 @@ export interface FractalStructure {
   fractalBosAt: string;
 }
 
+export type PriceLocation = 'Discount' | 'Equilibrium' | 'Premium' | '';
+
+export interface PriceLocationData {
+  location: PriceLocation;
+  levelRange: string;
+}
+
+export interface DeepLevelEntry {
+  id: string;
+  level: string;
+  note?: string;
+}
+
 export interface TimeframeData {
   timeframe: TimeframeId;
   overallBias: OverallBias;
   biasSpecific: string;
+  priceLocation?: PriceLocationData;
   swing: SwingStructure;
   internal: InternalStructure;
   fractal: FractalStructure;
+  supplyLevels?: DeepLevelEntry[];
+  demandLevels?: DeepLevelEntry[];
+  supportLevels?: DeepLevelEntry[];
+  resistanceLevels?: DeepLevelEntry[];
+  liquidityLevels?: DeepLevelEntry[];
   note: string;
   chartImageId?: string;
   isSaved: boolean; // Locked in editor until 'Edit' is clicked
@@ -93,6 +113,8 @@ export interface PlannedScenario {
   description: string; // Scenario Description
   entryConditions: string; // Entry Conditions / Rules
   invalidationConditions: string; // Invalidation Conditions
+  images?: ImageAttachment[]; // Attached setup charts / execution zone screenshots
+  isSaved?: boolean; // Individual scenario locked / collapsed state
   createdAt: number;
   updatedAt: number;
 }
@@ -103,6 +125,14 @@ export interface RecordedTrade {
   id: string; // stable UUID or unique id (e.g. trd_...)
   scenarioId?: string; // linked planned scenario ID (or empty if unlinked)
   scenarioLabel?: string; // display snapshot of scenario label
+  scenarioSnapshot?: {
+    strategy?: string;
+    direction?: string;
+    description?: string;
+    entryConditions?: string;
+    invalidationConditions?: string;
+    images?: ImageAttachment[];
+  };
   pair: TradingPair;
   direction: 'Buy' | 'Sell' | '';
   session?: TradingSession;
@@ -115,14 +145,75 @@ export interface RecordedTrade {
   outcome?: TradeOutcome;
   rulesFollowed?: boolean;
   notes?: string;
+  images?: ImageAttachment[]; // Attached execution, entry, exit charts
   date: string; // YYYY-MM-DD
   time?: string;
   createdAt: number;
   updatedAt: number;
 }
 
+export interface WorkspaceVisibilityConfig {
+  timeframes: Record<TimeframeId, boolean>;
+  deepSections: {
+    overallInterpretation: boolean;
+    priceLocation: boolean;
+    swingStructure: boolean;
+    internalStructure: boolean;
+    fractalStructure: boolean;
+    supplyLevels: boolean;
+    demandLevels: boolean;
+    supportLevels: boolean;
+    resistanceLevels: boolean;
+    liquidityLevels: boolean;
+    timeframeNotes: boolean;
+    chartAttachments: boolean;
+  };
+  otherSections: {
+    majorLiquidityChecklist: boolean;
+    majorLiquidityWatchlist: boolean;
+    supplyDemandManager: boolean;
+    overallNotes: boolean;
+    plannedScenarios: boolean;
+  };
+}
+
+export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
+  timeframes: {
+    Monthly: true,
+    Weekly: true,
+    Daily: true,
+    '4H': true,
+    '1H': true,
+    '15M': true,
+    '5M': true,
+    '1M': true,
+  },
+  deepSections: {
+    overallInterpretation: true,
+    priceLocation: true,
+    swingStructure: true,
+    internalStructure: true,
+    fractalStructure: true,
+    supplyLevels: true,
+    demandLevels: true,
+    supportLevels: true,
+    resistanceLevels: true,
+    liquidityLevels: true,
+    timeframeNotes: true,
+    chartAttachments: true,
+  },
+  otherSections: {
+    majorLiquidityChecklist: true,
+    majorLiquidityWatchlist: true,
+    supplyDemandManager: true,
+    overallNotes: true,
+    plannedScenarios: true,
+  },
+};
+
 export interface AnalysisData {
   id: string; // Report ID or 'draft'
+  title?: string; // Optional report title (Phase 2)
   pair: TradingPair;
   date: string; // Local date (YYYY-MM-DD)
   time: string; // Live captured time or custom
@@ -131,14 +222,18 @@ export interface AnalysisData {
   analysisTiming: AnalysisTiming;
   timeframes: Record<TimeframeId, TimeframeData>;
   crossedLiquidity: MajorLiquidityItem[];
+  majorLiquidityWatchlist?: string; // Phase 7: Major Liquidity Watchlist
   supplyDemandLevels: SupplyDemandLevel[];
   scenarios?: PlannedScenario[];
   trades?: RecordedTrade[];
   overallNotes: string;
+  visibilityConfig?: WorkspaceVisibilityConfig;
   createdAt: number;
   updatedAt: number;
   isModified?: boolean;
   copiedFromId?: string;
+  originalId?: string;
+  revision?: number;
 }
 
 export interface SavedReport extends AnalysisData {
@@ -158,6 +253,7 @@ export interface ImageAttachment {
   id: string;
   dataUrl: string; // compressed base64 or blob URL
   name?: string;
+  caption?: string; // optional descriptive caption
   createdAt: number;
 }
 
@@ -171,6 +267,7 @@ export interface BackupData {
   images: ImageAttachment[];
   preferences: {
     theme: 'light' | 'dark';
+    visibilityConfig?: WorkspaceVisibilityConfig;
   };
 }
 
@@ -179,6 +276,10 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
     timeframe: tf,
     overallBias: '',
     biasSpecific: '',
+    priceLocation: {
+      location: '',
+      levelRange: '',
+    },
     swing: {
       direction: '',
       high: '',
@@ -195,13 +296,18 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
       direction: '',
       fractalBosAt: '',
     },
+    supplyLevels: [],
+    demandLevels: [],
+    supportLevels: [],
+    resistanceLevels: [],
+    liquidityLevels: [],
     note: '',
     chartImageId: undefined,
     isSaved: false,
   };
 }
 
-export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD'): AnalysisData {
+export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD', visibility?: WorkspaceVisibilityConfig): AnalysisData {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -213,6 +319,7 @@ export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD'): Analysi
 
   return {
     id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+    title: '',
     pair,
     date: dateStr,
     time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
@@ -221,10 +328,12 @@ export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD'): Analysi
     analysisTiming: 'On time',
     timeframes,
     crossedLiquidity: [],
+    majorLiquidityWatchlist: '',
     supplyDemandLevels: [],
     scenarios: [],
     trades: [],
     overallNotes: '',
+    visibilityConfig: visibility ? JSON.parse(JSON.stringify(visibility)) : JSON.parse(JSON.stringify(DEFAULT_VISIBILITY_CONFIG)),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };

@@ -15,15 +15,21 @@ import {
   ChevronDown,
   ChevronUp,
   Maximize2,
+  Edit,
+  Trash2,
 } from 'lucide-react';
+import { RecordedTrade } from '../types/journal';
 
 interface OrganizedReportViewProps {
   report: SavedReport;
   imagesMap?: Record<string, string>;
   onOpenViewer?: (url: string, title: string) => void;
+  onEditTrade?: (trade: RecordedTrade) => void;
+  onRemoveTrade?: (tradeId: string) => void;
 }
 
 const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
+  Monthly: 'MONTHLY',
   Weekly: 'WEEKLY',
   Daily: 'DAILY',
   '4H': '4-HOUR',
@@ -37,8 +43,11 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   report,
   imagesMap = {},
   onOpenViewer,
+  onEditTrade,
+  onRemoveTrade,
 }) => {
   const [expandedCharts, setExpandedCharts] = useState<Record<string, boolean>>({});
+  const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
 
   const toggleChart = (tf: TimeframeId) => {
     setExpandedCharts((prev) => ({ ...prev, [tf]: !prev[tf] }));
@@ -48,11 +57,11 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   const deepAlignedCount = TIMEFRAME_ORDER.filter(
     (tf) => report.timeframes[tf] && isDeepAnalysisAligned(report.timeframes[tf])
   ).length;
-  const isAllDeepAligned = deepAlignedCount === 7;
+  const isAllDeepAligned = deepAlignedCount === TIMEFRAME_ORDER.length;
   const matchingValues = findMatchingValues(report.timeframes);
 
   // Groupings for the 3 balanced columns on desktop (while DOM matches mobile order or column groups)
-  const leftTfs: TimeframeId[] = ['Weekly', 'Daily'];
+  const leftTfs: TimeframeId[] = ['Monthly', 'Weekly', 'Daily'];
   const midTfs: TimeframeId[] = ['4H', '1H', '15M'];
   const rightTfs: TimeframeId[] = ['5M', '1M'];
 
@@ -97,6 +106,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     );
 
     const hasInterpretation = Boolean(tf.biasSpecific && tf.biasSpecific.trim());
+    const hasPriceLoc = Boolean(tf.priceLocation?.location || tf.priceLocation?.levelRange);
     const hasSwing = Boolean(
       tf.swing.direction ||
       tf.swing.high?.trim() ||
@@ -113,6 +123,13 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
       tf.fractal.direction ||
       tf.fractal.fractalBosAt?.trim()
     );
+    const hasStructuredLevels = Boolean(
+      (tf.supplyLevels && tf.supplyLevels.length > 0) ||
+      (tf.demandLevels && tf.demandLevels.length > 0) ||
+      (tf.supportLevels && tf.supportLevels.length > 0) ||
+      (tf.resistanceLevels && tf.resistanceLevels.length > 0) ||
+      (tf.liquidityLevels && tf.liquidityLevels.length > 0)
+    );
     const hasSd = tfSdLevels.length > 0;
     const hasNote = Boolean(tf.note && tf.note.trim());
     const hasChart = Boolean(chartUrl);
@@ -120,9 +137,11 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     const hasAnyDetail =
       Boolean(tf.overallBias) ||
       hasInterpretation ||
+      hasPriceLoc ||
       hasSwing ||
       hasInternal ||
       hasFractal ||
+      hasStructuredLevels ||
       hasSd ||
       hasNote ||
       hasChart;
@@ -162,6 +181,19 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                   Overall Interpretation
                 </span>
                 <p className="text-gray-900 whitespace-pre-wrap">{tf.biasSpecific}</p>
+              </div>
+            )}
+
+            {/* Price Location (Equilibrium / Discount / Premium) */}
+            {hasPriceLoc && (
+              <div className="bg-gray-50/70 p-2 rounded border border-gray-200/70">
+                <span className="text-[9px] font-semibold uppercase tracking-wider text-gray-500 block mb-0.5">
+                  Price Location
+                </span>
+                <p className="text-gray-900 font-mono text-[10px]">
+                  {tf.priceLocation?.location || '—'}
+                  {tf.priceLocation?.levelRange ? ` (${tf.priceLocation.levelRange})` : ''}
+                </p>
               </div>
             )}
 
@@ -241,6 +273,42 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     <span className="text-gray-700">
                       BOS: {tf.fractal.fractalBosAt || '—'}
                     </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Structured Levels (Supply, Demand, Support, Resistance, Liquidity) */}
+            {hasStructuredLevels && (
+              <div className="space-y-1 bg-gray-50/50 p-2 rounded border border-gray-100 font-mono text-[10px]">
+                {tf.supplyLevels && tf.supplyLevels.length > 0 && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-sans font-bold text-rose-700 uppercase tracking-wider text-[9px]">Supply:</span>
+                    <span className="text-gray-800">{tf.supplyLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                  </div>
+                )}
+                {tf.demandLevels && tf.demandLevels.length > 0 && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-sans font-bold text-emerald-700 uppercase tracking-wider text-[9px]">Demand:</span>
+                    <span className="text-gray-800">{tf.demandLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                  </div>
+                )}
+                {tf.supportLevels && tf.supportLevels.length > 0 && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-sans font-bold text-blue-700 uppercase tracking-wider text-[9px]">Support:</span>
+                    <span className="text-gray-800">{tf.supportLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                  </div>
+                )}
+                {tf.resistanceLevels && tf.resistanceLevels.length > 0 && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-sans font-bold text-amber-700 uppercase tracking-wider text-[9px]">Resistance:</span>
+                    <span className="text-gray-800">{tf.resistanceLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                  </div>
+                )}
+                {tf.liquidityLevels && tf.liquidityLevels.length > 0 && (
+                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="font-sans font-bold text-purple-700 uppercase tracking-wider text-[9px]">Liquidity:</span>
+                    <span className="text-gray-800">{tf.liquidityLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
                   </div>
                 )}
               </div>
@@ -347,9 +415,22 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
       {/* A. Full-Width Document Header */}
       <header className="border-b border-gray-300 pb-4 mb-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-900 uppercase">
-            ABMAX | {report.pair || 'UNSPECIFIED'} ANALYSIS
-          </h1>
+          <div>
+            {report.title ? (
+              <>
+                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-gray-900">
+                  {report.title}
+                </h1>
+                <div className="text-xs sm:text-sm font-bold tracking-tight text-emerald-900 uppercase mt-0.5">
+                  ABMAX | {report.pair || 'UNSPECIFIED'} ANALYSIS
+                </div>
+              </>
+            ) : (
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-900 uppercase">
+                ABMAX | {report.pair || 'UNSPECIFIED'} ANALYSIS
+              </h1>
+            )}
+          </div>
 
           {/* Original / Modified status & provenance */}
           <div className="flex items-center gap-2 text-[10px]">
@@ -474,6 +555,18 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
             ) : (
               <p className="text-[11px] text-gray-400 italic">No crossed liquidity recorded</p>
             )}
+
+            {/* Major Liquidity Watchlist (Phase 7) */}
+            {report.majorLiquidityWatchlist && report.majorLiquidityWatchlist.trim() && (
+              <div className="pt-2 border-t border-gray-100 space-y-1">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
+                  Major Liquidity to Watch Today
+                </span>
+                <p className="text-[10px] text-gray-800 whitespace-pre-wrap font-mono bg-gray-50/70 p-1.5 rounded border border-gray-100">
+                  {report.majorLiquidityWatchlist.trim()}
+                </p>
+              </div>
+            )}
           </section>
 
           {/* 2. Weekly & 3. Daily */}
@@ -576,6 +669,43 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     </div>
                   )}
                 </div>
+
+                {/* Scenario Setup Images */}
+                {sc.images && sc.images.length > 0 && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <span className="font-bold text-gray-700 block mb-1">
+                      Setup Charts ({sc.images.length}):
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {sc.images.map((img, i) => (
+                        <div
+                          key={img.id || i}
+                          onClick={() =>
+                            onOpenViewer?.(
+                              img.dataUrl,
+                              img.caption || img.name || `${sc.label} Setup Chart`
+                            )
+                          }
+                          className="border border-gray-200 rounded overflow-hidden bg-white cursor-pointer hover:border-emerald-600 transition-colors"
+                        >
+                          <div className="aspect-video bg-gray-100 overflow-hidden">
+                            <img
+                              src={img.dataUrl}
+                              alt={img.caption || 'Setup Chart'}
+                              className="w-full h-full object-cover hover:scale-105 transition-transform"
+                              loading="lazy"
+                            />
+                          </div>
+                          {img.caption && (
+                            <p className="p-1 text-[9px] text-gray-600 truncate bg-gray-50" title={img.caption}>
+                              {img.caption}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -651,6 +781,53 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     >
                       {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
                     </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {onEditTrade && (
+                        <button
+                          type="button"
+                          onClick={() => onEditTrade(trd)}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-300 transition-colors cursor-pointer"
+                          title="Edit this recorded trade"
+                        >
+                          <Edit className="w-2.5 h-2.5" />
+                          Edit Trade
+                        </button>
+                      )}
+                      {onRemoveTrade && (
+                        deleteTradeConfirmId === trd.id ? (
+                          <div className="flex items-center gap-1 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-300 text-[9px]">
+                            <span className="text-rose-700 font-medium">Remove?</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onRemoveTrade(trd.id);
+                                setDeleteTradeConfirmId(null);
+                              }}
+                              className="px-1.5 py-0.2 bg-rose-600 text-white rounded font-bold text-[9px] cursor-pointer"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTradeConfirmId(null)}
+                              className="px-1 py-0.2 text-gray-500 hover:text-gray-700 text-[9px] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setDeleteTradeConfirmId(trd.id)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded border border-rose-300 transition-colors cursor-pointer"
+                            title="Remove this recorded trade"
+                          >
+                            <Trash2 className="w-2.5 h-2.5" />
+                            Remove Trade
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -686,6 +863,43 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                 {trd.notes && (
                   <div className="text-gray-700 whitespace-pre-wrap italic pt-0.5">
                     &ldquo;{trd.notes}&rdquo;
+                  </div>
+                )}
+
+                {/* Trade Execution Screenshots */}
+                {trd.images && trd.images.length > 0 && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <span className="font-bold text-gray-700 block mb-1">
+                      Trade Screenshots ({trd.images.length}):
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {trd.images.map((img, i) => (
+                        <div
+                          key={img.id || i}
+                          onClick={() =>
+                            onOpenViewer?.(
+                              img.dataUrl,
+                              img.caption || img.name || `Trade ${trd.direction} Screenshot`
+                            )
+                          }
+                          className="border border-gray-200 rounded overflow-hidden bg-white cursor-pointer hover:border-emerald-600 transition-colors"
+                        >
+                          <div className="aspect-video bg-gray-100 overflow-hidden">
+                            <img
+                              src={img.dataUrl}
+                              alt={img.caption || 'Trade Screenshot'}
+                              className="w-full h-full object-cover hover:scale-105 transition-transform"
+                              loading="lazy"
+                            />
+                          </div>
+                          {img.caption && (
+                            <p className="p-1 text-[9px] text-gray-600 truncate bg-gray-50" title={img.caption}>
+                              {img.caption}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

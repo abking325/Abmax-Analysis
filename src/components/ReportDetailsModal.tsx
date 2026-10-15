@@ -59,6 +59,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [imagesMap, setImagesMap] = useState<Record<string, string>>({});
   const [expandedImages, setExpandedImages] = useState<Record<TimeframeId, boolean>>({
+    Monthly: false,
     Weekly: false,
     Daily: false,
     '4H': false,
@@ -72,10 +73,25 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     null
   );
   const [isTakeTradeOpen, setIsTakeTradeOpen] = useState(false);
+  const [editingTrade, setEditingTrade] = useState<RecordedTrade | null>(null);
+  const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
   const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  const handleDeleteTrade = async (tradeId: string) => {
+    if (!onUpdateReport || !report) return;
+    const currentTrades = report.trades || [];
+    const updatedTrades = currentTrades.filter((t) => t.id !== tradeId);
+    const updatedReport: SavedReport = {
+      ...report,
+      trades: updatedTrades,
+      updatedAt: Date.now(),
+    };
+    await onUpdateReport(updatedReport);
+    setDeleteTradeConfirmId(null);
+  };
 
   // Reset view mode and error when modal opens/closes
   useEffect(() => {
@@ -237,6 +253,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                 report={report}
                 imagesMap={imagesMap}
                 onOpenViewer={(url, title) => setActiveViewerImage({ url, title })}
+                onEditTrade={(trd) => setEditingTrade(trd)}
+                onRemoveTrade={handleDeleteTrade}
               />
             ) : (
               <div className="space-y-6">
@@ -262,10 +280,21 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                 </div>
               </div>
 
-              {/* [PAIR] — Analysis Report */}
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-app-main">
-                {report.pair} — <span className="text-emerald-theme">Analysis Report</span>
-              </h1>
+              {/* Report Title / [PAIR] — Analysis Report */}
+              {report.title ? (
+                <div className="space-y-1">
+                  <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-app-main">
+                    {report.title}
+                  </h1>
+                  <div className="text-xs sm:text-sm font-semibold text-emerald-theme">
+                    {report.pair} — Analysis Report
+                  </div>
+                </div>
+              ) : (
+                <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-app-main">
+                  {report.pair} — <span className="text-emerald-theme">Analysis Report</span>
+                </h1>
+              )}
 
               {/* Analysis date • Session • Analysis Made */}
               <div className="text-xs sm:text-sm text-app-main font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -339,6 +368,18 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   <span className="text-app-secondary italic">None recorded</span>
                 )}
               </div>
+
+              {/* Major Liquidity to Watch Today (Phase 7) */}
+              {report.majorLiquidityWatchlist && report.majorLiquidityWatchlist.trim() && (
+                <div className="space-y-1 pt-2.5 border-t border-app/60">
+                  <div className="text-[11px] font-bold text-app-secondary uppercase tracking-wider">
+                    MAJOR LIQUIDITY TO WATCH TODAY
+                  </div>
+                  <p className="text-xs text-app-main font-mono bg-app-secondary p-2 rounded border border-app whitespace-pre-wrap">
+                    {report.majorLiquidityWatchlist.trim()}
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* 3. SEVEN TIMEFRAME ROWS (Weekly, Daily, 4H, 1H, 15M, 5M, 1M) */}
@@ -377,15 +418,25 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   tfData.fractal.direction ||
                   tfData.fractal.fractalBosAt?.trim()
                 );
+                const hasPriceLoc = Boolean(tfData.priceLocation?.location || tfData.priceLocation?.levelRange);
+                const hasStructuredLevels = Boolean(
+                  (tfData.supplyLevels && tfData.supplyLevels.length > 0) ||
+                  (tfData.demandLevels && tfData.demandLevels.length > 0) ||
+                  (tfData.supportLevels && tfData.supportLevels.length > 0) ||
+                  (tfData.resistanceLevels && tfData.resistanceLevels.length > 0) ||
+                  (tfData.liquidityLevels && tfData.liquidityLevels.length > 0)
+                );
                 const hasSd = tfSdLevels.length > 0;
                 const hasNote = Boolean(tfData.note && tfData.note.trim());
                 const hasChart = Boolean(tfImageUrl);
 
                 const hasAnyDetail =
                   hasInterpretation ||
+                  hasPriceLoc ||
                   hasSwing ||
                   hasInternal ||
                   hasFractal ||
+                  hasStructuredLevels ||
                   hasSd ||
                   hasNote ||
                   hasChart;
@@ -426,6 +477,23 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   Overall Interpretation:
                                 </span>
                                 <span>{tfData.biasSpecific}</span>
+                              </div>
+                            )}
+
+                            {/* Price Location (Equilibrium / Discount / Premium) */}
+                            {hasPriceLoc && (
+                              <div className="leading-relaxed flex flex-wrap items-center gap-x-1.5 font-mono text-[11px]">
+                                <span className="font-sans font-semibold text-app-secondary uppercase text-[11px] tracking-wider">
+                                  PRICE LOCATION:
+                                </span>
+                                <span className="text-app-main font-semibold">
+                                  {tfData.priceLocation?.location || '—'}
+                                </span>
+                                {tfData.priceLocation?.levelRange && (
+                                  <span className="text-app-secondary">
+                                    ({tfData.priceLocation.levelRange})
+                                  </span>
+                                )}
                               </div>
                             )}
 
@@ -479,6 +547,42 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                 </span>
                                 <span className="text-app-secondary select-none">·</span>
                                 <span>BOS {tfData.fractal.fractalBosAt?.trim() || '—'}</span>
+                              </div>
+                            )}
+
+                            {/* Structured Levels (Supply, Demand, Support, Resistance, Liquidity) */}
+                            {hasStructuredLevels && (
+                              <div className="space-y-1 bg-app-field/60 p-2 rounded border border-app font-mono text-[11px]">
+                                {tfData.supplyLevels && tfData.supplyLevels.length > 0 && (
+                                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                                    <span className="font-sans font-bold text-rose-600 uppercase text-[10px]">Supply Levels:</span>
+                                    <span>{tfData.supplyLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                                  </div>
+                                )}
+                                {tfData.demandLevels && tfData.demandLevels.length > 0 && (
+                                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                                    <span className="font-sans font-bold text-emerald-600 uppercase text-[10px]">Demand Levels:</span>
+                                    <span>{tfData.demandLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                                  </div>
+                                )}
+                                {tfData.supportLevels && tfData.supportLevels.length > 0 && (
+                                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                                    <span className="font-sans font-bold text-blue-600 uppercase text-[10px]">Support Levels:</span>
+                                    <span>{tfData.supportLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                                  </div>
+                                )}
+                                {tfData.resistanceLevels && tfData.resistanceLevels.length > 0 && (
+                                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                                    <span className="font-sans font-bold text-amber-600 uppercase text-[10px]">Resistance Levels:</span>
+                                    <span>{tfData.resistanceLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                                  </div>
+                                )}
+                                {tfData.liquidityLevels && tfData.liquidityLevels.length > 0 && (
+                                  <div className="flex flex-wrap items-baseline gap-x-1.5">
+                                    <span className="font-sans font-bold text-purple-600 uppercase text-[10px]">Liquidity Levels:</span>
+                                    <span>{tfData.liquidityLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                                  </div>
+                                )}
                               </div>
                             )}
 
@@ -715,6 +819,43 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                             </div>
                           )}
                         </div>
+
+                        {/* Scenario Setup Images */}
+                        {sc.images && sc.images.length > 0 && (
+                          <div className="pt-2 border-t border-app/60">
+                            <span className="text-[11px] font-semibold text-app-main block mb-1.5">
+                              Setup Charts ({sc.images.length}):
+                            </span>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              {sc.images.map((img, i) => (
+                                <div
+                                  key={img.id || i}
+                                  onClick={() =>
+                                    setActiveViewerImage({
+                                      url: img.dataUrl,
+                                      title: img.caption || img.name || `${sc.label} Setup Chart`,
+                                    })
+                                  }
+                                  className="group border border-app rounded-md overflow-hidden bg-app-main cursor-pointer hover:border-emerald-500 transition-colors"
+                                >
+                                  <div className="aspect-video bg-black/10 overflow-hidden relative">
+                                    <img
+                                      src={img.dataUrl}
+                                      alt={img.caption || 'Setup Chart'}
+                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                      loading="lazy"
+                                    />
+                                  </div>
+                                  {img.caption && (
+                                    <p className="p-1 text-[10px] text-app-secondary truncate bg-app-field" title={img.caption}>
+                                      {img.caption}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -804,6 +945,48 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                             >
                               {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
                             </span>
+                            {onUpdateReport && (
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingTrade(trd)}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-emerald-theme hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded border border-emerald-300 dark:border-emerald-700 transition-colors cursor-pointer"
+                                  title="Edit this recorded trade"
+                                >
+                                  <Edit className="w-2.5 h-2.5" />
+                                  Edit Trade
+                                </button>
+                                {deleteTradeConfirmId === trd.id ? (
+                                  <div className="flex items-center gap-1 bg-rose-50 dark:bg-rose-950/60 px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-800 text-[10px]">
+                                    <span className="text-rose-700 dark:text-rose-300 font-medium">Remove?</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTrade(trd.id)}
+                                      className="px-1.5 py-0.2 bg-rose-600 text-white rounded font-bold text-[9px] cursor-pointer hover:bg-rose-700"
+                                    >
+                                      Yes
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setDeleteTradeConfirmId(null)}
+                                      className="px-1 py-0.2 text-app-secondary hover:text-app-main text-[9px] cursor-pointer"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setDeleteTradeConfirmId(trd.id)}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded border border-rose-300 dark:border-rose-800 transition-colors cursor-pointer"
+                                    title="Remove this recorded trade"
+                                  >
+                                    <Trash2 className="w-2.5 h-2.5" />
+                                    Remove Trade
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -839,6 +1022,43 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                         {trd.notes && (
                           <div className="text-app-secondary whitespace-pre-wrap italic pt-0.5 text-[11px]">
                             &ldquo;{trd.notes}&rdquo;
+                          </div>
+                        )}
+
+                        {/* Trade Execution Screenshots */}
+                        {trd.images && trd.images.length > 0 && (
+                          <div className="pt-2 border-t border-app/60">
+                            <span className="text-[11px] font-semibold text-app-main block mb-1.5">
+                              Trade Screenshots ({trd.images.length}):
+                            </span>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              {trd.images.map((img, i) => (
+                                <div
+                                  key={img.id || i}
+                                  onClick={() =>
+                                    setActiveViewerImage({
+                                      url: img.dataUrl,
+                                      title: img.caption || img.name || `Trade ${trd.direction} Screenshot`,
+                                    })
+                                  }
+                                  className="group border border-app rounded-md overflow-hidden bg-app-main cursor-pointer hover:border-emerald-500 transition-colors"
+                                >
+                                  <div className="aspect-video bg-black/10 overflow-hidden relative">
+                                    <img
+                                      src={img.dataUrl}
+                                      alt={img.caption || 'Trade Screenshot'}
+                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                      loading="lazy"
+                                    />
+                                  </div>
+                                  {img.caption && (
+                                    <p className="p-1 text-[10px] text-app-secondary truncate bg-app-field" title={img.caption}>
+                                      {img.caption}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -987,22 +1207,40 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
         />
       )}
 
-      {/* Take Trade Modal */}
-      {isTakeTradeOpen && (
+      {/* Take Trade Modal (Supports both New Trade and Edit Trade modes) */}
+      {(isTakeTradeOpen || Boolean(editingTrade)) && (
         <TakeTradeModal
-          isOpen={isTakeTradeOpen}
-          onClose={() => setIsTakeTradeOpen(false)}
+          isOpen={isTakeTradeOpen || Boolean(editingTrade)}
+          onClose={() => {
+            setIsTakeTradeOpen(false);
+            setEditingTrade(null);
+          }}
           report={report}
-          onSaveTrade={async (newTrade) => {
+          tradeToEdit={editingTrade}
+          onSaveTrade={async (savedTrade) => {
             if (onUpdateReport) {
               const currentTrades = report.trades || [];
+              let updatedTrades: RecordedTrade[];
+
+              if (editingTrade) {
+                // Update existing trade using original ID in place
+                updatedTrades = currentTrades.map((t) =>
+                  t.id === savedTrade.id ? savedTrade : t
+                );
+              } else {
+                // Add new trade
+                updatedTrades = [...currentTrades, savedTrade];
+              }
+
               const updatedReport: SavedReport = {
                 ...report,
-                trades: [...currentTrades, newTrade],
+                trades: updatedTrades,
                 updatedAt: Date.now(),
               };
               await onUpdateReport(updatedReport);
             }
+            setEditingTrade(null);
+            setIsTakeTradeOpen(false);
           }}
         />
       )}

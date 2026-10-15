@@ -12,6 +12,7 @@ import {
 import {
   AnalysisData,
   AnalysisTiming,
+  DEFAULT_VISIBILITY_CONFIG,
   MajorLiquidityItem,
   PlannedScenario,
   SavedReport,
@@ -22,6 +23,7 @@ import {
   TimeframeId,
   TradingPair,
   TradingSession,
+  WorkspaceVisibilityConfig,
   createEmptyTimeframeData,
   createInitialAnalysisData,
 } from '../types/journal';
@@ -54,12 +56,14 @@ import {
   SyncState,
 } from '../services/cloudSync';
 import { SyncStatusBadge } from './SyncStatusBadge';
+import { BackupModal } from './BackupModal';
 
 interface AnalysisViewProps {
   initialData: AnalysisData;
   isEditingExistingReport: boolean;
   onNavigateHome: () => void;
   onReportSavedSuccessfully: (reportId: string) => void;
+  workspaceVisibility?: WorkspaceVisibilityConfig;
 }
 
 export const AnalysisView: React.FC<AnalysisViewProps> = ({
@@ -67,10 +71,12 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   isEditingExistingReport,
   onNavigateHome,
   onReportSavedSuccessfully,
+  workspaceVisibility,
 }) => {
   const { user } = useAuth();
   const [data, setData] = useState<AnalysisData>(initialData);
   const [expandedTimeframes, setExpandedTimeframes] = useState<Record<TimeframeId, boolean>>({
+    Monthly: false,
     Weekly: false,
     Daily: false,
     '4H': false,
@@ -95,6 +101,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [syncStatus, setSyncStatus] = useState<SyncState>('local');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const autosaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isSavingReportRef = useRef(false);
 
   // Modals state
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
@@ -105,6 +112,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   );
   const [saveReportError, setSaveReportError] = useState<string | null>(null);
   const [isSavingReport, setIsSavingReport] = useState(false);
+  const [saveStage, setSaveStage] = useState<'idle' | 'saving_local' | 'saved_local' | 'pending_cloud' | 'synced' | 'failed'>('idle');
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
 
   // Run live clock timer
   useEffect(() => {
@@ -126,14 +135,26 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     setData(initialData);
   }, [initialData]);
 
+  // Clean up pending autosave timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autosaveTimeoutRef.current) {
+        clearTimeout(autosaveTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Debounced draft autosave
   const triggerAutosave = useCallback((currentData: AnalysisData) => {
+    if (isSavingReportRef.current) return;
+
     if (autosaveTimeoutRef.current) {
       clearTimeout(autosaveTimeoutRef.current);
     }
     setAutosaveStatus('Saving changes...');
 
     autosaveTimeoutRef.current = setTimeout(async () => {
+      if (isSavingReportRef.current) return;
       try {
         await saveDraft(currentData);
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -163,8 +184,17 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     });
   };
 
-  // Alignment Calculation
-  const alignment = calculateOverallAlignment(data.timeframes);
+  // Determine active visibility configuration
+  const activeVisibility: WorkspaceVisibilityConfig =
+    data.visibilityConfig || workspaceVisibility || DEFAULT_VISIBILITY_CONFIG;
+
+  // Filter enabled timeframes based on visibility config
+  const enabledTimeframes = TIMEFRAME_ORDER.filter(
+    (tf) => activeVisibility.timeframes[tf] !== false
+  );
+
+  // Alignment Calculation using enabled timeframes
+  const alignment = calculateOverallAlignment(data.timeframes, enabledTimeframes);
 
   // Timeframe expansion toggle
   const toggleTimeframeExpand = (tf: TimeframeId) => {
@@ -202,7 +232,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }));
   };
 
-  // Save deep analysis (locks fields, collapses editor)
+  // Save deep analysis (marks saved, preserves expanded state without viewport jump)
   const handleSaveDeep = (tf: TimeframeId) => {
     updateAnalysis((prev) => ({
       ...prev,
@@ -214,7 +244,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         },
       },
     }));
-    setExpandedTimeframes((prev) => ({ ...prev, [tf]: false }));
+    // Note: Timeframe remains expanded. Collapse happens ONLY when user clicks Collapse.
   };
 
   // Edit deep analysis (unlocks fields)
@@ -246,7 +276,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         ...prev.timeframes,
         [tf]: {
           ...empty,
-          overallBias: prev.timeframes[tf]?.overallBias || '', // preserve overall bias
+          overallBias: prev.timeframes[tf]?.overallBias || '',
           isSaved: false,
         },
       },
@@ -349,46 +379,149 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }));
   };
 
-  // Save Report (Primary action)
-  const handleSaveReport = async () => {
-    setIsSavingReport(true);
-    setSaveReportError(null);
-    try {
+  // Save Scenario directly (persists to draft if new, or to report if editing)
+  const handleSaveScenarioDirectly = async () => {
+    if (isEditingExistingReport) {
       const now = Date.now();
-      const reportPayload: SavedReport = {
+      const updatedReport: SavedReport = {
         ...data,
         updatedAt: now,
-        createdAt: isEditingExistingReport ? data.createdAt : now,
-        status: isEditingExistingReport ? 'Modified' : 'Original',
-        isModified: isEditingExistingReport,
+        status: 'Modified',
+        isModified: true,
       };
+      await saveReport(updatedReport);
+      if (user) {
+        uploadReportToCloud(user.id, updatedReport).catch(console.error);
+      }
+    } else {
+      await saveDraft(data);
+      if (user) {
+        uploadDraftToCloud(user.id, data).catch(console.error);
+      }
+    }
+  };
 
-      await saveReport(reportPayload);
+  // Save Report (Primary action)
+  const handleSaveReport = async () => {
+    if (isSavingReportRef.current) return;
+    isSavingReportRef.current = true;
+    setIsSavingReport(true);
+    setSaveReportError(null);
+    setSaveStage('saving_local');
+    setAutosaveStatus('Saving on this device…');
+
+    // Cancel pending draft autosave so it cannot resurrect after clearDraft
+    if (autosaveTimeoutRef.current) {
+      clearTimeout(autosaveTimeoutRef.current);
+      autosaveTimeoutRef.current = null;
+    }
+
+    const now = Date.now();
+
+    // Determine genuine stable report ID: never leak active_draft, and lock to existing report ID when editing
+    const targetId = (isEditingExistingReport && initialData?.id && initialData.id !== 'active_draft' && initialData.id !== 'draft')
+      ? initialData.id
+      : (data.id && data.id !== 'active_draft' && data.id !== 'draft'
+          ? data.id
+          : (data.originalId && data.originalId !== 'active_draft' && data.originalId !== 'draft'
+              ? data.originalId
+              : `rep_${now}_${Math.random().toString(36).substring(2, 9)}`));
+
+    // Clean title
+    const cleanTitle = (data.title || '').trim();
+
+    // Ensure all timeframes exist and have full structure
+    const cleanTimeframes = { ...data.timeframes };
+    for (const tf of TIMEFRAME_ORDER) {
+      if (!cleanTimeframes[tf]) {
+        cleanTimeframes[tf] = createEmptyTimeframeData(tf);
+      }
+    }
+
+    const reportPayload: SavedReport = {
+      ...data,
+      id: targetId,
+      title: cleanTitle || undefined,
+      pair: data.pair || 'XAUUSD',
+      date: data.date || new Date().toISOString().slice(0, 10),
+      time: data.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+      session: data.session || 'London',
+      analysisTiming: data.analysisTiming || 'On time',
+      timeframes: cleanTimeframes,
+      crossedLiquidity: data.crossedLiquidity || [],
+      majorLiquidityWatchlist: data.majorLiquidityWatchlist || '',
+      supplyDemandLevels: data.supplyDemandLevels || [],
+      scenarios: data.scenarios || [],
+      trades: data.trades || [],
+      overallNotes: data.overallNotes || '',
+      visibilityConfig: activeVisibility,
+      updatedAt: now,
+      createdAt: isEditingExistingReport && (initialData.createdAt || data.createdAt) ? (initialData.createdAt || data.createdAt) : (data.createdAt || now),
+      status: isEditingExistingReport ? 'Modified' : 'Original',
+      isModified: isEditingExistingReport,
+      copiedFromId: data.copiedFromId || (initialData as any)?.copiedFromId || undefined,
+    };
+
+    console.info(`[Report Lifecycle] Operation=save_report ID=${targetId} IsEditing=${isEditingExistingReport} TargetRev=${(data.revision || 0) + 1}`);
+
+    try {
+      // 1. SAVE LOCALLY FIRST via IndexedDB and verify read-back
+      const savedRecord = await saveReport(reportPayload);
+      console.info(`[Report Lifecycle] Operation=save_report_success ID=${savedRecord.id} Revision=${savedRecord.revision} TxResult=COMMITTED`);
+
+      setSaveStage('saved_local');
+      setAutosaveStatus('Saved on this device');
+
+      // 2. Clear active draft locally after successful local save
       await clearDraft();
 
-      // Cloud synchronization if user is signed in
+      // Update in-memory state with finalized report ID and revision
+      setData((prev) => ({
+        ...prev,
+        ...savedRecord,
+      }));
+
+      // 3. Cloud synchronization if user is signed in
       if (user) {
+        setSaveStage('pending_cloud');
         setSyncStatus('syncing');
-        const cloudRes = await uploadReportToCloud(user.id, reportPayload);
-        await clearDraftFromCloud(user.id);
-        if (cloudRes.success) {
-          setSyncStatus('synced');
-          setLastSyncedAt(Date.now());
-        } else if (cloudRes.conflict) {
-          setSaveReportError('Cloud revision conflict: a newer version of this report exists in your account. Your local edit has been saved to this browser.');
-          setSyncStatus('error');
-        } else {
-          setSaveReportError(`Saved locally. Cloud sync pending: ${cloudRes.error}`);
+        setAutosaveStatus('Pending cloud sync');
+        try {
+          console.info(`[Report Lifecycle] Operation=cloud_upload_start ID=${savedRecord.id} Revision=${savedRecord.revision}`);
+          const cloudRes = await uploadReportToCloud(user.id, savedRecord);
+          await clearDraftFromCloud(user.id);
+          if (cloudRes.success) {
+            setSaveStage('synced');
+            setSyncStatus('synced');
+            setAutosaveStatus('Synced');
+            setLastSyncedAt(Date.now());
+            console.info(`[Report Lifecycle] Operation=cloud_upload_success ID=${savedRecord.id}`);
+          } else if (cloudRes.conflict) {
+            setSaveStage('pending_cloud');
+            setSyncStatus('error');
+            console.warn(`[Report Lifecycle] Operation=cloud_upload_conflict ID=${savedRecord.id}`);
+          } else {
+            setSaveStage('pending_cloud');
+            setSyncStatus('error');
+            console.warn(`[Report Lifecycle] Operation=cloud_upload_pending ID=${savedRecord.id}: ${cloudRes.error}`);
+          }
+        } catch (cloudErr) {
+          console.warn('[Report Lifecycle] Operation=cloud_upload_network_error', cloudErr);
+          setSaveStage('pending_cloud');
           setSyncStatus('error');
         }
       }
 
+      // 4. Navigate only after successful local save
       onReportSavedSuccessfully(reportPayload.id);
     } catch (err) {
-      console.error('Failed to save report', err);
-      setSaveReportError((err as Error).message || 'Failed to save report to local storage.');
+      console.error(`[Report Lifecycle] Operation=save_report_failed ID=${targetId}:`, err);
+      setSaveStage('failed');
+      setAutosaveStatus('Save failed — your analysis is still open');
+      setSaveReportError((err as Error).message || 'Save failed — your analysis is still open');
     } finally {
       setIsSavingReport(false);
+      isSavingReportRef.current = false;
     }
   };
 
@@ -415,11 +548,13 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       updatedAt: Date.now(),
       data: {
         pair: data.pair,
+        title: data.title,
         session: data.session,
         timezone: data.timezone,
         analysisTiming: data.analysisTiming,
         timeframes: data.timeframes,
         crossedLiquidity: data.crossedLiquidity,
+        majorLiquidityWatchlist: data.majorLiquidityWatchlist,
         supplyDemandLevels: data.supplyDemandLevels,
         scenarios: (data.scenarios || []).map((s) => ({
           ...s,
@@ -428,6 +563,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           updatedAt: Date.now(),
         })),
         overallNotes: data.overallNotes,
+        visibilityConfig: activeVisibility,
       },
     };
     await saveTemplate(tmpl);
@@ -440,7 +576,6 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const handleLoadTemplate = (template: SavedTemplate) => {
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
-    // When loading templates, generate fresh scenario IDs and timestamps, never include trades
     const templatedScenarios = (template.data.scenarios || []).map((s, idx) => ({
       ...s,
       id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${idx}`,
@@ -448,20 +583,31 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       updatedAt: Date.now(),
     }));
 
+    // Ensure all 8 timeframes exist
+    const templatedTfs = JSON.parse(JSON.stringify(template.data.timeframes || {}));
+    for (const tf of TIMEFRAME_ORDER) {
+      if (!templatedTfs[tf]) {
+        templatedTfs[tf] = createEmptyTimeframeData(tf);
+      }
+    }
+
     const newAnalysis: AnalysisData = {
       id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      title: template.data.title || '',
       pair: template.data.pair,
       date: dateStr,
       time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
       timezone: template.data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       session: template.data.session,
       analysisTiming: template.data.analysisTiming,
-      timeframes: JSON.parse(JSON.stringify(template.data.timeframes)),
+      timeframes: templatedTfs,
       crossedLiquidity: [...(template.data.crossedLiquidity || [])],
+      majorLiquidityWatchlist: template.data.majorLiquidityWatchlist || '',
       supplyDemandLevels: JSON.parse(JSON.stringify(template.data.supplyDemandLevels || [])),
       scenarios: templatedScenarios,
-      trades: [], // Templates must never include executed trades
+      trades: [],
       overallNotes: template.data.overallNotes || '',
+      visibilityConfig: template.data.visibilityConfig || activeVisibility,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -471,8 +617,12 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
 
   // Clear Analysis
   const handleClearAnalysis = async () => {
-    const fresh = createInitialAnalysisData('XAUUSD');
-    updateAnalysis(() => fresh);
+    if (autosaveTimeoutRef.current) {
+      clearTimeout(autosaveTimeoutRef.current);
+      autosaveTimeoutRef.current = null;
+    }
+    const fresh = createInitialAnalysisData('XAUUSD', activeVisibility);
+    setData(fresh);
     await clearDraft();
     if (user) {
       await clearDraftFromCloud(user.id);
@@ -496,14 +646,26 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             )}
           </div>
           <p className="text-xs text-app-secondary mt-0.5">
-            Continuous multi-timeframe SMC journal flow from Weekly to 1-Minute.
+            Continuous multi-timeframe SMC journal flow from Monthly to 1-Minute.
           </p>
         </div>
 
         {/* Autosave subtle status text & Cloud Sync Status */}
         <div className="flex flex-wrap items-center gap-2.5 text-xs text-app-secondary">
           <SyncStatusBadge
-            status={syncStatus}
+            status={
+              saveStage === 'saving_local'
+                ? 'saving_local'
+                : saveStage === 'failed'
+                ? 'failed'
+                : saveStage === 'pending_cloud'
+                ? 'pending_cloud'
+                : saveStage === 'saved_local'
+                ? 'saved_local'
+                : saveStage === 'synced'
+                ? 'synced'
+                : syncStatus
+            }
             lastSyncedAt={lastSyncedAt}
             onRetry={() => triggerAutosave(data)}
           />
@@ -513,6 +675,20 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             <span>{autosaveStatus}</span>
           </div>
         </div>
+      </div>
+
+      {/* Phase 2: Optional Report Title */}
+      <div className="p-3.5 sm:p-4 rounded-lg bg-app-secondary border border-app mb-4 shadow-2xs">
+        <label className="block text-xs font-bold text-app-main uppercase tracking-wider mb-1.5">
+          Report Title
+        </label>
+        <input
+          type="text"
+          value={data.title || ''}
+          onChange={(e) => updateAnalysis((prev) => ({ ...prev, title: e.target.value }))}
+          placeholder="Optional — name this analysis"
+          className="w-full px-3 py-2 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors font-medium"
+        />
       </div>
 
       {/* 2. General Information (Responsive wrapping grid, labels above controls) */}
@@ -584,11 +760,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             </select>
           </div>
 
-          {/* Analysis Made */}
+          {/* Timing */}
           <div>
-            <label className="block text-xs font-medium text-app-secondary mb-1">
-              Analysis Made
-            </label>
+            <label className="block text-xs font-medium text-app-secondary mb-1">Timing</label>
             <select
               value={data.analysisTiming}
               onChange={(e) =>
@@ -607,36 +781,43 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         </div>
       </div>
 
-      {/* 3. Overall Alignment Banner (Slim banner, ALIGNED only when all 7 match) */}
-      <div
-        className={`w-full p-3 rounded-lg border mb-5 flex flex-wrap items-center justify-between gap-2 text-xs transition-colors shadow-2xs ${
-          alignment.status === 'ALIGNED'
-            ? alignment.bias === 'Bullish'
-              ? 'bg-emerald-pale border-emerald-500 text-bullish font-semibold'
-              : 'bg-bearish-pale border-rose-500 text-bearish font-semibold'
-            : alignment.status === 'MIXED'
-            ? 'bg-app-field border-slate-300 dark:border-slate-700 text-app-main'
-            : 'bg-amber-50 dark:bg-amber-950/20 border-amber-300 text-amber-theme'
-        }`}
-      >
-        <div className="flex items-center gap-2">
-          {alignment.status === 'ALIGNED' ? (
-            <CheckCircle className="w-4 h-4 shrink-0" />
-          ) : (
-            <AlertCircle className="w-4 h-4 shrink-0" />
-          )}
-          <span className="font-bold tracking-wide">{alignment.label}</span>
-          <span className="opacity-75 hidden sm:inline">— {alignment.detail}</span>
+      {/* 3. Overall Alignment Status Card */}
+      <div className="p-4 rounded-lg bg-app-secondary border border-app mb-5 shadow-2xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div
+            className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+              alignment.status === 'ALIGNED'
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
+                : alignment.status === 'WAITING'
+                ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
+                : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+            }`}
+          >
+            {alignment.status === 'ALIGNED' ? (
+              <CheckCircle className="w-5 h-5" />
+            ) : (
+              <AlertCircle className="w-5 h-5" />
+            )}
+          </div>
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wider text-app-secondary">
+              Overall Alignment
+            </div>
+            <div className="text-base sm:text-lg font-extrabold text-app-main flex items-center gap-2">
+              <span>{alignment.label}</span>
+            </div>
+            <p className="text-xs text-app-secondary mt-0.5">{alignment.detail}</p>
+          </div>
         </div>
 
-        {/* Quick summary tally of timeframes */}
-        <div className="flex items-center gap-1 text-[11px] font-mono">
-          {TIMEFRAME_ORDER.map((tf) => {
+        {/* Enabled Timeframes quick-status dots */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {enabledTimeframes.map((tf) => {
             const b = data.timeframes[tf]?.overallBias;
             return (
               <span
                 key={tf}
-                title={`${tf}: ${b || 'Not set'}`}
+                title={`${tf}: ${b || 'Not selected'}`}
                 className={`px-1.5 py-0.5 rounded text-[10px] ${
                   b === 'Bullish'
                     ? 'bg-emerald-600 text-white'
@@ -654,82 +835,160 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         </div>
       </div>
 
-      {/* 4-10: Seven Timeframe Sections in exact order (Weekly, Daily, 4H, 1H, 15M, 5M, 1M) */}
+      {/* 4-11: Timeframe Sections in exact order (Monthly, Weekly, Daily, 4H, 1H, 15M, 5M, 1M) with bold ~3px separators */}
       <div className="space-y-3 mb-6">
-        {TIMEFRAME_ORDER.map((tf) => {
-          // Filter visible S/D levels for this timeframe
+        {enabledTimeframes.map((tf, idx) => {
           const visibleSd = (data.supplyDemandLevels || []).filter(
             (sd) => sd.timeframe === tf && sd.showInTimeframe
           );
 
           return (
-            <TimeframeSection
-              key={tf}
-              timeframe={tf}
-              data={data.timeframes[tf]}
-              isExpanded={expandedTimeframes[tf]}
-              onToggleExpand={() => toggleTimeframeExpand(tf)}
-              onChangeOverallBias={(b) => handleOverallBiasChange(tf, b)}
-              onUpdateField={(updater) => handleUpdateDeepTimeframe(tf, updater)}
-              onSaveDeep={() => handleSaveDeep(tf)}
-              onEditDeep={() => handleEditDeep(tf)}
-              onResetDeep={() => handleResetDeep(tf)}
-              onAttachImage={(dataUrl) => handleAttachImage(tf, dataUrl)}
-              onRemoveImage={() => handleRemoveImage(tf)}
-              onViewImage={(imgId, title) => handleViewImage(imgId, title)}
-              visibleSupplyDemandLevels={visibleSd}
-            />
+            <React.Fragment key={tf}>
+              {idx > 0 && (
+                <div
+                  className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-4 rounded-full"
+                  role="separator"
+                  aria-orientation="horizontal"
+                />
+              )}
+              <TimeframeSection
+                timeframe={tf}
+                data={data.timeframes[tf] || createEmptyTimeframeData(tf)}
+                isExpanded={expandedTimeframes[tf]}
+                onToggleExpand={() => toggleTimeframeExpand(tf)}
+                onChangeOverallBias={(b) => handleOverallBiasChange(tf, b)}
+                onUpdateField={(updater) => handleUpdateDeepTimeframe(tf, updater)}
+                onSaveDeep={() => handleSaveDeep(tf)}
+                onEditDeep={() => handleEditDeep(tf)}
+                onResetDeep={() => handleResetDeep(tf)}
+                onAttachImage={(dataUrl) => handleAttachImage(tf, dataUrl)}
+                onRemoveImage={() => handleRemoveImage(tf)}
+                onViewImage={(imgId, title) => handleViewImage(imgId, title)}
+                visibleSupplyDemandLevels={visibleSd}
+                visibilityConfig={activeVisibility}
+              />
+            </React.Fragment>
           );
         })}
       </div>
 
-      {/* 11. Major Liquidity */}
-      <MajorLiquiditySection
-        selectedItems={data.crossedLiquidity || []}
-        onToggleItem={handleToggleLiquidity}
-      />
+      {/* Major Liquidity (Checklist & Watchlist) */}
+      {(activeVisibility.otherSections.majorLiquidityChecklist !== false ||
+        activeVisibility.otherSections.majorLiquidityWatchlist !== false) && (
+        <>
+          <div
+            className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+            role="separator"
+            aria-orientation="horizontal"
+          />
+          <MajorLiquiditySection
+            selectedItems={data.crossedLiquidity || []}
+            onToggleItem={handleToggleLiquidity}
+            watchlist={data.majorLiquidityWatchlist || ''}
+            onChangeWatchlist={(val) =>
+              updateAnalysis((prev) => ({ ...prev, majorLiquidityWatchlist: val }))
+            }
+            showChecklist={activeVisibility.otherSections.majorLiquidityChecklist !== false}
+            showWatchlist={activeVisibility.otherSections.majorLiquidityWatchlist !== false}
+          />
+        </>
+      )}
 
-      {/* 12. Supply & Demand Levels */}
-      <SupplyDemandSection
-        levels={data.supplyDemandLevels || []}
-        onAddLevel={handleAddSDLevel}
-        onUpdateLevel={handleUpdateSDLevel}
-        onRemoveLevel={handleRemoveSDLevel}
-        onToggleVisibility={handleToggleSDVisibility}
-      />
+      {/* Supply & Demand Levels (General Manager) */}
+      {activeVisibility.otherSections.supplyDemandManager !== false && (
+        <>
+          <div
+            className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+            role="separator"
+            aria-orientation="horizontal"
+          />
+          <SupplyDemandSection
+            levels={data.supplyDemandLevels || []}
+            onAddLevel={handleAddSDLevel}
+            onUpdateLevel={handleUpdateSDLevel}
+            onRemoveLevel={handleRemoveSDLevel}
+            onToggleVisibility={handleToggleSDVisibility}
+          />
+        </>
+      )}
 
-      {/* 13. Overall Notes */}
-      <div className="border border-app rounded-lg bg-app-main p-4 sm:p-5 mb-6 shadow-2xs">
-        <label className="block text-xs font-bold text-app-main uppercase tracking-wider mb-2">
-          Overall Notes
-        </label>
-        <textarea
-          rows={4}
-          value={data.overallNotes}
-          onChange={(e) =>
-            updateAnalysis((prev) => ({ ...prev, overallNotes: e.target.value }))
-          }
-          placeholder="Comprehensive trade thesis, high-probability execution zones, key invalidations, risk parameters, and news catalysts..."
-          className="w-full px-3 py-2.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main resize-y transition-colors leading-relaxed"
-        />
-      </div>
+      {/* Overall Notes */}
+      {activeVisibility.otherSections.overallNotes !== false && (
+        <>
+          <div
+            className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+            role="separator"
+            aria-orientation="horizontal"
+          />
+          <div className="border border-app rounded-lg bg-app-main p-4 sm:p-5 mb-6 shadow-2xs">
+            <label className="block text-xs font-bold text-app-main uppercase tracking-wider mb-2">
+              Overall Notes
+            </label>
+            <textarea
+              rows={4}
+              value={data.overallNotes}
+              onChange={(e) =>
+                updateAnalysis((prev) => ({ ...prev, overallNotes: e.target.value }))
+              }
+              placeholder="Comprehensive trade thesis, high-probability execution zones, key invalidations, risk parameters, and news catalysts..."
+              className="w-full px-3 py-2.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main resize-y transition-colors leading-relaxed"
+            />
+          </div>
+        </>
+      )}
 
-      {/* 14. Planned Scenarios (Pre-execution trading playbook) */}
-      <PlannedScenariosSection
-        scenarios={data.scenarios || []}
-        onChange={(updatedScenarios) =>
-          updateAnalysis((prev) => ({ ...prev, scenarios: updatedScenarios }))
-        }
-      />
+      {/* Planned Scenarios */}
+      {activeVisibility.otherSections.plannedScenarios !== false && (
+        <>
+          <div
+            className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+            role="separator"
+            aria-orientation="horizontal"
+          />
+          <PlannedScenariosSection
+            scenarios={data.scenarios || []}
+            onChange={(updatedScenarios) =>
+              updateAnalysis((prev) => ({ ...prev, scenarios: updatedScenarios }))
+            }
+            onSaveScenario={handleSaveScenarioDirectly}
+          />
+        </>
+      )}
 
       {/* Save report error indicator if any */}
-      {saveReportError && (
-        <div className="p-3 mb-4 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs">
-          {saveReportError}
+      {(saveStage === 'failed' || saveReportError) && (
+        <div className="p-3.5 mb-4 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <strong className="text-sm font-bold flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-rose-600" />
+                Save failed — your analysis is still open
+              </strong>
+              <p className="opacity-90">
+                {saveReportError || 'Could not verify storage persistence on this device. All entered fields and data are preserved.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveReport}
+                className="px-3 py-1.5 bg-rose-600 text-white font-semibold rounded text-xs hover:bg-rose-700 transition-colors cursor-pointer"
+              >
+                Retry Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsBackupModalOpen(true)}
+                className="px-3 py-1.5 bg-app-field border border-app text-app-main font-semibold rounded text-xs hover:bg-app-secondary transition-colors cursor-pointer"
+              >
+                Export Backup
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* 14. Action buttons in normal page flow */}
+      {/* Action buttons in normal page flow */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-app">
         <div className="flex flex-wrap items-center gap-2">
           {/* Primary: Save Report */}
@@ -737,10 +996,16 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             type="button"
             onClick={handleSaveReport}
             disabled={isSavingReport}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-xs transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
           >
             <Save className="w-4 h-4" />
-            {isSavingReport
+            {saveStage === 'saving_local'
+              ? 'Saving on this device…'
+              : saveStage === 'saved_local'
+              ? 'Saved on this device'
+              : saveStage === 'pending_cloud'
+              ? 'Pending cloud sync…'
+              : isSavingReport
               ? 'Saving Report...'
               : isEditingExistingReport
               ? 'Update Report'
@@ -751,58 +1016,57 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           <button
             type="button"
             onClick={handleContinueLater}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-medium bg-app-secondary border border-app text-app-main hover:bg-app-field rounded transition-colors"
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-medium bg-app-secondary border border-app text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5 text-app-secondary" />
             Continue Later
           </button>
         </div>
 
+        {/* Secondary: Templates & Clear Analysis */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Save Template */}
           <button
             type="button"
             onClick={() => setIsSaveTemplateOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-app-field border border-app hover:bg-slate-200 dark:hover:bg-slate-800 text-app-main rounded transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-app-main bg-app-secondary border border-app hover:bg-app-field rounded transition-colors cursor-pointer"
           >
-            <Bookmark className="w-3.5 h-3.5 text-app-secondary" />
-            Save Template
+            <Bookmark className="w-3.5 h-3.5 text-emerald-theme" />
+            Save as Template
           </button>
 
-          {/* Load Template */}
           <button
             type="button"
             onClick={() => setIsLoadTemplateOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-app-field border border-app hover:bg-slate-200 dark:hover:bg-slate-800 text-app-main rounded transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-app-main bg-app-secondary border border-app hover:bg-app-field rounded transition-colors cursor-pointer"
           >
             <FolderOpen className="w-3.5 h-3.5 text-app-secondary" />
             Load Template
           </button>
 
-          {/* Clear Analysis with confirmation */}
+          {/* Clear Analysis */}
           {!showClearConfirm ? (
             <button
               type="button"
               onClick={() => setShowClearConfirm(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded border border-transparent transition-colors cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Clear Analysis
             </button>
           ) : (
-            <div className="inline-flex items-center gap-2 p-1.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 rounded text-xs">
-              <span className="text-rose-700 dark:text-rose-300 font-medium">Clear all fields?</span>
+            <div className="inline-flex items-center gap-2 text-xs p-1.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 rounded">
+              <span className="text-rose-700 dark:text-rose-300 text-xs">Clear all fields?</span>
               <button
                 type="button"
                 onClick={handleClearAnalysis}
-                className="px-2 py-0.5 bg-rose-600 text-white rounded font-semibold"
+                className="px-2.5 py-1 bg-rose-600 text-white rounded text-xs font-semibold cursor-pointer"
               >
                 Yes, Clear
               </button>
               <button
                 type="button"
                 onClick={() => setShowClearConfirm(false)}
-                className="px-2 py-0.5 text-app-secondary rounded"
+                className="px-2 py-1 text-app-secondary rounded text-xs cursor-pointer"
               >
                 Cancel
               </button>
@@ -811,21 +1075,19 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         </div>
       </div>
 
-      {/* Save Template Modal */}
+      {/* Modals */}
       <SaveTemplateModal
         isOpen={isSaveTemplateOpen}
         onClose={() => setIsSaveTemplateOpen(false)}
         onSave={handleSaveTemplate}
       />
 
-      {/* Load Template Modal */}
       <LoadTemplateModal
         isOpen={isLoadTemplateOpen}
         onClose={() => setIsLoadTemplateOpen(false)}
         onSelectTemplate={handleLoadTemplate}
       />
 
-      {/* Large Image Modal */}
       {activeViewerImage && (
         <ImageViewerModal
           isOpen={Boolean(activeViewerImage)}
@@ -834,6 +1096,13 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           title={activeViewerImage.title}
         />
       )}
+
+      {/* Emergency Backup / Recovery Modal */}
+      <BackupModal
+        isOpen={isBackupModalOpen}
+        onClose={() => setIsBackupModalOpen(false)}
+        onDataChanged={() => {}}
+      />
     </div>
   );
 };

@@ -65,11 +65,24 @@ function runTransaction<T>(
       try {
         const tx = db.transaction(storeName, mode);
         const store = tx.objectStore(storeName);
+        let result: T;
         const request = callback(store);
 
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error ?? new Error('Transaction request failed'));
-        tx.onerror = () => reject(tx.error ?? new Error('Transaction failed'));
+        request.onsuccess = () => {
+          result = request.result;
+          if (mode === 'readonly') {
+            resolve(result);
+          }
+        };
+        request.onerror = () => reject(request.error ?? new Error(`Request failed on store: ${storeName}`));
+
+        tx.oncomplete = () => {
+          if (mode === 'readwrite') {
+            resolve(result);
+          }
+        };
+        tx.onerror = () => reject(tx.error ?? new Error(`Transaction failed on store: ${storeName}`));
+        tx.onabort = () => reject(tx.error ?? new Error(`Transaction aborted on store: ${storeName}`));
       } catch (err) {
         reject(err);
       }
@@ -91,9 +104,9 @@ export async function getAllReports(): Promise<SavedReport[]> {
       // Sort newest date first, then newest createdAt
       reports.sort((a, b) => {
         if (a.date !== b.date) {
-          return b.date.localeCompare(a.date);
+          return (b.date || '').localeCompare(a.date || '');
         }
-        return b.createdAt - a.createdAt;
+        return (b.createdAt || 0) - (a.createdAt || 0);
       });
       resolve(reports);
     };
@@ -108,25 +121,99 @@ export async function getReportById(id: string): Promise<SavedReport | null> {
     );
     return report || null;
   } catch (err) {
-    console.error('Error fetching report by ID', err);
+    console.error(`[DB] Error fetching report by ID ${id}:`, err);
     return null;
   }
 }
 
-export async function saveReport(report: SavedReport): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('reports', 'readwrite');
-    const store = tx.objectStore('reports');
-    const req = store.put(report);
+/**
+ * Saves a report to IndexedDB, awaits transaction completion, and verifies read-back.
+ */
+export async function saveReport(report: SavedReport): Promise<SavedReport> {
+  if (!report.id || report.id === 'active_draft' || report.id === 'draft') {
+    throw new Error('Invalid report ID: cannot save report with draft identity.');
+  }
 
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+  // Ensure revision is tracked and incremented
+  const existing = await getReportById(report.id);
+  const targetRevision = Math.max(existing?.revision || 0, report.revision || 0) + 1;
+  const sanitizedReport: SavedReport = {
+    ...report,
+    revision: targetRevision,
+    updatedAt: report.updatedAt || Date.now(),
+    createdAt: report.createdAt || Date.now(),
+    pair: report.pair || 'XAUUSD',
+    date: report.date || new Date().toISOString().slice(0, 10),
+  };
+
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    try {
+      const tx = db.transaction('reports', 'readwrite');
+      const store = tx.objectStore('reports');
+      const req = store.put(sanitizedReport);
+
+      req.onerror = () => reject(req.error ?? new Error('Failed to put report record'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Report save transaction failed on commit'));
+      tx.onabort = () => reject(tx.error ?? new Error('Report save transaction aborted'));
+    } catch (err) {
+      reject(err);
+    }
   });
+
+  // Read-back verification: verify identity and persistence before reporting success
+  const verified = await getReportById(sanitizedReport.id);
+  if (!verified || verified.id !== sanitizedReport.id) {
+    throw new Error(`Storage integrity check failed: report ${sanitizedReport.id} could not be read back after save.`);
+  }
+
+  return verified;
+}
+
+/**
+ * Saves a report directly (e.g. from cloud sync) preserving exact revision without incrementing.
+ */
+export async function saveReportDirectly(report: SavedReport): Promise<SavedReport> {
+  if (!report.id || report.id === 'active_draft' || report.id === 'draft') {
+    throw new Error('Invalid report ID: cannot save report with draft identity.');
+  }
+
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    try {
+      const tx = db.transaction('reports', 'readwrite');
+      const store = tx.objectStore('reports');
+      const req = store.put(report);
+
+      req.onerror = () => reject(req.error ?? new Error('Failed to put report record directly'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Report direct save transaction failed on commit'));
+      tx.onabort = () => reject(tx.error ?? new Error('Report direct save transaction aborted'));
+    } catch (err) {
+      reject(err);
+    }
+  });
+
+  return report;
 }
 
 export async function deleteReport(id: string): Promise<void> {
-  await runTransaction('reports', 'readwrite', (store) => store.delete(id));
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    try {
+      const tx = db.transaction('reports', 'readwrite');
+      const store = tx.objectStore('reports');
+      const req = store.delete(id);
+
+      req.onerror = () => reject(req.error ?? new Error('Failed to delete report record'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Report delete transaction failed on commit'));
+      tx.onabort = () => reject(tx.error ?? new Error('Report delete transaction aborted'));
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 /* ================= DRAFT ================= */
@@ -135,29 +222,91 @@ const DRAFT_KEY = 'active_draft';
 
 export async function getDraft(): Promise<AnalysisData | null> {
   try {
-    const raw = await runTransaction<AnalysisData & { id: string } | undefined>(
+    const raw = await runTransaction<(AnalysisData & { id: string; originalId?: string }) | undefined>(
       'draft',
       'readonly',
       (store) => store.get(DRAFT_KEY)
     );
-    return raw || null;
+    if (!raw) return null;
+    // Restore the genuine report ID if preserved, or keep a stable originalId
+    const stableId = raw.originalId && raw.originalId !== DRAFT_KEY
+      ? raw.originalId
+      : (raw.id && raw.id !== DRAFT_KEY ? raw.id : `rep_${raw.createdAt || Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+
+    return {
+      ...raw,
+      id: stableId,
+      originalId: stableId,
+    };
   } catch (err) {
-    console.error('Error fetching draft', err);
+    console.error('[DB] Error fetching draft:', err);
     return null;
   }
 }
 
 export async function saveDraft(draft: AnalysisData): Promise<void> {
+  const originalId = draft.originalId || (draft.id && draft.id !== DRAFT_KEY ? draft.id : `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
   const payload = {
     ...draft,
-    id: DRAFT_KEY,
+    originalId,
+    id: DRAFT_KEY, // required by keyPath in indexedDB draft store
     updatedAt: Date.now(),
   };
-  await runTransaction('draft', 'readwrite', (store) => store.put(payload));
+
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    try {
+      const tx = db.transaction('draft', 'readwrite');
+      const store = tx.objectStore('draft');
+      const req = store.put(payload);
+
+      req.onerror = () => reject(req.error ?? new Error('Failed to save draft'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Draft transaction failed on commit'));
+      tx.onabort = () => reject(tx.error ?? new Error('Draft transaction aborted'));
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 export async function clearDraft(): Promise<void> {
-  await runTransaction('draft', 'readwrite', (store) => store.delete(DRAFT_KEY));
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    try {
+      const tx = db.transaction('draft', 'readwrite');
+      const store = tx.objectStore('draft');
+      const req = store.delete(DRAFT_KEY);
+
+      req.onerror = () => reject(req.error ?? new Error('Failed to clear draft'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Clear draft transaction failed on commit'));
+      tx.onabort = () => reject(tx.error ?? new Error('Clear draft transaction aborted'));
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/* ================= USER VISIBILITY PREFERENCES ================= */
+
+export async function getUserVisibilityConfig(): Promise<any | null> {
+  try {
+    const record = await runTransaction<{ key: string; value: any } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get('workspace_visibility')
+    );
+    return record ? record.value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveUserVisibilityConfig(config: any): Promise<void> {
+  await runTransaction('preferences', 'readwrite', (store) =>
+    store.put({ key: 'workspace_visibility', value: config })
+  );
 }
 
 /* ================= TEMPLATES ================= */

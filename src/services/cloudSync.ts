@@ -13,6 +13,7 @@ import {
   getAllImages,
   getImage,
   saveReport,
+  saveReportDirectly,
   saveTemplate,
   saveDraft,
   saveImage,
@@ -146,7 +147,8 @@ export async function uploadReportToCloud(
       }
     }
 
-    const currentRevision = (report as SavedReport & { revision?: number }).revision || 1;
+    const localRevision = (report as SavedReport & { revision?: number }).revision || 1;
+    let targetRevision = localRevision;
 
     // Check existing cloud record for optimistic concurrency
     const { data: existing } = await supabase
@@ -156,45 +158,89 @@ export async function uploadReportToCloud(
       .eq('id', report.id)
       .maybeSingle();
 
-    if (existing && existing.revision > currentRevision) {
-      // Cloud has a newer revision!
-      return { success: false, conflict: true };
+    if (existing) {
+      const cloudRevision = existing.revision || 1;
+      const cloudUpdatedAt = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
+      const localUpdatedAt = report.updatedAt || 0;
+
+      // Only reject as conflict if cloud is strictly newer in BOTH revision and timestamp
+      if (cloudRevision > localRevision && cloudUpdatedAt > localUpdatedAt) {
+        return { success: false, conflict: true };
+      }
+
+      // Increment above the max of cloud and local revision
+      targetRevision = Math.max(cloudRevision, localRevision) + 1;
+    } else {
+      targetRevision = Math.max(1, localRevision);
     }
 
-    const payload = {
+    const payload: SavedReport = {
       ...report,
       timeframes: sanitizedTimeframes,
-      revision: currentRevision + 1,
+      revision: targetRevision,
     };
 
     const row = {
       id: report.id,
       user_id: userId,
-      pair: report.pair,
-      date: report.date,
-      time: report.time,
-      session: report.session,
-      analysis_timing: report.analysisTiming,
+      pair: report.pair || 'XAUUSD',
+      date: report.date || new Date().toISOString().slice(0, 10),
+      time: report.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+      session: report.session || 'London',
+      analysis_timing: report.analysisTiming || 'On time',
       overall_alignment: report.timeframes ? 'RECORDED' : 'PENDING',
       status: report.status || 'Original',
       is_modified: report.isModified || false,
       copied_from_id: report.copiedFromId || null,
       payload,
-      revision: currentRevision + 1,
-      created_at: new Date(report.createdAt).toISOString(),
-      updated_at: new Date(report.updatedAt).toISOString(),
+      revision: targetRevision,
+      created_at: new Date(report.createdAt || Date.now()).toISOString(),
+      updated_at: new Date(report.updatedAt || Date.now()).toISOString(),
     };
 
-    const { error } = await supabase.from('analyses').upsert(row, {
-      onConflict: 'user_id,id',
-    });
+    if (existing) {
+      // Database-level conditional revision update: only update if remote revision <= existing.revision
+      const { data: updateData, error: updateError } = await supabase
+        .from('analyses')
+        .update(row)
+        .eq('user_id', userId)
+        .eq('id', report.id)
+        .lte('revision', existing.revision || 1)
+        .select('id, revision');
 
-    if (error) {
-      return { success: false, error: error.message };
+      if (updateError) {
+        console.warn(`[CloudSync] Conditional update failed for report ${report.id}:`, updateError);
+        return { success: false, error: updateError.message };
+      }
+
+      if (!updateData || updateData.length === 0) {
+        console.warn(`[CloudSync] Optimistic concurrency conflict for report ${report.id}: remote revision advanced concurrently.`);
+        return { success: false, conflict: true };
+      }
+    } else {
+      const { error: insertError } = await supabase.from('analyses').insert(row);
+      if (insertError) {
+        // If conflict on concurrent insert, fall back to upsert
+        const { error: upsertError } = await supabase.from('analyses').upsert(row, {
+          onConflict: 'user_id,id',
+        });
+        if (upsertError) {
+          console.warn(`[CloudSync] Upsert failed for report ${report.id}:`, upsertError);
+          return { success: false, error: upsertError.message };
+        }
+      }
+    }
+
+    // Update local IndexedDB with assigned targetRevision to ensure local and cloud stay locked in step
+    try {
+      await saveReportDirectly(payload);
+    } catch (e) {
+      console.warn(`[CloudSync] Could not update local revision for report ${report.id}:`, e);
     }
 
     return { success: true };
   } catch (err) {
+    console.error(`[CloudSync] Exception uploading report ${report.id}:`, err);
     return { success: false, error: (err as Error).message };
   }
 }
@@ -295,16 +341,31 @@ export async function fetchAllUserCloudData(userId: string): Promise<{
   const [reportsRes, tmplsRes, draftRes] = await Promise.all([
     supabase
       .from('analyses')
-      .select('payload')
+      .select('id, revision, updated_at, payload')
       .eq('user_id', userId)
       .order('date', { ascending: false }),
     supabase.from('templates').select('payload').eq('user_id', userId),
     supabase.from('drafts').select('payload').eq('user_id', userId).maybeSingle(),
   ]);
 
+  if (reportsRes.error) {
+    throw new Error(`Cloud query failed for analyses: ${reportsRes.error.message}`);
+  }
+  if (tmplsRes.error) {
+    throw new Error(`Cloud query failed for templates: ${tmplsRes.error.message}`);
+  }
+
   const reports: SavedReport[] = (reportsRes.data || [])
-    .map((r) => r.payload as SavedReport)
-    .filter(Boolean);
+    .map((r) => {
+      const p = r.payload as SavedReport;
+      if (!p) return null;
+      return {
+        ...p,
+        id: r.id || p.id,
+        revision: r.revision || p.revision || 1,
+      };
+    })
+    .filter(Boolean) as SavedReport[];
 
   const templates: SavedTemplate[] = (tmplsRes.data || [])
     .map((t) => t.payload as SavedTemplate)
@@ -313,6 +374,130 @@ export async function fetchAllUserCloudData(userId: string): Promise<{
   const draft: AnalysisData | null = draftRes.data?.payload || null;
 
   return { reports, templates, draft };
+}
+
+/**
+ * Safely synchronizes local IndexedDB and Supabase:
+ * - Never overwrites newer local reports with older cloud data.
+ * - Never deletes local work if cloud returns empty.
+ * - Automatically uploads unsynced local reports to cloud.
+ */
+let activeSyncPromise: Promise<{ downloaded: number; uploaded: number; conflicts: number }> | null = null;
+
+async function executeSyncOperation(userId: string): Promise<{
+  downloaded: number;
+  uploaded: number;
+  conflicts: number;
+}> {
+  const [cloudData, localReports, localTemplates] = await Promise.all([
+    fetchAllUserCloudData(userId),
+    getAllReports(),
+    getAllTemplates(),
+  ]);
+
+  let downloaded = 0;
+  let uploaded = 0;
+  let conflicts = 0;
+
+  const localReportsMap = new Map<string, SavedReport>();
+  for (const rep of localReports) {
+    localReportsMap.set(rep.id, rep);
+  }
+
+  // 1. Process cloud reports into local store
+  for (const cloudRep of cloudData.reports) {
+    const localRep = localReportsMap.get(cloudRep.id);
+    if (!localRep) {
+      // Cloud has report not present locally -> download to local
+      await saveReportDirectly(cloudRep);
+      downloaded++;
+    } else {
+      const cloudRev = cloudRep.revision || 1;
+      const localRev = localRep.revision || 1;
+      const cloudTime = cloudRep.updatedAt || 0;
+      const localTime = localRep.updatedAt || 0;
+
+      if (cloudRev > localRev || (cloudRev === localRev && cloudTime > localTime)) {
+        // Cloud is newer -> update local
+        await saveReportDirectly(cloudRep);
+        downloaded++;
+      } else if (localRev > cloudRev || (localRev === cloudRev && localTime > cloudTime)) {
+        // Local is newer -> upload to cloud
+        const res = await uploadReportToCloud(userId, localRep);
+        if (res.success) uploaded++;
+        else if (res.conflict) conflicts++;
+      }
+    }
+  }
+
+  // 2. Upload any local reports that are completely absent from cloud
+  const cloudReportIds = new Set(cloudData.reports.map((r) => r.id));
+  for (const localRep of localReports) {
+    if (!cloudReportIds.has(localRep.id)) {
+      const res = await uploadReportToCloud(userId, localRep);
+      if (res.success) uploaded++;
+    }
+  }
+
+  // 3. Process templates
+  const localTemplatesMap = new Map<string, SavedTemplate>();
+  for (const t of localTemplates) {
+    localTemplatesMap.set(t.id, t);
+  }
+  for (const cloudTmpl of cloudData.templates) {
+    const localTmpl = localTemplatesMap.get(cloudTmpl.id);
+    if (!localTmpl || (cloudTmpl.updatedAt || 0) > (localTmpl.updatedAt || 0)) {
+      await saveTemplate(cloudTmpl);
+    }
+  }
+  const cloudTmplIds = new Set(cloudData.templates.map((t) => t.id));
+  for (const localTmpl of localTemplates) {
+    if (!cloudTmplIds.has(localTmpl.id)) {
+      await uploadTemplateToCloud(userId, localTmpl);
+    }
+  }
+
+  return { downloaded, uploaded, conflicts };
+}
+
+export async function syncBidirectionalWithCloud(userId: string): Promise<{
+  downloaded: number;
+  uploaded: number;
+  conflicts: number;
+}> {
+  if (!supabase || !userId) return { downloaded: 0, uploaded: 0, conflicts: 0 };
+
+  // 1. In-tab deduplication: If a sync is already running in this tab, return it
+  if (activeSyncPromise) {
+    return activeSyncPromise;
+  }
+
+  // 2. Create the promise for in-tab callers
+  activeSyncPromise = (async () => {
+    try {
+      // 3. Cross-tab coordination via standard Web Locks API (navigator.locks)
+      if (typeof navigator !== 'undefined' && 'locks' in navigator && typeof navigator.locks?.request === 'function') {
+        try {
+          return await navigator.locks.request(`abmax_cloud_sync_${userId}`, async () => {
+            return await executeSyncOperation(userId);
+          });
+        } catch (lockErr) {
+          console.warn('[CloudSync] Web Locks request threw, executing sync with local coordination:', lockErr);
+          return await executeSyncOperation(userId);
+        }
+      }
+
+      // If Web Locks is not supported in the browser environment, execute directly
+      return await executeSyncOperation(userId);
+    } catch (err) {
+      console.error('[CloudSync] Bidirectional sync error:', err);
+      return { downloaded: 0, uploaded: 0, conflicts: 0 };
+    } finally {
+      activeSyncPromise = null;
+    }
+  })();
+
+  return activeSyncPromise;
 }
 
 /* ================= LOCAL DATA MIGRATION ENGINE ================= */
@@ -436,3 +621,46 @@ export async function migrateLocalDataToCloud(
     skippedReports,
   };
 }
+
+/* ================= USER PREFERENCES SYNC ================= */
+
+export async function uploadPreferencesToCloud(
+  userId: string,
+  theme: 'light' | 'dark',
+  preferences: Record<string, any>
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    const row = {
+      user_id: userId,
+      theme,
+      preferences,
+      updated_at: new Date().toISOString(),
+    };
+    await supabase.from('user_preferences').upsert(row, { onConflict: 'user_id' });
+  } catch (err) {
+    console.warn('Failed to upload user preferences to cloud', err);
+  }
+}
+
+export async function fetchPreferencesFromCloud(
+  userId: string
+): Promise<{ theme?: 'light' | 'dark'; preferences?: Record<string, any> } | null> {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('user_preferences')
+      .select('theme, preferences')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return {
+      theme: data.theme as 'light' | 'dark',
+      preferences: data.preferences,
+    };
+  } catch {
+    return null;
+  }
+}
+
