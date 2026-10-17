@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { X, ZoomIn, ZoomOut, RotateCcw, Download } from 'lucide-react';
+import { exportBlobOrDownload } from '../utils/nativeExport';
 
 interface ImageViewerModalProps {
   isOpen: boolean;
@@ -38,13 +39,20 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const handleZoomOut = () => setZoom((prev) => Math.max(prev - 0.25, 0.5));
   const handleResetZoom = () => setZoom(1);
 
-  const handleDownload = () => {
-    const a = document.createElement('a');
-    a.href = imageUrl;
-    a.download = `${title.toLowerCase().replace(/\s+/g, '_')}_chart.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const handleDownload = async () => {
+    const filename = `${title.toLowerCase().replace(/\s+/g, '_')}_chart.png`;
+    try {
+      const res = await fetch(imageUrl);
+      const blob = await res.blob();
+      await exportBlobOrDownload(blob, filename, 'image/png', 'Export Chart Screenshot');
+    } catch {
+      const a = document.createElement('a');
+      a.href = imageUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
   };
 
   return (

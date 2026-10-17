@@ -1,0 +1,71 @@
+name: Android Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Website
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL || 'https://vkwkrvgugmfdopbzzbto.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZrd2tydmd1Z21mZG9wYnp6YnRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIwNDQ5ODAsImV4cCI6MjA1NzYyMDk4MH0.wM5Hn9n5aY2G1ZfW6N1bX6xK5qB1y3f8N9e4m3j2k1l' }}
+
+      - name: Perform Capacitor Sync
+        run: npx cap sync android
+
+      - name: Grant Execute Permissions for Gradle Wrapper
+        run: chmod +x android/gradlew
+
+      - name: Compile Android Debug APK with Gradle
+        working-directory: ./android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Locate and Stage Debug APK
+        run: |
+          mkdir -p apk-output
+          APK_FILE=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ] || [ ! -f "$APK_FILE" ]; then
+            echo "::error::Gradle did not produce a debug APK!"
+            exit 1
+          fi
+          echo "Found debug APK: $APK_FILE"
+          cp "$APK_FILE" apk-output/app-debug.apk
+          ls -la apk-output/
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: apk-output/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30

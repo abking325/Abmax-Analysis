@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Settings } from 'lucide-react';
+import settingsGearPng from '../assets/settings-gear.png';
 
 export type ActiveView = 'home' | 'analysis' | 'reports';
 
@@ -15,10 +15,9 @@ export const Header: React.FC<HeaderProps> = ({
   onNavigate,
   onOpenSettings,
 }) => {
-
   // Local state tracking whether header is visible (only when on top of page <= 80px)
   const [isVisible, setIsVisible] = useState(true);
-  const [headerHeight, setHeaderHeight] = useState(54);
+  const [headerHeight, setHeaderHeight] = useState(58);
   const headerRef = useRef<HTMLElement>(null);
 
   // Measure header height for layout spacer to prevent page content jumps
@@ -100,17 +99,21 @@ export const Header: React.FC<HeaderProps> = ({
           isVisible ? 'header-visible shadow-2xs' : 'header-hidden pointer-events-none'
         }`}
       >
-        <div className="w-full px-3.5 sm:px-6 py-1.5 sm:py-2 flex items-center justify-between gap-x-2 sm:gap-x-4 pl-[max(0.875rem,env(safe-area-inset-left,0px))] pr-[max(0.875rem,env(safe-area-inset-right,0px))]">
-          {/* Left: Brand Zone */}
+        <div className="w-full px-3 sm:px-6 py-1.5 sm:py-2 flex items-center justify-between gap-x-2 sm:gap-x-4 pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))]">
+          {/* Left: Brand Zone - Two-line wordmark with right-aligned smaller Analysis */}
           <button
             type="button"
             tabIndex={buttonTabIndex}
             onClick={() => onNavigate('home')}
-            className="flex items-center gap-1.5 sm:gap-2 text-left focus-visible:ring-2 focus-visible:ring-emerald-500 rounded-md transition-colors shrink-0"
-            title="Go to Home"
+            className="flex flex-col items-end justify-center text-right focus-visible:ring-2 focus-visible:ring-emerald-500 rounded-md transition-opacity hover:opacity-90 shrink-0 cursor-pointer select-none group py-0.5"
+            title="AbMax Analysis - Go to Home"
+            aria-label="AbMax Analysis Home"
           >
-            <span className="font-bold text-sm sm:text-lg tracking-tight text-app-main whitespace-nowrap">
-              ABMAX <span className="text-emerald-theme font-semibold">ANALYSIS</span>
+            <span className="font-extrabold text-[21px] sm:text-[25px] leading-none tracking-tight text-emerald-theme whitespace-nowrap block">
+              AbMax
+            </span>
+            <span className="text-[9px] sm:text-[10px] font-semibold tracking-[0.18em] uppercase text-app-secondary dark:text-slate-400 -mt-0.5 block self-end whitespace-nowrap">
+              Analysis
             </span>
           </button>
 
@@ -120,7 +123,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('home')}
-              className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                 activeView === 'home'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -133,7 +136,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('analysis')}
-              className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                 activeView === 'analysis'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -146,7 +149,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('reports')}
-              className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                 activeView === 'reports'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -156,7 +159,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </nav>
 
-          {/* Right: Clearly Visible Outline Settings Gear Button */}
+          {/* Right: Locally Bundled Transparent PNG Settings Gear Button */}
           <div className="flex items-center shrink-0">
             <button
               type="button"
@@ -164,9 +167,14 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={onOpenSettings}
               aria-label="Open settings"
               title="Settings"
-              className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-app bg-app-field/60 hover:bg-app-field text-app-main hover:text-emerald-theme transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0"
+              className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-app bg-app-field/60 hover:bg-app-field text-app-main transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 relative z-10 pointer-events-auto"
             >
-              <Settings className="w-[19px] h-[19px] text-current shrink-0" strokeWidth={1.75} />
+              <img
+                src={settingsGearPng}
+                alt=""
+                aria-hidden="true"
+                className="w-[19px] h-[19px] max-w-[19px] max-h-[19px] object-contain brightness-0 dark:invert opacity-75 hover:opacity-100 transition-opacity select-none pointer-events-none"
+              />
             </button>
           </div>
         </div>

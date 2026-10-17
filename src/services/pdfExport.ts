@@ -1,14 +1,16 @@
 import { jsPDF } from 'jspdf';
-import { SavedReport, TIMEFRAME_ORDER, TimeframeId } from '../types/journal';
+import { ReportPresentationConfig, SavedReport, TIMEFRAME_ORDER, TimeframeId } from '../types/journal';
 import {
   calculateOverallAlignment,
   findMatchingValues,
   isDeepAnalysisAligned,
 } from '../utils/analysisUtils';
+import { exportBlobOrDownload } from '../utils/nativeExport';
 
-interface ExportPdfOptions {
+export interface ExportPdfOptions {
   report: SavedReport;
   imagesMap?: Record<string, string>; // imgId -> dataUrl/blobUrl
+  presentationConfig?: ReportPresentationConfig;
 }
 
 const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
@@ -29,6 +31,7 @@ const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
 export async function downloadReportPdf({
   report,
   imagesMap = {},
+  presentationConfig,
 }: ExportPdfOptions): Promise<void> {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -336,10 +339,20 @@ export async function downloadReportPdf({
   col2Items.push(...getTimeframeLines('1H'));
   col2Items.push(...getTimeframeLines('15M'));
 
-  // Compile Column 3: 5-Minute, 1-Minute, Overall Notes
+  // Compile Column 3: 5-Minute, 1-Minute, Opening Candle Levels, Overall Notes
   const col3Items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
   col3Items.push(...getTimeframeLines('5M'));
   col3Items.push(...getTimeframeLines('1M'));
+
+  if (report.openingCandles && report.openingCandles.length > 0) {
+    col3Items.push({ type: 'heading', text: 'OPENING CANDLE LEVELS' });
+    const ocSummary = report.openingCandles
+      .map((oc) => `${oc.session}: ${oc.level || '—'}`)
+      .join('  |  ');
+    col3Items.push({ type: 'body', text: ocSummary });
+    col3Items.push({ type: 'rule', text: '' });
+  }
+
   col3Items.push({ type: 'heading', text: 'OVERALL NOTES' });
   if (report.overallNotes && report.overallNotes.trim()) {
     col3Items.push({ type: 'body', text: report.overallNotes.trim() });
@@ -593,12 +606,18 @@ export async function downloadReportPdf({
   doc.text('ABMAX ANALYSIS — Trading Journal', marginX, endingY);
 
   // CHART ATTACHMENT PAGES (APPENDIX)
-  // Check if any timeframe has attached charts loaded in imagesMap
+  // Check if user preferences allow timeframe chart export and any timeframe has attached charts
+  const includeTfCharts = presentationConfig?.pdfImages?.includeTimeframeCharts !== false;
+  const includeScenarioImages = presentationConfig?.pdfImages?.includeScenarioImages !== false;
+  const includeTradeImages = presentationConfig?.pdfImages?.includeTradeImages !== false;
+
   const chartsToExport: Array<{ tf: TimeframeId; imgUrl: string }> = [];
-  for (const tf of TIMEFRAME_ORDER) {
-    const imgId = report.timeframes[tf]?.chartImageId;
-    if (imgId && imagesMap[imgId]) {
-      chartsToExport.push({ tf, imgUrl: imagesMap[imgId] });
+  if (includeTfCharts) {
+    for (const tf of TIMEFRAME_ORDER) {
+      const imgId = report.timeframes[tf]?.chartImageId;
+      if (imgId && imagesMap[imgId]) {
+        chartsToExport.push({ tf, imgUrl: imagesMap[imgId] });
+      }
     }
   }
 
@@ -660,7 +679,7 @@ export async function downloadReportPdf({
   }
 
   // SCENARIO ATTACHMENT PAGES (APPENDIX)
-  if (report.scenarios) {
+  if (includeScenarioImages && report.scenarios) {
     for (const sc of report.scenarios) {
       if (sc.images && sc.images.length > 0) {
         for (let i = 0; i < sc.images.length; i++) {
@@ -712,7 +731,7 @@ export async function downloadReportPdf({
   }
 
   // TRADE SCREENSHOT ATTACHMENT PAGES (APPENDIX)
-  if (report.trades) {
+  if (includeTradeImages && report.trades) {
     for (const trd of report.trades) {
       if (trd.images && trd.images.length > 0) {
         for (let i = 0; i < trd.images.length; i++) {
@@ -771,6 +790,7 @@ export async function downloadReportPdf({
   );
   const filename = `ABMAX_${sanitizedPair}_${sanitizedDate}.pdf`;
 
-  // Trigger browser download
-  doc.save(filename);
+  // Trigger universal download (supports Android native save/share sheet & browser)
+  const pdfBlob = doc.output('blob');
+  await exportBlobOrDownload(pdfBlob, filename, 'application/pdf', 'ABMAX Analysis PDF');
 }

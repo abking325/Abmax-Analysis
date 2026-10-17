@@ -15,6 +15,7 @@ import {
   generateReportsCsv,
   getReportBiasSummary,
 } from '../utils/analysisUtils';
+import { exportTextOrDownload } from '../utils/nativeExport';
 import { ReportDetailsModal } from './ReportDetailsModal';
 import { BackupModal } from './BackupModal';
 import { SyncStatusBadge } from './SyncStatusBadge';
@@ -98,18 +99,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     }));
   }, [filteredReports]);
 
-  const handleExportCsv = () => {
+  const handleExportCsv = async () => {
     if (filteredReports.length === 0) return;
     const csvData = generateReportsCsv(filteredReports);
-    const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `abmax_reports_${selectedPair}_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const filename = `abmax_reports_${selectedPair}_${new Date().toISOString().slice(0, 10)}.csv`;
+    await exportTextOrDownload(csvData, filename, 'text/csv;charset=utf-8;', 'Export Reports CSV');
   };
 
   const getBiasTextColor = (bias: string) => {
@@ -263,10 +257,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         <div className="space-y-6">
           {groupedReports.map(({ date, items }, groupIdx) => (
             <React.Fragment key={date}>
-              {/* Bold separator between date groups (not between reports within the same day) */}
+              {/* Bold orange separator between distinct date groups */}
               {groupIdx > 0 && (
                 <div
-                  className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+                  className="border-t-4 border-[#F97316] my-8 rounded-full shadow-xs"
                   role="separator"
                   aria-orientation="horizontal"
                 />

@@ -152,6 +152,21 @@ export interface RecordedTrade {
   updatedAt: number;
 }
 
+export type OpeningCandleSession =
+  | 'Yearly'
+  | 'Quarterly'
+  | 'Monthly'
+  | 'Weekly'
+  | 'London'
+  | 'New York'
+  | 'Asia';
+
+export interface OpeningCandleEntry {
+  id: string; // stable unique ID (e.g. oc_...)
+  session: OpeningCandleSession;
+  level: string; // string price to preserve exact decimal formatting, blank not zero
+}
+
 export interface WorkspaceVisibilityConfig {
   timeframes: Record<TimeframeId, boolean>;
   deepSections: {
@@ -172,6 +187,7 @@ export interface WorkspaceVisibilityConfig {
     majorLiquidityChecklist: boolean;
     majorLiquidityWatchlist: boolean;
     supplyDemandManager: boolean;
+    openingCandle?: boolean;
     overallNotes: boolean;
     plannedScenarios: boolean;
   };
@@ -206,6 +222,7 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
     majorLiquidityChecklist: true,
     majorLiquidityWatchlist: true,
     supplyDemandManager: true,
+    openingCandle: true,
     overallNotes: true,
     plannedScenarios: true,
   },
@@ -224,6 +241,7 @@ export interface AnalysisData {
   crossedLiquidity: MajorLiquidityItem[];
   majorLiquidityWatchlist?: string; // Phase 7: Major Liquidity Watchlist
   supplyDemandLevels: SupplyDemandLevel[];
+  openingCandles?: OpeningCandleEntry[]; // Phase 4: Opening Candle Levels
   scenarios?: PlannedScenario[];
   trades?: RecordedTrade[];
   overallNotes: string;
@@ -257,6 +275,121 @@ export interface ImageAttachment {
   createdAt: number;
 }
 
+export interface ReportVisibilityConfig {
+  general: {
+    metadataAndTimestamps: boolean;
+    overallAlignment: boolean;
+    majorLiquidityChecklist: boolean;
+    majorLiquidityWatchlist: boolean;
+  };
+  timeframes: Record<TimeframeId, boolean>;
+  timeframeFields: {
+    overallInterpretation: boolean;
+    priceLocation: boolean;
+    swingStructure: boolean;
+    internalStructure: boolean;
+    fractalStructure: boolean;
+    deepAlignment: boolean;
+    supplyLevels: boolean;
+    demandLevels: boolean;
+    supportLevels: boolean;
+    resistanceLevels: boolean;
+    liquidityLevels: boolean;
+    timeframeNotes: boolean;
+    timeframeImages: boolean;
+  };
+  notesAndLevels: {
+    openingCandleLevels: boolean;
+    generalSupplyDemand: boolean;
+    overallNotes: boolean;
+    matchingValues: boolean;
+  };
+  scenariosAndTrades: {
+    plannedScenarios: boolean;
+    scenarioImages: boolean;
+    tradesTaken: boolean;
+    tradeImages: boolean;
+  };
+}
+
+export const DEFAULT_REPORT_VISIBILITY: ReportVisibilityConfig = {
+  general: {
+    metadataAndTimestamps: true,
+    overallAlignment: true,
+    majorLiquidityChecklist: true,
+    majorLiquidityWatchlist: true,
+  },
+  timeframes: {
+    Monthly: true,
+    Weekly: true,
+    Daily: true,
+    '4H': true,
+    '1H': true,
+    '15M': true,
+    '5M': true,
+    '1M': true,
+  },
+  timeframeFields: {
+    overallInterpretation: true,
+    priceLocation: true,
+    swingStructure: true,
+    internalStructure: true,
+    fractalStructure: true,
+    deepAlignment: true,
+    supplyLevels: true,
+    demandLevels: true,
+    supportLevels: true,
+    resistanceLevels: true,
+    liquidityLevels: true,
+    timeframeNotes: true,
+    timeframeImages: true,
+  },
+  notesAndLevels: {
+    openingCandleLevels: true,
+    generalSupplyDemand: true,
+    overallNotes: true,
+    matchingValues: true,
+  },
+  scenariosAndTrades: {
+    plannedScenarios: true,
+    scenarioImages: true,
+    tradesTaken: true,
+    tradeImages: true,
+  },
+};
+
+export interface ReportPresentationConfig {
+  defaultView: 'standard' | 'organized';
+  desktopLayout: '1-col' | '2-col' | '3-col';
+  textSize: 'small' | 'standard' | 'large';
+  spacing: 'compact' | 'comfortable';
+  separators: 'subtle' | 'bold';
+  chartDisplay: 'collapsed' | 'expanded';
+  showEmptySections: boolean;
+  sectionVisibility?: ReportVisibilityConfig;
+  pdfImages: {
+    includeTimeframeCharts: boolean;
+    includeScenarioImages: boolean;
+    includeTradeImages: boolean;
+  };
+}
+
+export const DEFAULT_REPORT_PRESENTATION: ReportPresentationConfig = {
+  defaultView: 'standard',
+  desktopLayout: '3-col',
+  textSize: 'standard',
+  spacing: 'comfortable',
+  separators: 'subtle',
+  chartDisplay: 'collapsed',
+  showEmptySections: true,
+  sectionVisibility: DEFAULT_REPORT_VISIBILITY,
+  pdfImages: {
+    includeTimeframeCharts: true,
+    includeScenarioImages: true,
+    includeTradeImages: true,
+  },
+};
+
 export interface BackupData {
   version: number;
   exportedAt: string;
@@ -268,6 +401,7 @@ export interface BackupData {
   preferences: {
     theme: 'light' | 'dark';
     visibilityConfig?: WorkspaceVisibilityConfig;
+    presentationConfig?: ReportPresentationConfig;
   };
 }
 
@@ -330,6 +464,7 @@ export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD', visibili
     crossedLiquidity: [],
     majorLiquidityWatchlist: '',
     supplyDemandLevels: [],
+    openingCandles: [],
     scenarios: [],
     trades: [],
     overallNotes: '',

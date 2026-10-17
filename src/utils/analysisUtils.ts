@@ -328,6 +328,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     'Crossed Liquidity',
     'Major Liquidity Watchlist',
     'Supply & Demand Levels',
+    'Opening Candle Levels',
     'Overall Notes',
     'Planned Scenarios',
     'Trades Taken',
@@ -341,6 +342,9 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     const crossedLiq = (r.crossedLiquidity || []).join('; ');
     const sdLevels = (r.supplyDemandLevels || [])
       .map((sd) => `${sd.timeframe}: S[${sd.supply || '-'}] D[${sd.demand || '-'}]`)
+      .join('; ');
+    const ocLevels = (r.openingCandles || [])
+      .map((oc) => `${oc.session}: ${oc.level || '-'}`)
       .join('; ');
     const scenariosText = (r.scenarios || [])
       .map(
@@ -384,6 +388,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
       escapeCsvCell(crossedLiq),
       escapeCsvCell(r.majorLiquidityWatchlist || ''),
       escapeCsvCell(sdLevels),
+      escapeCsvCell(ocLevels),
       escapeCsvCell(r.overallNotes || ''),
       escapeCsvCell(scenariosText),
       escapeCsvCell(tradesText),

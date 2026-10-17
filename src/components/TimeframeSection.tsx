@@ -11,6 +11,8 @@ import {
   Upload,
   Clipboard,
   Plus,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import {
   DeepLevelEntry,
@@ -32,7 +34,7 @@ interface TimeframeSectionProps {
   onToggleExpand: () => void;
   onChangeOverallBias: (bias: OverallBias) => void;
   onUpdateField: (updater: (prev: TimeframeData) => TimeframeData) => void;
-  onSaveDeep: () => void;
+  onSaveDeep: () => Promise<{ success: boolean; error?: string } | void> | void;
   onEditDeep: () => void;
   onResetDeep: () => void;
   onAttachImage: (dataUrl: string) => Promise<void>;
@@ -63,6 +65,9 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showRemoveImageConfirm, setShowRemoveImageConfirm] = useState(false);
   const [pasteError, setPasteError] = useState<string | null>(null);
+  const [isSavingDeep, setIsSavingDeep] = useState(false);
+  const [deepSaveSuccessMsg, setDeepSaveSuccessMsg] = useState<string | null>(null);
+  const [deepSaveErrorMsg, setDeepSaveErrorMsg] = useState<string | null>(null);
 
   const deepAligned = isDeepAnalysisAligned(data);
   const deepVis = visibilityConfig?.deepSections;
@@ -123,9 +128,28 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
     setPasteError('No image in pasted data');
   };
 
-  // Save handler: preserves open state and viewport position without scroll jumping
-  const handleSaveTimeframe = () => {
-    onSaveDeep();
+  // Save handler: persists deep analysis for this timeframe, shows feedback, keeps viewport completely stable
+  const handleSaveTimeframe = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsSavingDeep(true);
+    setDeepSaveSuccessMsg(null);
+    setDeepSaveErrorMsg(null);
+    try {
+      const res = await onSaveDeep();
+      if (res && typeof res === 'object' && res.success === false) {
+        setDeepSaveErrorMsg(res.error || 'Failed to save deep analysis.');
+      } else {
+        setDeepSaveSuccessMsg('Deep analysis saved');
+        setTimeout(() => {
+          setDeepSaveSuccessMsg(null);
+        }, 4000);
+      }
+    } catch (err) {
+      setDeepSaveErrorMsg((err as Error).message || 'Failed to save deep analysis.');
+    } finally {
+      setIsSavingDeep(false);
+    }
   };
 
   // Level array helpers
@@ -250,9 +274,14 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               {timeframe} Overall
             </h3>
 
-            {data.isSaved && (
+            {data.isSaved && !deepSaveSuccessMsg && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded">
                 <Check className="w-3 h-3" /> Saved
+              </span>
+            )}
+            {deepSaveSuccessMsg && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-500/40 px-2 py-0.5 rounded">
+                <Check className="w-3 h-3" /> Deep analysis saved
               </span>
             )}
 
@@ -909,21 +938,64 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
             </div>
           )}
 
-          {/* 13. Save, Reset, Collapse actions */}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-4">
-            <div className="flex items-center gap-2">
+          {/* Deep Save feedback message if any */}
+          {deepSaveSuccessMsg && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 my-2 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-500/40 text-emerald-600 dark:text-emerald-400 text-xs font-semibold animate-fade-in">
+              <Check className="w-3.5 h-3.5" />
+              <span>Deep analysis saved</span>
+            </div>
+          )}
+
+          {deepSaveErrorMsg && (
+            <div className="flex items-center justify-between gap-2 px-3 py-1.5 my-2 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-500/40 text-rose-600 dark:text-rose-400 text-xs">
+              <div className="flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{deepSaveErrorMsg}</span>
+              </div>
               <button
                 type="button"
                 onClick={handleSaveTimeframe}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors"
+                className="font-bold underline hover:no-underline cursor-pointer"
               >
-                <Check className="w-3.5 h-3.5" /> Save {timeframe}
+                Retry
               </button>
+            </div>
+          )}
+
+          {/* 13. Save, Reset, Collapse actions */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleSaveTimeframe}
+                disabled={isSavingDeep}
+                aria-label={`Save ${timeframe} Deep Analysis`}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isSavingDeep ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Check className="w-3.5 h-3.5" />
+                )}
+                <span>{isSavingDeep ? 'Saving...' : 'Save Deep Analysis'}</span>
+              </button>
+
+              {data.isSaved && (
+                <button
+                  type="button"
+                  onClick={onEditDeep}
+                  aria-label={`Edit ${timeframe} Deep Analysis`}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded transition-colors cursor-pointer"
+                >
+                  <Edit2 className="w-3 h-3" />
+                  <span>Edit Deep Analysis</span>
+                </button>
+              )}
 
               <button
                 type="button"
                 onClick={onToggleExpand}
-                className="px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors"
+                className="px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors cursor-pointer"
               >
                 Collapse
               </button>

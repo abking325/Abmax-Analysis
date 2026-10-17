@@ -1,7 +1,10 @@
 import {
   AnalysisData,
   BackupData,
+  DEFAULT_REPORT_PRESENTATION,
+  DEFAULT_REPORT_VISIBILITY,
   ImageAttachment,
+  ReportPresentationConfig,
   SavedReport,
   SavedTemplate,
 } from '../types/journal';
@@ -140,6 +143,7 @@ export async function saveReport(report: SavedReport): Promise<SavedReport> {
   const sanitizedReport: SavedReport = {
     ...report,
     revision: targetRevision,
+    openingCandles: report.openingCandles || [],
     updatedAt: report.updatedAt || Date.now(),
     createdAt: report.createdAt || Date.now(),
     pair: report.pair || 'XAUUSD',
@@ -162,10 +166,10 @@ export async function saveReport(report: SavedReport): Promise<SavedReport> {
     }
   });
 
-  // Read-back verification: verify identity and persistence before reporting success
+  // Read-back verification: verify identity, revision, and persistence before reporting success
   const verified = await getReportById(sanitizedReport.id);
-  if (!verified || verified.id !== sanitizedReport.id) {
-    throw new Error(`Storage integrity check failed: report ${sanitizedReport.id} could not be read back after save.`);
+  if (!verified || verified.id !== sanitizedReport.id || verified.revision !== targetRevision) {
+    throw new Error(`Storage integrity check failed: report ${sanitizedReport.id} could not be verified with revision ${targetRevision} after save.`);
   }
 
   return verified;
@@ -309,6 +313,62 @@ export async function saveUserVisibilityConfig(config: any): Promise<void> {
   );
 }
 
+/* ================= USER REPORT PRESENTATION PREFERENCES ================= */
+
+export async function getUserReportPresentationConfig(): Promise<ReportPresentationConfig> {
+  try {
+    const record = await runTransaction<{ key: string; value: ReportPresentationConfig } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get('report_presentation_config')
+    );
+    if (!record?.value) {
+      return DEFAULT_REPORT_PRESENTATION;
+    }
+    const val = record.value;
+    return {
+      ...DEFAULT_REPORT_PRESENTATION,
+      ...val,
+      sectionVisibility: {
+        general: {
+          ...DEFAULT_REPORT_VISIBILITY.general,
+          ...(val.sectionVisibility?.general || {}),
+        },
+        timeframes: {
+          ...DEFAULT_REPORT_VISIBILITY.timeframes,
+          ...(val.sectionVisibility?.timeframes || {}),
+        },
+        timeframeFields: {
+          ...DEFAULT_REPORT_VISIBILITY.timeframeFields,
+          ...(val.sectionVisibility?.timeframeFields || {}),
+        },
+        notesAndLevels: {
+          ...DEFAULT_REPORT_VISIBILITY.notesAndLevels,
+          ...(val.sectionVisibility?.notesAndLevels || {}),
+        },
+        scenariosAndTrades: {
+          ...DEFAULT_REPORT_VISIBILITY.scenariosAndTrades,
+          ...(val.sectionVisibility?.scenariosAndTrades || {}),
+        },
+      },
+      pdfImages: {
+        ...DEFAULT_REPORT_PRESENTATION.pdfImages,
+        ...(val.pdfImages || {}),
+      },
+    };
+  } catch {
+    return { ...DEFAULT_REPORT_PRESENTATION };
+  }
+}
+
+export async function saveUserReportPresentationConfig(
+  config: ReportPresentationConfig
+): Promise<void> {
+  await runTransaction('preferences', 'readwrite', (store) =>
+    store.put({ key: 'report_presentation_config', value: config })
+  );
+}
+
 /* ================= TEMPLATES ================= */
 
 export async function getAllTemplates(): Promise<SavedTemplate[]> {
@@ -325,6 +385,13 @@ export async function getAllTemplates(): Promise<SavedTemplate[]> {
     };
     req.onerror = () => reject(req.error);
   });
+}
+
+export async function getTemplateById(id: string): Promise<SavedTemplate | null> {
+  const record = await runTransaction<SavedTemplate | undefined>('templates', 'readonly', (store) =>
+    store.get(id)
+  );
+  return record || null;
 }
 
 export async function saveTemplate(template: SavedTemplate): Promise<void> {
@@ -406,11 +473,12 @@ export async function getAllImages(): Promise<ImageAttachment[]> {
 /* ================= BACKUP & RESTORE ================= */
 
 export async function createFullBackup(): Promise<BackupData> {
-  const [reports, templates, draft, images] = await Promise.all([
+  const [reports, templates, draft, images, presentationConfig] = await Promise.all([
     getAllReports(),
     getAllTemplates(),
     getDraft(),
     getAllImages(),
+    getUserReportPresentationConfig(),
   ]);
 
   const theme = (localStorage.getItem('abmax_theme') as 'light' | 'dark') || 'light';
@@ -425,6 +493,7 @@ export async function createFullBackup(): Promise<BackupData> {
     images,
     preferences: {
       theme,
+      presentationConfig,
     },
   };
 }
@@ -542,6 +611,11 @@ export async function restoreBackup(
   // Restore theme preference
   if (backup.preferences?.theme) {
     localStorage.setItem('abmax_theme', backup.preferences.theme);
+  }
+
+  // Restore report presentation preference if present
+  if (backup.preferences?.presentationConfig) {
+    await saveUserReportPresentationConfig(backup.preferences.presentationConfig);
   }
 
   return { addedReports, addedTemplates, addedImages };

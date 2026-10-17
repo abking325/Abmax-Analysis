@@ -1,0 +1,18 @@
+{
+  "short_name": "ABMAX",
+  "name": "ABMAX ANALYSIS — Trading Analysis Journal",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#078354",
+  "background_color": "#0B0F17",
+  "description": "Professional multi-timeframe market analysis and trading journal with structured SMC framework, alignment verification, and reports."
+}

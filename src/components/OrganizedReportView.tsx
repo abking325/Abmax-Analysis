@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  ReportPresentationConfig,
   SavedReport,
   TimeframeId,
   TIMEFRAME_ORDER,
@@ -26,6 +27,7 @@ interface OrganizedReportViewProps {
   onOpenViewer?: (url: string, title: string) => void;
   onEditTrade?: (trade: RecordedTrade) => void;
   onRemoveTrade?: (tradeId: string) => void;
+  presentationConfig?: ReportPresentationConfig;
 }
 
 const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
@@ -45,12 +47,29 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   onOpenViewer,
   onEditTrade,
   onRemoveTrade,
+  presentationConfig,
 }) => {
   const [expandedCharts, setExpandedCharts] = useState<Record<string, boolean>>({});
   const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
 
+  const desktopLayout = presentationConfig?.desktopLayout || '3-col';
+  const textSize = presentationConfig?.textSize || 'standard';
+  const spacing = presentationConfig?.spacing || 'comfortable';
+  const separators = presentationConfig?.separators || 'subtle';
+  const chartDisplay = presentationConfig?.chartDisplay || 'collapsed';
+  const showEmptySections = presentationConfig?.showEmptySections !== false;
+
   const toggleChart = (tf: TimeframeId) => {
-    setExpandedCharts((prev) => ({ ...prev, [tf]: !prev[tf] }));
+    setExpandedCharts((prev) => {
+      const currentState = chartDisplay === 'expanded' ? prev[tf] !== false : Boolean(prev[tf]);
+      return { ...prev, [tf]: !currentState };
+    });
+  };
+
+  const isChartOpen = (tf: TimeframeId) => {
+    return chartDisplay === 'expanded'
+      ? expandedCharts[tf] !== false
+      : Boolean(expandedCharts[tf]);
   };
 
   const overallAlign = calculateOverallAlignment(report.timeframes);
@@ -60,10 +79,28 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   const isAllDeepAligned = deepAlignedCount === TIMEFRAME_ORDER.length;
   const matchingValues = findMatchingValues(report.timeframes);
 
-  // Groupings for the 3 balanced columns on desktop (while DOM matches mobile order or column groups)
-  const leftTfs: TimeframeId[] = ['Monthly', 'Weekly', 'Daily'];
-  const midTfs: TimeframeId[] = ['4H', '1H', '15M'];
-  const rightTfs: TimeframeId[] = ['5M', '1M'];
+  // Groupings for the balanced columns on desktop (mobile is always 1 column)
+  let leftTfs: TimeframeId[] = ['Monthly', 'Weekly', 'Daily'];
+  let midTfs: TimeframeId[] = ['4H', '1H', '15M'];
+  let rightTfs: TimeframeId[] = ['5M', '1M'];
+  let gridColsClass = 'grid-cols-1 md:grid-cols-3 max-w-5xl';
+
+  if (desktopLayout === '1-col') {
+    leftTfs = ['Monthly', 'Weekly', 'Daily', '4H', '1H', '15M', '5M', '1M'];
+    midTfs = [];
+    rightTfs = [];
+    gridColsClass = 'grid-cols-1 max-w-3xl';
+  } else if (desktopLayout === '2-col') {
+    leftTfs = ['Monthly', 'Weekly', 'Daily', '4H'];
+    midTfs = ['1H', '15M', '5M', '1M'];
+    rightTfs = [];
+    gridColsClass = 'grid-cols-1 md:grid-cols-2 max-w-4xl';
+  }
+
+  const separatorClass = separators === 'bold' ? 'border-b-2 border-gray-400' : 'border-b border-gray-200';
+  const sectionSpacingClass = spacing === 'compact' ? 'py-2.5 pb-2.5 space-y-2' : 'py-4 space-y-3';
+  const baseTextClass = textSize === 'small' ? 'text-[10px]' : textSize === 'large' ? 'text-xs' : 'text-[11px]';
+  const headingTextClass = textSize === 'small' ? 'text-[11px]' : textSize === 'large' ? 'text-sm' : 'text-xs';
 
   const getBiasBadgeClass = (bias: string) => {
     if (bias === 'Bullish') {
@@ -86,14 +123,15 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     const label = TIMEFRAME_DISPLAY_NAMES[tfId];
 
     if (!tf) {
+      if (!showEmptySections) return null;
       return (
-        <section key={tfId} className="py-4 border-b border-gray-200">
+        <section key={tfId} className={`${sectionSpacingClass} ${separatorClass}`}>
           <div className="flex items-baseline justify-between gap-2 mb-2">
-            <h3 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+            <h3 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
               {label} <span className="text-gray-400 font-normal">| —</span>
             </h3>
           </div>
-          <p className="text-[11px] text-gray-400 italic">No detail recorded</p>
+          <p className={`${baseTextClass} text-gray-400 italic`}>No detail recorded</p>
         </section>
       );
     }
@@ -146,14 +184,18 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
       hasNote ||
       hasChart;
 
+    if (!showEmptySections && !hasAnyDetail) {
+      return null;
+    }
+
     return (
       <section
         key={tfId}
-        className="py-3.5 border-b border-gray-200 last:border-b-0 space-y-2"
+        className={`${sectionSpacingClass} ${separatorClass} last:border-b-0`}
       >
         {/* Section Header: [TIMEFRAME] | [recorded overall bias] */}
         <div className="flex items-baseline justify-between gap-2">
-          <h3 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+          <h3 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
             {label}{' '}
             <span className="font-normal text-gray-700">
               | {tf.overallBias || '—'}
@@ -363,13 +405,13 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     <ImageIcon className="w-3 h-3 text-emerald-700" />
                     Attached Chart ({label})
                   </span>
-                  {expandedCharts[tfId] ? (
+                  {isChartOpen(tfId) ? (
                     <ChevronUp className="w-3.5 h-3.5 text-emerald-700" />
                   ) : (
                     <ChevronDown className="w-3.5 h-3.5 text-emerald-700" />
                   )}
                 </button>
-                {expandedCharts[tfId] && (
+                {isChartOpen(tfId) && (
                   <div className="mt-2 p-2 bg-gray-50 rounded border border-gray-200 space-y-1.5">
                     <img
                       src={chartUrl}
@@ -410,10 +452,14 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   return (
     <article
       id="organized-report-sheet"
-      className="bg-white text-gray-900 border border-gray-300 rounded-lg shadow-sm p-5 sm:p-7 lg:p-9 max-w-5xl mx-auto font-sans"
+      className={`bg-white text-gray-900 border border-gray-300 rounded-lg shadow-sm mx-auto font-sans ${baseTextClass} ${
+        spacing === 'compact' ? 'p-3 sm:p-5' : 'p-5 sm:p-7 lg:p-9'
+      } ${
+        desktopLayout === '1-col' ? 'max-w-3xl' : desktopLayout === '2-col' ? 'max-w-4xl' : 'max-w-5xl'
+      }`}
     >
       {/* A. Full-Width Document Header */}
-      <header className="border-b border-gray-300 pb-4 mb-5">
+      <header className={`border-b ${separatorClass} pb-4 mb-5`}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <div>
             {report.title ? (
@@ -526,13 +572,13 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
         </div>
       </header>
 
-      {/* B. Three-Column Document Body on Desktop (1 column on mobile) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8 items-start">
-        {/* LEFT COLUMN: 1. External Liquidity, 2. Weekly, 3. Daily */}
-        <div className="space-y-3 md:border-r md:border-gray-200 md:pr-6 lg:pr-8">
+      {/* B. Document Body: 1, 2, or 3 columns on desktop based on presentationConfig (always 1 col on mobile) */}
+      <div className={`grid ${gridColsClass} ${spacing === 'compact' ? 'gap-4' : 'gap-6 lg:gap-8'} items-start`}>
+        {/* LEFT COLUMN */}
+        <div className={`space-y-3 ${desktopLayout !== '1-col' ? 'md:border-r md:border-gray-200 md:pr-6 lg:pr-8' : ''}`}>
           {/* 1. External Liquidity */}
-          <section className="pb-3.5 border-b border-gray-200 space-y-2">
-            <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+          <section className={`pb-3.5 ${separatorClass} space-y-2`}>
+            <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
               1. EXTERNAL LIQUIDITY
             </h2>
 
@@ -553,10 +599,10 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                 </div>
               </div>
             ) : (
-              <p className="text-[11px] text-gray-400 italic">No crossed liquidity recorded</p>
+              <p className={`${baseTextClass} text-gray-400 italic`}>No crossed liquidity recorded</p>
             )}
 
-            {/* Major Liquidity Watchlist (Phase 7) */}
+            {/* Major Liquidity Watchlist */}
             {report.majorLiquidityWatchlist && report.majorLiquidityWatchlist.trim() && (
               <div className="pt-2 border-t border-gray-100 space-y-1">
                 <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
@@ -569,33 +615,69 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
             )}
           </section>
 
-          {/* 2. Weekly & 3. Daily */}
+          {/* 2. Left Timeframes */}
           {leftTfs.map((tfId) => renderTimeframeSection(tfId))}
+
+          {/* In 1-column layout, append overall notes in this column */}
+          {desktopLayout === '1-col' && (
+            <section className="pt-2 space-y-1.5">
+              <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
+                OVERALL NOTES
+              </h2>
+              {report.overallNotes?.trim() ? (
+                <p className={`${baseTextClass} leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans`}>
+                  {report.overallNotes}
+                </p>
+              ) : (
+                <p className={`${baseTextClass} text-gray-400 italic`}>No notes recorded</p>
+              )}
+            </section>
+          )}
         </div>
 
-        {/* MIDDLE COLUMN: 4. 4-Hour, 5. 1-Hour, 6. 15-Minute */}
-        <div className="space-y-3 md:border-r md:border-gray-200 md:pr-6 lg:pr-8">
-          {midTfs.map((tfId) => renderTimeframeSection(tfId))}
-        </div>
+        {/* MIDDLE COLUMN (when 2-col or 3-col) */}
+        {midTfs.length > 0 && (
+          <div className={`space-y-3 ${desktopLayout === '3-col' ? 'md:border-r md:border-gray-200 md:pr-6 lg:pr-8' : ''}`}>
+            {midTfs.map((tfId) => renderTimeframeSection(tfId))}
 
-        {/* RIGHT COLUMN: 7. 5-Minute, 8. 1-Minute, 9. Overall Notes */}
-        <div className="space-y-3">
-          {rightTfs.map((tfId) => renderTimeframeSection(tfId))}
-
-          {/* 9. Overall Notes */}
-          <section className="pt-2 space-y-1.5">
-            <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
-              OVERALL NOTES
-            </h2>
-            {report.overallNotes?.trim() ? (
-              <p className="text-[11px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans">
-                {report.overallNotes}
-              </p>
-            ) : (
-              <p className="text-[11px] text-gray-400 italic">No notes recorded</p>
+            {/* In 2-column layout, append overall notes in this column */}
+            {desktopLayout === '2-col' && (
+              <section className="pt-2 space-y-1.5">
+                <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
+                  OVERALL NOTES
+                </h2>
+                {report.overallNotes?.trim() ? (
+                  <p className={`${baseTextClass} leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans`}>
+                    {report.overallNotes}
+                  </p>
+                ) : (
+                  <p className={`${baseTextClass} text-gray-400 italic`}>No notes recorded</p>
+                )}
+              </section>
             )}
-          </section>
-        </div>
+          </div>
+        )}
+
+        {/* RIGHT COLUMN (when 3-col) */}
+        {rightTfs.length > 0 && (
+          <div className="space-y-3">
+            {rightTfs.map((tfId) => renderTimeframeSection(tfId))}
+
+            {/* 9. Overall Notes */}
+            <section className="pt-2 space-y-1.5">
+              <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
+                OVERALL NOTES
+              </h2>
+              {report.overallNotes?.trim() ? (
+                <p className={`${baseTextClass} leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans`}>
+                  {report.overallNotes}
+                </p>
+              ) : (
+                <p className={`${baseTextClass} text-gray-400 italic`}>No notes recorded</p>
+              )}
+            </section>
+          </div>
+        )}
       </div>
 
       {/* PLANNED SCENARIOS SECTION (Appended below analysis content) */}

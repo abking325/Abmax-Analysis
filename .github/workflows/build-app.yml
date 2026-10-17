@@ -33,7 +33,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci
 
       - name: Verify Types and Code Quality
         run: npm run lint

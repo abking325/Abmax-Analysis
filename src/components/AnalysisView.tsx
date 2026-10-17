@@ -8,12 +8,18 @@ import {
   ArrowLeft,
   CheckCircle,
   AlertCircle,
+  Plus,
+  X,
+  Check,
+  RefreshCw,
 } from 'lucide-react';
 import {
   AnalysisData,
   AnalysisTiming,
   DEFAULT_VISIBILITY_CONFIG,
   MajorLiquidityItem,
+  OpeningCandleEntry,
+  OpeningCandleSession,
   PlannedScenario,
   SavedReport,
   SavedTemplate,
@@ -30,6 +36,7 @@ import {
 import {
   calculateOverallAlignment,
 } from '../utils/analysisUtils';
+import { exportTextOrDownload } from '../utils/nativeExport';
 import { TimeframeSection } from './TimeframeSection';
 import {
   MajorLiquiditySection,
@@ -40,6 +47,7 @@ import { SaveTemplateModal, LoadTemplateModal } from './TemplatesModal';
 import { ImageViewerModal } from './ImageViewerModal';
 import {
   saveDraft,
+  getDraft,
   clearDraft,
   saveReport,
   saveImage,
@@ -114,6 +122,22 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [isSavingReport, setIsSavingReport] = useState(false);
   const [saveStage, setSaveStage] = useState<'idle' | 'saving_local' | 'saved_local' | 'pending_cloud' | 'synced' | 'failed'>('idle');
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [isNameReportModalOpen, setIsNameReportModalOpen] = useState(false);
+  const [reportNameToSave, setReportNameToSave] = useState('');
+
+  // Opening Candle save state (Phase 2)
+  const [isSavingOc, setIsSavingOc] = useState(false);
+  const [ocSaveSuccess, setOcSaveSuccess] = useState(false);
+  const [ocSaveError, setOcSaveError] = useState<string | null>(null);
+
+  // Template confirmation state (Phase 3)
+  const [templateToConfirm, setTemplateToConfirm] = useState<SavedTemplate | null>(null);
+
+  // Synchronous reference to latest analysis data to prevent stale closures during saves
+  const dataRef = useRef<AnalysisData>(data);
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   // Run live clock timer
   useEffect(() => {
@@ -179,6 +203,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const updateAnalysis = (updater: (prev: AnalysisData) => AnalysisData) => {
     setData((prev) => {
       const next = updater(prev);
+      dataRef.current = next;
       triggerAutosave(next);
       return next;
     });
@@ -232,19 +257,43 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }));
   };
 
-  // Save deep analysis (marks saved, preserves expanded state without viewport jump)
-  const handleSaveDeep = (tf: TimeframeId) => {
-    updateAnalysis((prev) => ({
-      ...prev,
-      timeframes: {
-        ...prev.timeframes,
-        [tf]: {
-          ...prev.timeframes[tf],
-          isSaved: true,
+  // Save deep analysis across any timeframe: immediately persists draft to IndexedDB, verifies read-back, preserves expanded state without jump
+  const handleSaveDeep = async (tf: TimeframeId): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const currentLatest = dataRef.current || data;
+      const currentTfData = currentLatest.timeframes[tf] || createEmptyTimeframeData(tf);
+      const updatedData: AnalysisData = {
+        ...currentLatest,
+        timeframes: {
+          ...currentLatest.timeframes,
+          [tf]: {
+            ...currentTfData,
+            isSaved: true,
+          },
         },
-      },
-    }));
-    // Note: Timeframe remains expanded. Collapse happens ONLY when user clicks Collapse.
+      };
+      // Persist draft to IndexedDB immediately
+      await saveDraft(updatedData);
+      const verifiedDraft = await getDraft();
+      if (!verifiedDraft) {
+        throw new Error('Local draft verification failed after saving deep analysis.');
+      }
+      dataRef.current = updatedData;
+      setData(updatedData);
+      setAutosaveStatus(
+        `Draft saved locally at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+      );
+      if (user) {
+        uploadDraftToCloud(user.id, updatedData).catch((err) =>
+          console.warn('Background cloud draft sync failed:', err)
+        );
+      }
+      return { success: true };
+    } catch (err) {
+      console.error(`Failed to save deep analysis for timeframe ${tf}:`, err);
+      const msg = (err as Error).message || 'Failed to persist deep analysis to local storage.';
+      return { success: false, error: msg };
+    }
   };
 
   // Edit deep analysis (unlocks fields)
@@ -379,12 +428,99 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }));
   };
 
+  // Opening Candle Handlers (Phase 4)
+  const handleAddOpeningCandle = () => {
+    const newEntry: OpeningCandleEntry = {
+      id: `oc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      session: 'London',
+      level: '',
+    };
+    updateAnalysis((prev) => ({
+      ...prev,
+      openingCandles: [...(prev.openingCandles || []), newEntry],
+    }));
+  };
+
+  const handleUpdateOpeningCandle = (id: string, updates: Partial<OpeningCandleEntry>) => {
+    updateAnalysis((prev) => ({
+      ...prev,
+      openingCandles: (prev.openingCandles || []).map((entry) =>
+        entry.id === id ? { ...entry, ...updates } : entry
+      ),
+    }));
+  };
+
+  const handleRemoveOpeningCandle = (id: string) => {
+    updateAnalysis((prev) => ({
+      ...prev,
+      openingCandles: (prev.openingCandles || []).filter((entry) => entry.id !== id),
+    }));
+  };
+
+  // Save OC Handler (Phase 2): persists current OC entries to working draft immediately, verifies, preserves exact price strings & IDs
+  const handleSaveOc = async () => {
+    setIsSavingOc(true);
+    setOcSaveSuccess(false);
+    setOcSaveError(null);
+    try {
+      const currentLatest = dataRef.current || data;
+      const updatedData: AnalysisData = {
+        ...currentLatest,
+        openingCandles: [...(currentLatest.openingCandles || [])],
+      };
+      await saveDraft(updatedData);
+      const verifiedDraft = await getDraft();
+      if (!verifiedDraft) {
+        throw new Error('Local draft verification failed after saving OC levels.');
+      }
+      dataRef.current = updatedData;
+      setData(updatedData);
+      setOcSaveSuccess(true);
+      setAutosaveStatus(
+        `Draft saved locally at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+      );
+      if (user) {
+        uploadDraftToCloud(user.id, updatedData).catch((err) =>
+          console.warn('Background cloud draft sync failed:', err)
+        );
+      }
+      setTimeout(() => {
+        setOcSaveSuccess(false);
+      }, 4000);
+    } catch (err) {
+      console.error('Failed to save Opening Candle levels:', err);
+      setOcSaveError((err as Error).message || 'Failed to save OC levels to local storage.');
+    } finally {
+      setIsSavingOc(false);
+    }
+  };
+
+  // In-memory recovery backup export when save fails (Phase 2)
+  const handleExportInMemoryBackup = async () => {
+    try {
+      const currentLatest = dataRef.current || data;
+      const backup = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        app: 'ABMAX_ANALYSIS' as const,
+        recoveredAnalysis: currentLatest,
+        note: 'In-memory recovery snapshot exported due to local storage save interruption.',
+      };
+      const jsonStr = JSON.stringify(backup, null, 2);
+      const filename = `abmax_recovery_${currentLatest.pair || 'analysis'}_${new Date().toISOString().slice(0, 10)}.json`;
+      await exportTextOrDownload(jsonStr, filename, 'application/json');
+    } catch (e) {
+      console.error('Failed to export in-memory recovery backup', e);
+    }
+  };
+
   // Save Scenario directly (persists to draft if new, or to report if editing)
   const handleSaveScenarioDirectly = async () => {
+    const currentLatest = dataRef.current || data;
     if (isEditingExistingReport) {
       const now = Date.now();
       const updatedReport: SavedReport = {
-        ...data,
+        ...currentLatest,
         updatedAt: now,
         status: 'Modified',
         isModified: true,
@@ -394,15 +530,15 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         uploadReportToCloud(user.id, updatedReport).catch(console.error);
       }
     } else {
-      await saveDraft(data);
+      await saveDraft(currentLatest);
       if (user) {
-        uploadDraftToCloud(user.id, data).catch(console.error);
+        uploadDraftToCloud(user.id, currentLatest).catch(console.error);
       }
     }
   };
 
-  // Save Report (Primary action)
-  const handleSaveReport = async () => {
+  // Execute Save Report with specified or existing title (Phase 2 & Phase 3)
+  const executeSaveReport = async (overrideTitle?: string) => {
     if (isSavingReportRef.current) return;
     isSavingReportRef.current = true;
     setIsSavingReport(true);
@@ -417,21 +553,23 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
 
     const now = Date.now();
+    const latestData = dataRef.current || data;
 
     // Determine genuine stable report ID: never leak active_draft, and lock to existing report ID when editing
     const targetId = (isEditingExistingReport && initialData?.id && initialData.id !== 'active_draft' && initialData.id !== 'draft')
       ? initialData.id
-      : (data.id && data.id !== 'active_draft' && data.id !== 'draft'
-          ? data.id
-          : (data.originalId && data.originalId !== 'active_draft' && data.originalId !== 'draft'
-              ? data.originalId
+      : (latestData.id && latestData.id !== 'active_draft' && latestData.id !== 'draft'
+          ? latestData.id
+          : (latestData.originalId && latestData.originalId !== 'active_draft' && latestData.originalId !== 'draft'
+              ? latestData.originalId
               : `rep_${now}_${Math.random().toString(36).substring(2, 9)}`));
 
-    // Clean title
-    const cleanTitle = (data.title || '').trim();
+    // Clean title: use overrideTitle if provided, else latestData.title
+    const effectiveTitle = overrideTitle !== undefined ? overrideTitle : (latestData.title || '');
+    const cleanTitle = effectiveTitle.trim();
 
     // Ensure all timeframes exist and have full structure
-    const cleanTimeframes = { ...data.timeframes };
+    const cleanTimeframes = { ...latestData.timeframes };
     for (const tf of TIMEFRAME_ORDER) {
       if (!cleanTimeframes[tf]) {
         cleanTimeframes[tf] = createEmptyTimeframeData(tf);
@@ -439,36 +577,36 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
 
     const reportPayload: SavedReport = {
-      ...data,
+      ...latestData,
       id: targetId,
       title: cleanTitle || undefined,
-      pair: data.pair || 'XAUUSD',
-      date: data.date || new Date().toISOString().slice(0, 10),
-      time: data.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
-      session: data.session || 'London',
-      analysisTiming: data.analysisTiming || 'On time',
+      pair: latestData.pair || 'XAUUSD',
+      date: latestData.date || new Date().toISOString().slice(0, 10),
+      time: latestData.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+      session: latestData.session || 'London',
+      analysisTiming: latestData.analysisTiming || 'On time',
       timeframes: cleanTimeframes,
-      crossedLiquidity: data.crossedLiquidity || [],
-      majorLiquidityWatchlist: data.majorLiquidityWatchlist || '',
-      supplyDemandLevels: data.supplyDemandLevels || [],
-      scenarios: data.scenarios || [],
-      trades: data.trades || [],
-      overallNotes: data.overallNotes || '',
+      crossedLiquidity: latestData.crossedLiquidity || [],
+      majorLiquidityWatchlist: latestData.majorLiquidityWatchlist || '',
+      supplyDemandLevels: latestData.supplyDemandLevels || [],
+      openingCandles: latestData.openingCandles || [],
+      scenarios: latestData.scenarios || [],
+      trades: latestData.trades || [],
+      overallNotes: latestData.overallNotes || '',
       visibilityConfig: activeVisibility,
       updatedAt: now,
-      createdAt: isEditingExistingReport && (initialData.createdAt || data.createdAt) ? (initialData.createdAt || data.createdAt) : (data.createdAt || now),
+      createdAt: isEditingExistingReport && (initialData.createdAt || latestData.createdAt) ? (initialData.createdAt || latestData.createdAt) : (latestData.createdAt || now),
       status: isEditingExistingReport ? 'Modified' : 'Original',
       isModified: isEditingExistingReport,
-      copiedFromId: data.copiedFromId || (initialData as any)?.copiedFromId || undefined,
+      copiedFromId: latestData.copiedFromId || (initialData as any)?.copiedFromId || undefined,
     };
 
-    console.info(`[Report Lifecycle] Operation=save_report ID=${targetId} IsEditing=${isEditingExistingReport} TargetRev=${(data.revision || 0) + 1}`);
+    console.info(`[Report Lifecycle] Operation=save_report ID=${targetId} IsEditing=${isEditingExistingReport} TargetRev=${(latestData.revision || 0) + 1}`);
 
     try {
       // 1. SAVE LOCALLY FIRST via IndexedDB and verify read-back
       const savedRecord = await saveReport(reportPayload);
       console.info(`[Report Lifecycle] Operation=save_report_success ID=${savedRecord.id} Revision=${savedRecord.revision} TxResult=COMMITTED`);
-
       setSaveStage('saved_local');
       setAutosaveStatus('Saved on this device');
 
@@ -476,6 +614,10 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       await clearDraft();
 
       // Update in-memory state with finalized report ID and revision
+      dataRef.current = {
+        ...latestData,
+        ...savedRecord,
+      };
       setData((prev) => ({
         ...prev,
         ...savedRecord,
@@ -525,12 +667,26 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   };
 
+  // Primary Save Report button click (prompts name dialog if title is blank)
+  const handleSaveReport = () => {
+    if (isSavingReportRef.current) return;
+    const latestData = dataRef.current || data;
+    const currentTitle = (latestData.title || '').trim();
+    if (currentTitle.length > 0) {
+      executeSaveReport(currentTitle);
+    } else {
+      setReportNameToSave('');
+      setIsNameReportModalOpen(true);
+    }
+  };
+
   // Continue Later (saves full draft and returns Home)
   const handleContinueLater = async () => {
     try {
-      await saveDraft(data);
+      const latestData = dataRef.current || data;
+      await saveDraft(latestData);
       if (user) {
-        await uploadDraftToCloud(user.id, data);
+        await uploadDraftToCloud(user.id, latestData);
       }
       onNavigateHome();
     } catch (err) {
@@ -538,8 +694,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   };
 
-  // Save Template
+  // Save Template (Phase 3: includes timeframes, OC levels, notes, scenarios; excludes executed trades)
   const handleSaveTemplate = async (templateName: string) => {
+    const latest = dataRef.current || data;
     const tmplId = `tmpl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const tmpl: SavedTemplate = {
       id: tmplId,
@@ -547,22 +704,23 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       createdAt: Date.now(),
       updatedAt: Date.now(),
       data: {
-        pair: data.pair,
-        title: data.title,
-        session: data.session,
-        timezone: data.timezone,
-        analysisTiming: data.analysisTiming,
-        timeframes: data.timeframes,
-        crossedLiquidity: data.crossedLiquidity,
-        majorLiquidityWatchlist: data.majorLiquidityWatchlist,
-        supplyDemandLevels: data.supplyDemandLevels,
-        scenarios: (data.scenarios || []).map((s) => ({
+        pair: latest.pair,
+        title: latest.title,
+        session: latest.session,
+        timezone: latest.timezone,
+        analysisTiming: latest.analysisTiming,
+        timeframes: JSON.parse(JSON.stringify(latest.timeframes || {})),
+        crossedLiquidity: [...(latest.crossedLiquidity || [])],
+        majorLiquidityWatchlist: latest.majorLiquidityWatchlist || '',
+        supplyDemandLevels: JSON.parse(JSON.stringify(latest.supplyDemandLevels || [])),
+        openingCandles: JSON.parse(JSON.stringify(latest.openingCandles || [])),
+        scenarios: (latest.scenarios || []).map((s) => ({
           ...s,
           id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         })),
-        overallNotes: data.overallNotes,
+        overallNotes: latest.overallNotes || '',
         visibilityConfig: activeVisibility,
       },
     };
@@ -572,8 +730,27 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   };
 
-  // Load Template (loads as a new analysis with today's local date, does not carry existing report ID)
-  const handleLoadTemplate = (template: SavedTemplate) => {
+  // Helper: check if current workspace has unfinished work before replacing with template
+  const hasUnfinishedWork = (d: AnalysisData): boolean => {
+    if ((d.title || '').trim().length > 0) return true;
+    if ((d.overallNotes || '').trim().length > 0) return true;
+    if ((d.majorLiquidityWatchlist || '').trim().length > 0) return true;
+    if ((d.openingCandles || []).length > 0) return true;
+    if ((d.scenarios || []).length > 0) return true;
+    if ((d.trades || []).length > 0) return true;
+    if ((d.supplyDemandLevels || []).length > 0) return true;
+    for (const tf of TIMEFRAME_ORDER) {
+      const tfd = d.timeframes?.[tf];
+      if (!tfd) continue;
+      if (tfd.overallBias || (tfd.biasSpecific || '').trim().length > 0 || tfd.chartImageId) return true;
+      if (tfd.swing?.high || tfd.swing?.low || tfd.internal?.high || tfd.internal?.low) return true;
+      if ((tfd.supplyLevels || []).length > 0 || (tfd.demandLevels || []).length > 0) return true;
+    }
+    return false;
+  };
+
+  // Apply template: creates fresh analysis with new ID and today's date, saves draft immediately
+  const applyTemplate = async (template: SavedTemplate) => {
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
     const templatedScenarios = (template.data.scenarios || []).map((s, idx) => ({
@@ -604,15 +781,39 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       crossedLiquidity: [...(template.data.crossedLiquidity || [])],
       majorLiquidityWatchlist: template.data.majorLiquidityWatchlist || '',
       supplyDemandLevels: JSON.parse(JSON.stringify(template.data.supplyDemandLevels || [])),
+      openingCandles: template.data.openingCandles
+        ? JSON.parse(JSON.stringify(template.data.openingCandles))
+        : [],
       scenarios: templatedScenarios,
-      trades: [],
+      trades: [], // Executed trades are always excluded from templates
       overallNotes: template.data.overallNotes || '',
       visibilityConfig: template.data.visibilityConfig || activeVisibility,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    updateAnalysis(() => newAnalysis);
+
+    dataRef.current = newAnalysis;
+    setData(newAnalysis);
+    await saveDraft(newAnalysis);
+    setAutosaveStatus(`Template loaded as fresh analysis at ${newAnalysis.time}`);
+    if (user) {
+      uploadDraftToCloud(user.id, newAnalysis).catch((err) =>
+        console.warn('Background cloud draft sync failed on template load:', err)
+      );
+    }
+    setTemplateToConfirm(null);
     setIsLoadTemplateOpen(false);
+  };
+
+  // Load Template (warns if unfinished analysis exists, else loads directly)
+  const handleLoadTemplate = (template: SavedTemplate) => {
+    setIsLoadTemplateOpen(false);
+    const currentLatest = dataRef.current || data;
+    if (hasUnfinishedWork(currentLatest)) {
+      setTemplateToConfirm(template);
+    } else {
+      applyTemplate(template);
+    }
   };
 
   // Clear Analysis
@@ -622,6 +823,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       autosaveTimeoutRef.current = null;
     }
     const fresh = createInitialAnalysisData('XAUUSD', activeVisibility);
+    dataRef.current = fresh;
     setData(fresh);
     await clearDraft();
     if (user) {
@@ -852,6 +1054,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 />
               )}
               <TimeframeSection
+                key={tf}
                 timeframe={tf}
                 data={data.timeframes[tf] || createEmptyTimeframeData(tf)}
                 isExpanded={expandedTimeframes[tf]}
@@ -909,6 +1112,138 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             onRemoveLevel={handleRemoveSDLevel}
             onToggleVisibility={handleToggleSDVisibility}
           />
+        </>
+      )}
+
+      {/* Opening Candle (OC) Section - Immediately ABOVE Overall Notes */}
+      {activeVisibility.otherSections.openingCandle !== false && (
+        <>
+          <div
+            className="border-t-[3px] border-slate-300 dark:border-slate-700/80 my-7 rounded-full"
+            role="separator"
+            aria-orientation="horizontal"
+          />
+          <div className="border border-app rounded-lg bg-app-main p-4 sm:p-5 mb-6 shadow-2xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-bold text-app-main uppercase tracking-wider">
+                    Opening Candle (OC)
+                  </h3>
+                  {ocSaveSuccess && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded animate-fade-in">
+                      <Check className="w-3 h-3" /> Saved
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-app-secondary mt-0.5">
+                  Record session and timeframe opening levels for bias and confluence.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveOc}
+                  disabled={isSavingOc}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-theme hover:bg-emerald-700 disabled:opacity-50 rounded transition-colors cursor-pointer shadow-2xs"
+                >
+                  {isSavingOc ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Check className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isSavingOc ? 'Saving...' : 'Save OC'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddOpeningCandle}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add OC Level
+                </button>
+              </div>
+            </div>
+
+            {ocSaveError && (
+              <div className="flex items-center justify-between gap-2 px-3 py-1.5 mb-3 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-500/40 text-rose-600 dark:text-rose-400 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{ocSaveError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveOc}
+                  className="font-bold underline hover:no-underline cursor-pointer"
+                >
+                  Retry Save OC
+                </button>
+              </div>
+            )}
+
+            {(!data.openingCandles || data.openingCandles.length === 0) ? (
+              <p className="text-xs text-app-secondary italic py-2">
+                No opening candle levels recorded. Click &quot;Add OC Level&quot; to add a session or timeframe opening price.
+              </p>
+            ) : (
+              <div className="space-y-2 mt-2">
+                {data.openingCandles.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2.5 rounded bg-app-secondary/40 border border-app"
+                  >
+                    <div className="w-full sm:w-48 shrink-0">
+                      <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
+                        Opening Period / Session
+                      </label>
+                      <select
+                        value={entry.session}
+                        onChange={(e) =>
+                          handleUpdateOpeningCandle(entry.id, {
+                            session: e.target.value as OpeningCandleSession,
+                          })
+                        }
+                        className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors cursor-pointer"
+                      >
+                        <option value="Yearly">Yearly</option>
+                        <option value="Quarterly">Quarterly</option>
+                        <option value="Monthly">Monthly</option>
+                        <option value="Weekly">Weekly</option>
+                        <option value="London">London</option>
+                        <option value="New York">New York</option>
+                        <option value="Asia">Asia</option>
+                      </select>
+                    </div>
+
+                    <div className="flex-1">
+                      <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
+                        Opening Level
+                      </label>
+                      <input
+                        type="text"
+                        value={entry.level}
+                        onChange={(e) =>
+                          handleUpdateOpeningCandle(entry.id, { level: e.target.value })
+                        }
+                        placeholder="Enter opening price (e.g. 5500.25)"
+                        className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveOpeningCandle(entry.id)}
+                      aria-label={`Remove ${entry.session} opening candle level`}
+                      title="Remove entry"
+                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors self-end sm:self-end cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </>
       )}
 
@@ -978,7 +1313,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setIsBackupModalOpen(true)}
+                onClick={handleExportInMemoryBackup}
                 className="px-3 py-1.5 bg-app-field border border-app text-app-main font-semibold rounded text-xs hover:bg-app-secondary transition-colors cursor-pointer"
               >
                 Export Backup
@@ -1088,6 +1423,43 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         onSelectTemplate={handleLoadTemplate}
       />
 
+      {/* Confirmation modal before replacing unfinished analysis when loading a template */}
+      {templateToConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="replace-unfinished-analysis-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md bg-app-main border border-app rounded-lg shadow-xl p-5 space-y-4">
+            <h3 id="replace-unfinished-analysis-title" className="text-base font-bold text-app-main">
+              Replace Unfinished Analysis?
+            </h3>
+            <p className="text-xs text-app-secondary leading-relaxed">
+              You have an active unfinished analysis in your workspace. Loading template{' '}
+              <strong className="text-app-main">&ldquo;{templateToConfirm.name}&rdquo;</strong> will replace your
+              current unsaved inputs with the template setup.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-app">
+              <button
+                type="button"
+                onClick={() => setTemplateToConfirm(null)}
+                className="px-3.5 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => applyTemplate(templateToConfirm)}
+                className="px-4 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded transition-colors cursor-pointer"
+              >
+                Yes, Replace &amp; Load
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeViewerImage && (
         <ImageViewerModal
           isOpen={Boolean(activeViewerImage)}
@@ -1103,6 +1475,91 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         onClose={() => setIsBackupModalOpen(false)}
         onDataChanged={() => {}}
       />
+
+      {/* Phase 3: Name this report dialog (when title is blank) */}
+      {isNameReportModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="name-report-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md bg-app-main border border-app rounded-lg shadow-xl p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-app pb-3">
+              <h3 id="name-report-title" className="text-base font-bold text-app-main">
+                Name this report
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsNameReportModalOpen(false)}
+                aria-label="Close dialog"
+                className="p-1 text-app-secondary hover:text-app-main rounded transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label htmlFor="report-name-input" className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                Report name
+              </label>
+              <input
+                id="report-name-input"
+                type="text"
+                autoFocus
+                value={reportNameToSave}
+                onChange={(e) => setReportNameToSave(e.target.value)}
+                placeholder="Optional — enter a name"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const name = reportNameToSave.trim();
+                    setIsNameReportModalOpen(false);
+                    executeSaveReport(name);
+                  }
+                }}
+                className="w-full px-3 py-2 text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors"
+              />
+              <p className="text-[11px] text-app-secondary mt-1.5 leading-relaxed">
+                If left blank, your report will be saved using the standard automated convention ({data.pair || 'XAUUSD'} — {data.date || new Date().toISOString().slice(0, 10)}).
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-app">
+              <button
+                type="button"
+                onClick={() => setIsNameReportModalOpen(false)}
+                className="px-3.5 py-1.5 text-xs font-medium text-app-secondary hover:bg-app-field rounded transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNameReportModalOpen(false);
+                  executeSaveReport('');
+                }}
+                disabled={isSavingReport}
+                className="px-3.5 py-1.5 text-xs font-medium text-app-main bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 border border-app rounded transition-colors cursor-pointer"
+              >
+                Save Without Name
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const name = reportNameToSave.trim();
+                  setIsNameReportModalOpen(false);
+                  executeSaveReport(name);
+                }}
+                disabled={isSavingReport}
+                className="px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
+              >
+                Save Report
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

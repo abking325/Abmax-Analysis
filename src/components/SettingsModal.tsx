@@ -13,13 +13,24 @@ import {
   RotateCcw,
   Check,
   AlertTriangle,
+  FileText,
+  Eye,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
+  DEFAULT_REPORT_PRESENTATION,
+  DEFAULT_REPORT_VISIBILITY,
   DEFAULT_VISIBILITY_CONFIG,
+  ReportPresentationConfig,
+  ReportVisibilityConfig,
   TimeframeId,
   WorkspaceVisibilityConfig,
 } from '../types/journal';
+import {
+  getUserReportPresentationConfig,
+  saveUserReportPresentationConfig,
+} from '../services/db';
+import { uploadPreferencesToCloud } from '../services/cloudSync';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -50,9 +61,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const { user, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<'general' | 'admin'>('general');
+  const [adminSubTab, setAdminSubTab] = useState<'editor_visibility' | 'report_presentation'>('editor_visibility');
+  const [presentationConfig, setPresentationConfig] = useState<ReportPresentationConfig>(DEFAULT_REPORT_PRESENTATION);
   const [appliedNotice, setAppliedNotice] = useState(false);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+
+  // Load report presentation preferences on mount
+  useEffect(() => {
+    getUserReportPresentationConfig().then(setPresentationConfig);
+  }, [isOpen]);
 
   // Focus management and background scroll lock
   useEffect(() => {
@@ -140,6 +158,76 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  // Report Section Visibility helpers (Phase 5)
+  const toggleReportVisibility = (
+    group: 'general' | 'timeframeFields' | 'notesAndLevels' | 'scenariosAndTrades',
+    key: string
+  ) => {
+    const currentVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+    const groupObj = (currentVis as any)[group];
+    const updatedVis: ReportVisibilityConfig = {
+      ...currentVis,
+      [group]: {
+        ...groupObj,
+        [key]: !groupObj[key],
+      },
+    };
+    const updatedConfig: ReportPresentationConfig = {
+      ...presentationConfig,
+      sectionVisibility: updatedVis,
+    };
+    setPresentationConfig(updatedConfig);
+    saveUserReportPresentationConfig(updatedConfig);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { presentationConfig: updatedConfig });
+    }
+  };
+
+  const toggleReportTimeframe = (tf: TimeframeId) => {
+    const currentVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+    const updatedVis: ReportVisibilityConfig = {
+      ...currentVis,
+      timeframes: {
+        ...currentVis.timeframes,
+        [tf]: !currentVis.timeframes[tf],
+      },
+    };
+    const updatedConfig: ReportPresentationConfig = {
+      ...presentationConfig,
+      sectionVisibility: updatedVis,
+    };
+    setPresentationConfig(updatedConfig);
+    saveUserReportPresentationConfig(updatedConfig);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { presentationConfig: updatedConfig });
+    }
+  };
+
+  const handleRestoreReportVisibilityDefaults = async () => {
+    const updatedConfig: ReportPresentationConfig = {
+      ...presentationConfig,
+      sectionVisibility: JSON.parse(JSON.stringify(DEFAULT_REPORT_VISIBILITY)),
+    };
+    setPresentationConfig(updatedConfig);
+    await saveUserReportPresentationConfig(updatedConfig);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { presentationConfig: updatedConfig });
+    }
+  };
+
+  const handleShowAllReportVisibility = async () => {
+    const allVisible = JSON.parse(JSON.stringify(DEFAULT_REPORT_VISIBILITY));
+    const updatedConfig: ReportPresentationConfig = {
+      ...presentationConfig,
+      sectionVisibility: allVisible,
+    };
+    setPresentationConfig(updatedConfig);
+    await saveUserReportPresentationConfig(updatedConfig);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { presentationConfig: updatedConfig });
+    }
+  };
+
   const timeframesList: { id: TimeframeId; label: string }[] = [
     { id: 'Monthly', label: 'Monthly' },
     { id: 'Weekly', label: 'Weekly' },
@@ -170,6 +258,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     { key: 'majorLiquidityChecklist', label: 'Major Liquidity Checklist' },
     { key: 'majorLiquidityWatchlist', label: 'Major Liquidity Watchlist' },
     { key: 'supplyDemandManager', label: 'General Supply/Demand Manager' },
+    { key: 'openingCandle', label: 'Opening Candle (OC)' },
     { key: 'overallNotes', label: 'Overall Notes' },
     { key: 'plannedScenarios', label: 'Planned Scenarios' },
   ];
@@ -391,151 +480,419 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'admin' && (
             <div className="space-y-5">
-              {/* Workspace visibility notice */}
-              <div className="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-1">
-                <div className="font-semibold flex items-center gap-1.5">
-                  <Sliders className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                  Workspace Section Visibility
-                </div>
-                <p className="text-emerald-800 dark:text-emerald-300">
-                  Toggle which timeframes and analysis blocks appear in your editor. Switching off hides sections but never erases existing content, images, scenarios, or trades.
-                </p>
+              {/* Admin Panel Sub-tabs */}
+              <div className="flex border-b border-app pb-2 gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setAdminSubTab('editor_visibility')}
+                  className={`px-3 py-1.5 rounded font-semibold transition-colors cursor-pointer ${
+                    adminSubTab === 'editor_visibility'
+                      ? 'bg-emerald-theme text-white shadow-2xs'
+                      : 'text-app-secondary hover:text-app-main hover:bg-app-field'
+                  }`}
+                >
+                  Editor Sections
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminSubTab('report_presentation')}
+                  className={`px-3 py-1.5 rounded font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    adminSubTab === 'report_presentation'
+                      ? 'bg-emerald-theme text-white shadow-2xs'
+                      : 'text-app-secondary hover:text-app-main hover:bg-app-field'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Report Presentation
+                </button>
               </div>
 
-              {/* Group 1: TIMEFRAMES */}
-              <section className="space-y-2">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                  Timeframes (Enabled in Editor & Alignment)
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {timeframesList.map(({ id, label }) => {
-                    const isEnabled = visibilityConfig.timeframes[id] !== false;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => toggleTimeframeVis(id)}
-                        className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                          isEnabled
-                            ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
-                            : 'bg-app-field border-app text-app-secondary line-through opacity-70 hover:opacity-100'
-                        }`}
-                      >
-                        <span>{label}</span>
-                        <span
-                          className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] ${
-                            isEnabled
-                              ? 'bg-emerald-600 text-white'
-                              : 'border border-slate-400 dark:border-slate-600 text-transparent'
-                          }`}
-                        >
-                          ✓
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              {/* Group 2: DEEP ANALYSIS SECTIONS */}
-              <section className="space-y-2">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                  Deep Analysis Sections
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {deepSectionsList.map(({ key, label }) => {
-                    const isEnabled = visibilityConfig.deepSections[key] !== false;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => toggleDeepSectionVis(key)}
-                        className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                          isEnabled
-                            ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                            : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
-                        }`}
-                      >
-                        <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                        <span
-                          className={`w-3 h-3 rounded-full flex items-center justify-center text-[9px] ${
-                            isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
-                          }`}
-                        >
-                          {isEnabled ? '✓' : ''}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              {/* Group 3: OTHER ANALYSIS SECTIONS */}
-              <section className="space-y-2">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                  Other Analysis Sections
-                </div>
-                <div className="space-y-1.5">
-                  {otherSectionsList.map(({ key, label }) => {
-                    const isEnabled = visibilityConfig.otherSections[key] !== false;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => toggleOtherSectionVis(key)}
-                        className={`w-full flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                          isEnabled
-                            ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                            : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
-                        }`}
-                      >
-                        <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                        <span
-                          className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
-                            isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
-                          }`}
-                        >
-                          {isEnabled ? '✓' : ''}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-
-              {/* Apply / Restore Controls */}
-              <div className="pt-3 border-t border-app space-y-2">
-                {hasActiveAnalysis && (
-                  <div className="p-2 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2 text-[11px] text-amber-900 dark:text-amber-200">
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                    <span>
-                      Applying changes hides selected sections on your active analysis without altering their stored values.
-                    </span>
+              {adminSubTab === 'editor_visibility' ? (
+                <>
+                  {/* Workspace visibility notice */}
+                  <div className="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-1">
+                    <div className="font-semibold flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      Workspace Section Visibility
+                    </div>
+                    <p className="text-emerald-800 dark:text-emerald-300">
+                      Toggle which timeframes and analysis blocks appear in your editor. Switching off hides sections but never erases existing content, images, scenarios, or trades.
+                    </p>
                   </div>
-                )}
 
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={handleRestoreDefaults}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app rounded transition-colors cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Restore Default Visibility
-                  </button>
+                  {/* Group 1: TIMEFRAMES */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Timeframes (Enabled in Editor & Alignment)
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {timeframesList.map(({ id, label }) => {
+                        const isEnabled = visibilityConfig.timeframes[id] !== false;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => toggleTimeframeVis(id)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary line-through opacity-70 hover:opacity-100'
+                            }`}
+                          >
+                            <span>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] ${
+                                isEnabled
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'border border-slate-400 dark:border-slate-600 text-transparent'
+                              }`}
+                            >
+                              ✓
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
 
-                  {hasActiveAnalysis && (
-                    <button
-                      type="button"
-                      onClick={handleApplyToCurrent}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      {appliedNotice ? 'Applied to Current!' : 'Apply to Current Analysis'}
-                    </button>
-                  )}
+                  {/* Group 2: DEEP ANALYSIS SECTIONS */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Deep Analysis Sections
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {deepSectionsList.map(({ key, label }) => {
+                        const isEnabled = visibilityConfig.deepSections[key] !== false;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleDeepSectionVis(key)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                            }`}
+                          >
+                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
+                            <span
+                              className={`w-3 h-3 rounded-full flex items-center justify-center text-[9px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Group 3: OTHER ANALYSIS SECTIONS */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Other Analysis Sections
+                    </div>
+                    <div className="space-y-1.5">
+                      {otherSectionsList.map(({ key, label }) => {
+                        const isEnabled = visibilityConfig.otherSections[key] !== false;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleOtherSectionVis(key)}
+                            className={`w-full flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                            }`}
+                          >
+                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Apply / Restore Controls */}
+                  <div className="pt-3 border-t border-app space-y-2">
+                    {hasActiveAnalysis && (
+                      <div className="p-2 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2 text-[11px] text-amber-900 dark:text-amber-200">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <span>
+                          Applying changes hides selected sections on your active analysis without altering their stored values.
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRestoreDefaults}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app rounded transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Restore Default Visibility
+                      </button>
+
+                      {hasActiveAnalysis && (
+                        <button
+                          type="button"
+                          onClick={handleApplyToCurrent}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          {appliedNotice ? 'Applied to Current!' : 'Apply to Current Analysis'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                /* Report Presentation Section Visibility (Phase 5) */
+                <div className="space-y-5">
+                  <div className="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-1">
+                    <div className="font-semibold flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      Report Section Visibility
+                    </div>
+                    <p className="text-emerald-800 dark:text-emerald-300 leading-relaxed">
+                      Control which details appear when viewing saved reports in Standard Details and Organized View. Switching off sections affects current workspace display only and never deletes records, attachments, or data from exports.
+                    </p>
+                  </div>
+
+                  {/* Group 1: General Report Details */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      General Report Details
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {[
+                        { key: 'metadataAndTimestamps', label: 'Metadata and Timestamps' },
+                        { key: 'overallAlignment', label: 'Overall Alignment Status' },
+                        { key: 'majorLiquidityChecklist', label: 'Major Liquidity Checklist' },
+                        { key: 'majorLiquidityWatchlist', label: 'Major Liquidity to Watch Today' },
+                      ].map(({ key, label }) => {
+                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+                        const isEnabled = (secVis.general as any)[key] !== false;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleReportVisibility('general', key)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                            }`}
+                          >
+                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Group 2: Timeframes */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Timeframes (Report Display)
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {timeframesList.map(({ id, label }) => {
+                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+                        const isEnabled = secVis.timeframes[id] !== false;
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => toggleReportTimeframe(id)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary line-through opacity-70 hover:opacity-100'
+                            }`}
+                          >
+                            <span>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Group 3: Timeframe Detail Fields */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Timeframe Detail Fields
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {[
+                        { key: 'overallInterpretation', label: 'Overall Timeframe Interpretation' },
+                        { key: 'priceLocation', label: 'Price Location (Discount/Eq/Premium)' },
+                        { key: 'swingStructure', label: 'Swing Structure' },
+                        { key: 'internalStructure', label: 'Internal Structure' },
+                        { key: 'fractalStructure', label: 'Fractal Structure' },
+                        { key: 'deepAlignment', label: 'Deep Alignment Indicator' },
+                        { key: 'supplyLevels', label: 'Supply Levels' },
+                        { key: 'demandLevels', label: 'Demand Levels' },
+                        { key: 'supportLevels', label: 'Support Levels' },
+                        { key: 'resistanceLevels', label: 'Resistance Levels' },
+                        { key: 'liquidityLevels', label: 'Liquidity Levels' },
+                        { key: 'timeframeNotes', label: 'Timeframe Notes' },
+                        { key: 'timeframeImages', label: 'Timeframe Chart Images' },
+                      ].map(({ key, label }) => {
+                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+                        const isEnabled = (secVis.timeframeFields as any)[key] !== false;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleReportVisibility('timeframeFields', key)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                            }`}
+                          >
+                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Group 4: Notes and Levels */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Notes and Levels
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {[
+                        { key: 'openingCandleLevels', label: 'Opening Candle Levels' },
+                        { key: 'generalSupplyDemand', label: 'General Supply & Demand Entries' },
+                        { key: 'overallNotes', label: 'Overall Notes' },
+                        { key: 'matchingValues', label: 'Matching Values' },
+                      ].map(({ key, label }) => {
+                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+                        const isEnabled = (secVis.notesAndLevels as any)[key] !== false;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleReportVisibility('notesAndLevels', key)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                            }`}
+                          >
+                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Group 5: Scenarios and Trades */}
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Scenarios and Trades
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {[
+                        { key: 'plannedScenarios', label: 'Planned Scenarios' },
+                        { key: 'scenarioImages', label: 'Scenario Images' },
+                        { key: 'tradesTaken', label: 'Trades Taken' },
+                        { key: 'tradeImages', label: 'Trade Images' },
+                      ].map(({ key, label }) => {
+                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+                        const isEnabled = (secVis.scenariosAndTrades as any)[key] !== false;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => toggleReportVisibility('scenariosAndTrades', key)}
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                              isEnabled
+                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
+                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                            }`}
+                          >
+                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
+                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                              }`}
+                            >
+                              {isEnabled ? '✓' : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {/* Show All and Restore Report Visibility Defaults */}
+                  <div className="pt-3 border-t border-app flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] text-app-secondary">
+                      Configure visibility of report sections. Hiding never deletes data or excludes export content.
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleShowAllReportVisibility}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded transition-colors cursor-pointer"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Show All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRestoreReportVisibilityDefaults}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app rounded transition-colors cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Restore Defaults
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
