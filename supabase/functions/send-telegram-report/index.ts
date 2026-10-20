@@ -75,31 +75,37 @@ serve(async (req: Request) => {
 
     // 5. Strict Allowed-User Restriction for Personal Bot
     // Missing configuration MUST deny sending rather than allow every registered account
-    const allowedUsersConfig = Deno.env.get('ALLOWED_USER_EMAILS');
-    if (!allowedUsersConfig || !allowedUsersConfig.trim()) {
+    const allowedEmailsConfig = Deno.env.get('ALLOWED_USER_EMAILS') || '';
+    const allowedIdsConfig = Deno.env.get('ALLOWED_USER_IDS') || '';
+    const combinedConfig = `${allowedEmailsConfig},${allowedIdsConfig}`.trim();
+
+    if (!combinedConfig || combinedConfig === ',') {
       return new Response(
         JSON.stringify({
           ok: false,
           status: 'forbidden',
           error:
-            'Security restriction: ALLOWED_USER_EMAILS is not configured in Supabase secrets. Dispatch is denied by default for personal bot protection.',
+            'Security restriction: Neither ALLOWED_USER_EMAILS nor ALLOWED_USER_IDS is configured in Supabase secrets. Dispatch is denied by default for personal bot protection.',
         }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const allowedUserEmails = allowedUsersConfig
+    const allowedTokens = combinedConfig
       .split(',')
       .map((e) => e.trim().toLowerCase())
       .filter(Boolean);
 
     const callerEmail = (user.email || '').trim().toLowerCase();
-    if (!callerEmail || !allowedUserEmails.includes(callerEmail)) {
+    const callerId = (user.id || '').trim().toLowerCase();
+    const isAuthorized = (callerEmail && allowedTokens.includes(callerEmail)) || (callerId && allowedTokens.includes(callerId));
+
+    if (!isAuthorized) {
       return new Response(
         JSON.stringify({
           ok: false,
           status: 'forbidden',
-          error: `Access denied: Account '${user.email || 'unknown'}' is not authorized to dispatch to this Telegram channel.`,
+          error: `Access denied: Account '${user.email || user.id || 'unknown'}' is not authorized to dispatch to this Telegram channel.`,
         }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );

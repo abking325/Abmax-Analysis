@@ -482,18 +482,18 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               {timeframe} Overall
             </h3>
 
-            {data.isSaved && !deepSaveSuccessMsg && (
+            {isExpanded && data.isSaved && !deepSaveSuccessMsg && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded">
                 <Check className="w-3 h-3" /> Saved
               </span>
             )}
-            {deepSaveSuccessMsg && (
+            {isExpanded && deepSaveSuccessMsg && (
               <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-500/40 px-2 py-0.5 rounded">
                 <Check className="w-3 h-3" /> Deep analysis saved
               </span>
             )}
 
-            {deepAligned && (
+            {isExpanded && deepAligned && (
               <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-theme/30 px-2 py-0.5 rounded">
                 Deep Analysis Aligned ({data.swing.direction})
               </span>

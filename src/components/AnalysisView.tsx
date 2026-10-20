@@ -227,22 +227,30 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const alignment = calculateOverallAlignment(data.timeframes, enabledTimeframes);
 
   // Timeframe expansion toggle
+  // Keep the same timeframe header visible after collapse or save, preventing jump to scenarios or bottom
+  const keepTimeframeHeaderVisible = (tf: TimeframeId) => {
+    // Double requestAnimationFrame ensures React has committed the DOM update and the browser has recalculated the collapsed layout
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`section-${tf}`);
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const navOffset = window.scrollY <= 80 ? 75 : 20;
+        // If the header is outside the comfortable viewport window (scrolled above or pushed below)
+        if (rect.top < 60 || rect.top > window.innerHeight - 100) {
+          const targetY = window.scrollY + rect.top - navOffset;
+          window.scrollTo({ top: Math.max(0, targetY), behavior: 'auto' });
+        }
+      });
+    });
+  };
+
   // Timeframe expansion toggle (preserves entered values and maintains header visibility on manual collapse)
   const toggleTimeframeExpand = (tf: TimeframeId) => {
     setExpandedTimeframes((prev) => {
       const willExpand = !prev[tf];
       if (!willExpand) {
-        requestAnimationFrame(() => {
-          const el = document.getElementById(`section-${tf}`);
-          if (el) {
-            const rect = el.getBoundingClientRect();
-            if (rect.top < 65 || rect.top > window.innerHeight - 80) {
-              const navOffset = 70;
-              const targetY = window.scrollY + rect.top - navOffset;
-              window.scrollTo({ top: Math.max(0, targetY), behavior: 'auto' });
-            }
-          }
-        });
+        keepTimeframeHeaderVisible(tf);
       }
       return {
         ...prev,
@@ -316,17 +324,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         );
       }
       // Single layout-aware repositioning: keep that same timeframe's header comfortably visible below navigation. Never jump to scenarios or bottom of page.
-      requestAnimationFrame(() => {
-        const el = document.getElementById(`section-${tf}`);
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          if (rect.top < 65 || rect.top > window.innerHeight - 80) {
-            const navOffset = 70;
-            const targetY = window.scrollY + rect.top - navOffset;
-            window.scrollTo({ top: Math.max(0, targetY), behavior: 'auto' });
-          }
-        }
-      });
+      keepTimeframeHeaderVisible(tf);
       return { success: true };
     } catch (err) {
       console.error(`Failed to save deep analysis for timeframe ${tf}:`, err);
@@ -348,12 +346,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       },
     }));
     setExpandedTimeframes((prev) => ({ ...prev, [tf]: true }));
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`section-${tf}`);
-      if (el) {
-        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }
-    });
+    keepTimeframeHeaderVisible(tf);
   };
 
   // Reset deep analysis (clears deep fields & chart image after confirmation, preserves overall bias)

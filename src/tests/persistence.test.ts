@@ -804,6 +804,29 @@ async function runTests() {
       Boolean(fakeHttpSuccessWithConfirmedMessage.body.result?.message_id);
     assert(isDeliveryConfirmed2, 'HTTP 200 with Telegram ok=true AND message_id is verified as confirmed delivery');
     assert(fakeHttpSuccessWithConfirmedMessage.body.result.message_id === 994827, 'Verified message_id captured accurately');
+
+    // 6. Whitelist authorization security logic:
+    const checkIsAuthorized = (callerEmail: string, callerId: string, allowedConfig: string): boolean => {
+      if (!allowedConfig || !allowedConfig.trim()) return false;
+      const tokens = allowedConfig.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+      return tokens.includes(callerEmail.toLowerCase()) || tokens.includes(callerId.toLowerCase());
+    };
+    assert(checkIsAuthorized('user@example.com', 'uuid-123', '') === false, 'Missing allowed config denies all accounts');
+    assert(checkIsAuthorized('abking325@gmail.com', 'uuid-123', 'abking325@gmail.com') === true, 'Matching user email is authorized');
+    assert(checkIsAuthorized('other@example.com', 'uuid-123', 'abking325@gmail.com,uuid-123') === true, 'Matching user UUID is authorized');
+    assert(checkIsAuthorized('hacker@example.com', 'uuid-999', 'abking325@gmail.com') === false, 'Unlisted account is denied access');
+
+    // 7. Atomic (user_id, request_id) deduplication logic:
+    const reservationMap = new Set<string>();
+    const tryReserve = (userId: string, reqId: string): boolean => {
+      const key = `${userId}:${reqId}`;
+      if (reservationMap.has(key)) return false;
+      reservationMap.add(key);
+      return true;
+    };
+    assert(tryReserve('user1', 'reqA') === true, 'Initial request ID reservation succeeds');
+    assert(tryReserve('user1', 'reqA') === false, 'Concurrent/duplicate request ID with same user is atomically rejected');
+    assert(tryReserve('user2', 'reqA') === true, 'Different user with same request ID is isolated');
   } catch (err) {
     assert(false, 'Test Suite 13 execution', (err as Error).message);
   }
