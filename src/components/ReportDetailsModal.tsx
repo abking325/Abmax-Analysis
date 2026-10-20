@@ -14,6 +14,7 @@ import {
   AlertCircle,
   TrendingUp,
   Plus,
+  Send,
 } from 'lucide-react';
 import {
   DEFAULT_REPORT_PRESENTATION,
@@ -41,6 +42,7 @@ import { OrganizedReportView } from './OrganizedReportView';
 import { downloadReportPdf } from '../services/pdfExport';
 import { EditScenariosModal } from './EditScenariosModal';
 import { TakeTradeModal } from './TakeTradeModal';
+import { SendTelegramModal } from './SendTelegramModal';
 
 interface ReportDetailsModalProps {
   isOpen: boolean;
@@ -84,6 +86,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [editingTrade, setEditingTrade] = useState<RecordedTrade | null>(null);
   const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
   const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
+  const [isSendTelegramOpen, setIsSendTelegramOpen] = useState(false);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -1195,6 +1198,17 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   {exportingPdf ? 'Exporting PDF...' : 'Download PDF'}
                 </button>
 
+                {/* Send to Telegram button (Phase 5) */}
+                <button
+                  type="button"
+                  onClick={() => setIsSendTelegramOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded shadow-2xs transition-colors cursor-pointer"
+                  title="Send report PDF to Telegram bot @Abmaxanalysisbot in group -1004337945630"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  Send to Telegram
+                </button>
+
                 {/* Take Trade button (Replaces bottom Print / Save as PDF button per Phase 3) */}
                 <button
                   type="button"
@@ -1339,6 +1353,16 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
             setEditingTrade(null);
             setIsTakeTradeOpen(false);
           }}
+        />
+      )}
+      {/* Send to Telegram Modal (Phase 5) */}
+      {isSendTelegramOpen && report && (
+        <SendTelegramModal
+          isOpen={isSendTelegramOpen}
+          onClose={() => setIsSendTelegramOpen(false)}
+          report={report}
+          imagesMap={imagesMap}
+          presentationConfig={presentationConfig || undefined}
         />
       )}
     </>

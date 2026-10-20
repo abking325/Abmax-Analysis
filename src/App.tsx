@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Download, RefreshCw } from 'lucide-react';
 import { ActiveView, Header } from './components/Header';
 import { HomeView } from './components/HomeView';
 import { AnalysisView } from './components/AnalysisView';
@@ -7,6 +8,12 @@ import { AuthModal } from './components/AuthModal';
 import { MigrationModal } from './components/MigrationModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import {
+  onUpdateAvailable,
+  onInstallable,
+  promptPwaInstall,
+  applyPwaUpdate,
+} from './services/pwaService';
 import {
   AnalysisData,
   DEFAULT_VISIBILITY_CONFIG,
@@ -66,6 +73,53 @@ function MainApp() {
   const [isAnimationPaused, setIsAnimationPaused] = useState<boolean>(() => {
     return localStorage.getItem('abmax_anim_paused') === 'true';
   });
+
+  // PWA update and install states
+  const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
+  const [isInstallable, setIsInstallable] = useState(false);
+  const [dismissUpdateBanner, setDismissUpdateBanner] = useState(false);
+  const [dismissInstallBanner, setDismissInstallBanner] = useState(false);
+
+  useEffect(() => {
+    const unsubUpdate = onUpdateAvailable((available) => {
+      setIsUpdateAvailable(available);
+    });
+    const unsubInstall = onInstallable((canInstall) => {
+      setIsInstallable(canInstall);
+    });
+    return () => {
+      unsubUpdate();
+      unsubInstall();
+    };
+  }, []);
+
+  // Restore working view from localStorage after tab recreation
+  useEffect(() => {
+    const savedView = localStorage.getItem('abmax_active_view') as ActiveView;
+    if (savedView && ['home', 'analysis', 'reports'].includes(savedView)) {
+      setActiveView(savedView);
+    }
+  }, []);
+
+  // Save current active view on change
+  useEffect(() => {
+    localStorage.setItem('abmax_active_view', activeView);
+  }, [activeView]);
+
+  // Tab suspension & process recreation safeguard: persist in-memory work on hide
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && currentAnalysis) {
+        saveDraft(currentAnalysis).catch(console.warn);
+      }
+    };
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleVisibilityChange);
+    };
+  }, [currentAnalysis]);
 
   // Load visibility preferences from local DB on mount
   useEffect(() => {
@@ -320,6 +374,64 @@ function MainApp() {
         activeView === 'home' ? 'h-screen h-[100dvh] overflow-hidden' : ''
       }`}
     >
+      {/* PWA Update Notification Banner */}
+      {isUpdateAvailable && !dismissUpdateBanner && (
+        <div className="bg-emerald-theme text-white text-xs px-4 py-2 flex items-center justify-between gap-2 shadow-md z-50">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            <span>An update for ABMAX Analysis is ready.</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                applyPwaUpdate(async () => {
+                  if (currentAnalysis) {
+                    await saveDraft(currentAnalysis);
+                  }
+                })
+              }
+              className="px-2.5 py-1 bg-white text-emerald-800 font-semibold rounded text-xs hover:bg-emerald-50 transition-colors cursor-pointer"
+            >
+              Update Now
+            </button>
+            <button
+              type="button"
+              onClick={() => setDismissUpdateBanner(true)}
+              className="text-white/80 hover:text-white text-xs px-1.5 py-1 cursor-pointer"
+            >
+              Later
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* PWA In-App Install Banner */}
+      {isInstallable && !dismissInstallBanner && (
+        <div className="bg-app-field border-b border-app text-app-main text-xs px-4 py-2 flex items-center justify-between gap-2 z-40">
+          <div className="flex items-center gap-2">
+            <Download className="w-3.5 h-3.5 text-emerald-theme" />
+            <span>Install ABMAX App for full offline access and home screen launch.</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => promptPwaInstall()}
+              className="px-2.5 py-1 bg-emerald-theme text-white font-semibold rounded text-xs hover:bg-emerald-700 transition-colors cursor-pointer"
+            >
+              Install App
+            </button>
+            <button
+              type="button"
+              onClick={() => setDismissInstallBanner(true)}
+              className="text-app-secondary hover:text-app-main text-xs px-1.5 py-1 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Compact Header with scroll hide / reveal & Settings Control */}
       <Header
         activeView={activeView}

@@ -1,18 +1,38 @@
 {
+  "id": "/",
   "short_name": "ABMAX",
   "name": "ABMAX ANALYSIS — Trading Analysis Journal",
-  "icons": [
-    {
-      "src": "icon.svg",
-      "type": "image/svg+xml",
-      "sizes": "512x512",
-      "purpose": "any maskable"
-    }
-  ],
-  "start_url": "./",
+  "description": "Professional multi-timeframe market analysis and trading journal with structured SMC framework, alignment verification, and reports.",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "theme_color": "#078354",
   "background_color": "#0B0F17",
-  "description": "Professional multi-timeframe market analysis and trading journal with structured SMC framework, alignment verification, and reports."
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "512x512",
+      "purpose": "any"
+    }
+  ]
 }

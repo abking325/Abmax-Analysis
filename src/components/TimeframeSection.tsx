@@ -13,6 +13,7 @@ import {
   Plus,
   AlertCircle,
   RefreshCw,
+  X,
 } from 'lucide-react';
 import {
   DeepLevelEntry,
@@ -68,6 +69,19 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   const [isSavingDeep, setIsSavingDeep] = useState(false);
   const [deepSaveSuccessMsg, setDeepSaveSuccessMsg] = useState<string | null>(null);
   const [deepSaveErrorMsg, setDeepSaveErrorMsg] = useState<string | null>(null);
+
+  // Phase 2: Active inline adding key ('supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels' | null)
+  const [addingLevelKey, setAddingLevelKey] = useState<string | null>(null);
+  const [newLevelPrice, setNewLevelPrice] = useState('');
+  const [newLevelNote, setNewLevelNote] = useState('');
+
+  // Phase 2: Active inline editing entry ID
+  const [editingLevelId, setEditingLevelId] = useState<string | null>(null);
+  const [editLevelPrice, setEditLevelPrice] = useState('');
+  const [editLevelNote, setEditLevelNote] = useState('');
+
+  // Phase 2: Confirmation for removal
+  const [confirmDeleteLevelId, setConfirmDeleteLevelId] = useState<string | null>(null);
 
   const deepAligned = isDeepAnalysisAligned(data);
   const deepVis = visibilityConfig?.deepSections;
@@ -128,7 +142,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
     setPasteError('No image in pasted data');
   };
 
-  // Save handler: persists deep analysis for this timeframe, shows feedback, keeps viewport completely stable
+  // Phase 1: Save handler: persists deep analysis, verifies local write, collapses editor, keeps header comfortably visible
   const handleSaveTimeframe = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -138,6 +152,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
     try {
       const res = await onSaveDeep();
       if (res && typeof res === 'object' && res.success === false) {
+        // Keep editor open, retain all entered values, show actionable error
         setDeepSaveErrorMsg(res.error || 'Failed to save deep analysis.');
       } else {
         setDeepSaveSuccessMsg('Deep analysis saved');
@@ -152,47 +167,88 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
     }
   };
 
-  // Level array helpers
-  const addLevelEntry = (key: 'supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels') => {
+  // Phase 2: Level array helpers & management
+  type LevelKey = 'supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels';
+
+  const handleStartAddLevel = (key: LevelKey) => {
+    setAddingLevelKey(key);
+    setNewLevelPrice('');
+    setNewLevelNote('');
+    setEditingLevelId(null);
+    setConfirmDeleteLevelId(null);
+  };
+
+  const handleCancelAddLevel = () => {
+    setAddingLevelKey(null);
+    setNewLevelPrice('');
+    setNewLevelNote('');
+  };
+
+  const handleSaveNewLevel = (key: LevelKey) => {
+    // If completely empty, do not create a misleading card
+    if (!newLevelPrice.trim() && !newLevelNote.trim()) {
+      handleCancelAddLevel();
+      return;
+    }
     const newEntry: DeepLevelEntry = {
       id: `lvl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      level: '',
-      note: '',
+      level: newLevelPrice, // Keep exact price string, including trailing decimal zeros
+      note: newLevelNote.trim(),
     };
     onUpdateField((prev) => ({
       ...prev,
       [key]: [...(prev[key] || []), newEntry],
     }));
+    setAddingLevelKey(null);
+    setNewLevelPrice('');
+    setNewLevelNote('');
   };
 
-  const updateLevelEntry = (
-    key: 'supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels',
-    id: string,
-    updates: Partial<DeepLevelEntry>
-  ) => {
+  const handleStartEditLevel = (entry: DeepLevelEntry) => {
+    setEditingLevelId(entry.id);
+    setEditLevelPrice(entry.level);
+    setEditLevelNote(entry.note || '');
+    setAddingLevelKey(null);
+    setConfirmDeleteLevelId(null);
+  };
+
+  const handleCancelEditLevel = () => {
+    setEditingLevelId(null);
+    setEditLevelPrice('');
+    setEditLevelNote('');
+  };
+
+  const handleSaveEditLevel = (key: LevelKey, id: string) => {
     onUpdateField((prev) => ({
       ...prev,
-      [key]: (prev[key] || []).map((item) => (item.id === id ? { ...item, ...updates } : item)),
+      [key]: (prev[key] || []).map((item) =>
+        item.id === id
+          ? { ...item, level: editLevelPrice, note: editLevelNote.trim() }
+          : item
+      ),
     }));
+    setEditingLevelId(null);
+    setEditLevelPrice('');
+    setEditLevelNote('');
   };
 
-  const removeLevelEntry = (
-    key: 'supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels',
-    id: string
-  ) => {
+  const handleConfirmRemoveLevel = (key: LevelKey, id: string) => {
     onUpdateField((prev) => ({
       ...prev,
       [key]: (prev[key] || []).filter((item) => item.id !== id),
     }));
+    setConfirmDeleteLevelId(null);
   };
 
   const renderLevelSection = (
     title: string,
     buttonLabel: string,
-    key: 'supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels',
+    key: LevelKey,
     tagColor: string
   ) => {
     const list = data[key] || [];
+    const isAdding = addingLevelKey === key;
+
     return (
       <div className="py-2.5 border-b border-app/50 last:border-b-0">
         <div className="flex items-center justify-between mb-2">
@@ -206,52 +262,204 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               </span>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => addLevelEntry(key)}
-            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded transition-colors"
-          >
-            <Plus className="w-3 h-3" /> {buttonLabel}
-          </button>
+          {!isAdding && (
+            <button
+              type="button"
+              onClick={() => handleStartAddLevel(key)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded transition-colors cursor-pointer"
+            >
+              <Plus className="w-3 h-3" /> {buttonLabel}
+            </button>
+          )}
         </div>
 
-        {list.length === 0 ? (
+        {/* Existing saved entries list (compact saved boxes) */}
+        {list.length === 0 && !isAdding ? (
           <p className="text-[11px] text-app-secondary italic py-1">No {title.toLowerCase()} added.</p>
         ) : (
           <div className="space-y-2 mt-1.5">
-            {list.map((entry, idx) => (
-              <div
-                key={entry.id || idx}
-                className="flex flex-col sm:flex-row items-start sm:items-center gap-2 p-2 rounded bg-app-secondary/40 border border-app"
-              >
-                <div className="flex-1 w-full sm:w-auto">
-                  <input
-                    type="text"
-                    value={entry.level}
-                    onChange={(e) => updateLevelEntry(key, entry.id, { level: e.target.value })}
-                    placeholder="Enter level or range (e.g. 2685.50 - 2690.00)"
-                    className="w-full px-2.5 py-1 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
-                  />
-                </div>
-                <div className="flex-1 w-full sm:w-auto">
-                  <input
-                    type="text"
-                    value={entry.note || ''}
-                    onChange={(e) => updateLevelEntry(key, entry.id, { note: e.target.value })}
-                    placeholder="Optional observation / note..."
-                    className="w-full px-2.5 py-1 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeLevelEntry(key, entry.id)}
-                  title="Remove entry"
-                  className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors shrink-0 self-end sm:self-center"
+            {list.map((entry, idx) => {
+              const entryId = entry.id || `lvl_fallback_${idx}`;
+              const isEditing = editingLevelId === entryId;
+              const isDeleting = confirmDeleteLevelId === entryId;
+
+              if (isEditing) {
+                // Compact inline editor for existing entry
+                return (
+                  <div
+                    key={entryId}
+                    className="p-2.5 rounded bg-emerald-50/30 dark:bg-emerald-950/20 border border-emerald-500/40 space-y-2"
+                  >
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <div className="flex-1">
+                        <label className="block text-[10px] font-semibold uppercase text-app-secondary mb-0.5">
+                          Price or range (exact)
+                        </label>
+                        <input
+                          type="text"
+                          value={editLevelPrice}
+                          onChange={(e) => setEditLevelPrice(e.target.value)}
+                          placeholder="e.g. 2685.50 or 2685.50 - 2690.00"
+                          className="w-full px-2.5 py-1 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-[10px] font-semibold uppercase text-app-secondary mb-0.5">
+                          Optional notes
+                        </label>
+                        <input
+                          type="text"
+                          value={editLevelNote}
+                          onChange={(e) => setEditLevelNote(e.target.value)}
+                          placeholder="Optional observation / note..."
+                          className="w-full px-2.5 py-1 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleSaveEditLevel(key, entryId)}
+                        className="px-2.5 py-1 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded transition-colors cursor-pointer"
+                      >
+                        Save Changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCancelEditLevel}
+                        className="px-2.5 py-1 text-xs text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              // Compact Saved Box
+              const isLevelMissing = !entry.level || !entry.level.trim();
+              const hasNote = Boolean(entry.note && entry.note.trim());
+
+              return (
+                <div
+                  key={entryId}
+                  className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 p-2 rounded bg-app-secondary/50 border border-app hover:border-app-secondary transition-colors"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs min-w-0 flex-1">
+                    {/* Exact Price/Range in Mono font */}
+                    {!isLevelMissing ? (
+                      <span className="font-mono font-bold text-app-main tabular-nums bg-app-main px-2 py-0.5 rounded border border-app/60">
+                        {entry.level}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-300">
+                        Incomplete: no level
+                      </span>
+                    )}
+
+                    {/* Note if present */}
+                    {hasNote && (
+                      <span className="text-app-main text-xs truncate max-w-md">
+                        {entry.note}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Actions: Edit, Remove (with confirmation) */}
+                  <div className="flex items-center gap-1 shrink-0 self-end sm:self-center">
+                    {!isDeleting ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditLevel(entry)}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+                          title="Edit level"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                          <span className="text-[11px]">Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteLevelId(entryId)}
+                          className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors cursor-pointer"
+                          title="Remove level"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    ) : (
+                      <div className="inline-flex items-center gap-1.5 p-1 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 rounded text-xs">
+                        <span className="text-rose-700 dark:text-rose-300 text-[11px]">Remove?</span>
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmRemoveLevel(key, entryId)}
+                          className="px-2 py-0.5 bg-rose-600 text-white rounded text-[11px] font-bold cursor-pointer"
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteLevelId(null)}
+                          className="px-1.5 py-0.5 text-app-secondary hover:text-app-main text-[11px] cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Inline Add Editor for new entry */}
+        {isAdding && (
+          <div className="mt-2 p-2.5 rounded bg-emerald-50/30 dark:bg-emerald-950/20 border border-emerald-500/40 space-y-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <div className="flex-1">
+                <label className="block text-[10px] font-semibold uppercase text-app-secondary mb-0.5">
+                  Price or range (exact)
+                </label>
+                <input
+                  type="text"
+                  value={newLevelPrice}
+                  onChange={(e) => setNewLevelPrice(e.target.value)}
+                  placeholder="e.g. 2685.50 or 2685.50 - 2690.00"
+                  className="w-full px-2.5 py-1 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                  autoFocus
+                />
               </div>
-            ))}
+              <div className="flex-1">
+                <label className="block text-[10px] font-semibold uppercase text-app-secondary mb-0.5">
+                  Optional notes
+                </label>
+                <input
+                  type="text"
+                  value={newLevelNote}
+                  onChange={(e) => setNewLevelNote(e.target.value)}
+                  placeholder="Optional observation / note..."
+                  className="w-full px-2.5 py-1 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleSaveNewLevel(key)}
+                className="px-3 py-1 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded transition-colors cursor-pointer"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelAddLevel}
+                className="px-2.5 py-1 text-xs text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -295,10 +503,12 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
           <button
             type="button"
             onClick={onToggleExpand}
-            className="md:hidden p-1.5 rounded text-app-secondary hover:text-app-main hover:bg-app-field transition-colors"
-            aria-label={isExpanded ? 'Collapse section' : 'Expand section'}
+            className="md:hidden inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field rounded border border-app transition-colors cursor-pointer"
+            aria-label={isExpanded ? `Collapse ${timeframe} Deep Analysis` : `Expand ${timeframe} Deep Analysis`}
+            aria-expanded={isExpanded}
           >
-            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            <span>Deep</span>
+            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
         </div>
 
@@ -336,79 +546,36 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
           <button
             type="button"
             onClick={onToggleExpand}
-            className="hidden md:inline-flex p-1.5 rounded text-app-secondary hover:text-app-main hover:bg-app-field transition-colors ml-1"
-            aria-label={isExpanded ? 'Collapse section' : 'Expand section'}
+            className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field rounded border border-app transition-colors ml-1 cursor-pointer"
+            aria-label={isExpanded ? `Collapse ${timeframe} Deep Analysis` : `Expand ${timeframe} Deep Analysis`}
+            aria-expanded={isExpanded}
           >
-            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            <span>Deep Analysis</span>
+            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
 
-      {/* Visible General Supply & Demand summary badges under header if any */}
-      {visibleSupplyDemandLevels.length > 0 && (
-        <div className="px-3 sm:px-4 py-1.5 bg-app-field/60 border-b border-app/40 flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-app-secondary font-medium text-[11px] uppercase tracking-wider">
-            S/D Manager:
-          </span>
-          {visibleSupplyDemandLevels.map((sd) => (
-            <span
-              key={sd.id}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-app-main border border-app text-app-main text-[11px]"
-            >
-              {sd.supply && <span className="text-bearish">Supply: {sd.supply}</span>}
-              {sd.supply && sd.demand && <span className="opacity-40">|</span>}
-              {sd.demand && <span className="text-bullish">Demand: {sd.demand}</span>}
+      {/* Deep Analysis Body (Kept mounted to preserve unsaved form inputs, but completely hidden when collapsed) */}
+      <div className={isExpanded ? "p-3.5 sm:p-5 bg-app-main divide-y divide-app/50" : "hidden"} aria-hidden={!isExpanded}>
+        {/* Visible General Supply & Demand summary badges inside deep analysis body */}
+        {visibleSupplyDemandLevels.length > 0 && (
+          <div className="pb-3 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-app-secondary font-medium text-[11px] uppercase tracking-wider">
+              S/D Manager:
             </span>
-          ))}
-        </div>
-      )}
-
-      {/* Collapsed State with Saved Summary & Edit button */}
-      {!isExpanded && data.isSaved && (
-        <div className="p-3 sm:p-4 bg-app-main flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-app-secondary">
-            {data.priceLocation?.location && (
-              <span>
-                <strong className="text-app-main font-semibold">Location:</strong>{' '}
-                {data.priceLocation.location}{' '}
-                {data.priceLocation.levelRange ? `(${data.priceLocation.levelRange})` : ''}
+            {visibleSupplyDemandLevels.map((sd) => (
+              <span
+                key={sd.id}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-app-field border border-app text-app-main text-[11px]"
+              >
+                {sd.supply && <span className="text-bearish">Supply: {sd.supply}</span>}
+                {sd.supply && sd.demand && <span className="opacity-40">|</span>}
+                {sd.demand && <span className="text-bullish">Demand: {sd.demand}</span>}
               </span>
-            )}
-            <span>
-              <strong className="text-app-main font-semibold">Swing:</strong>{' '}
-              {data.swing.direction || '—'}{' '}
-              {data.swing.high && `(H: ${data.swing.high})`}{' '}
-              {data.swing.low && `(L: ${data.swing.low})`}
-            </span>
-            <span>
-              <strong className="text-app-main font-semibold">Internal:</strong>{' '}
-              {data.internal.direction || '—'}{' '}
-              {data.internal.high && `(H: ${data.internal.high})`}
-            </span>
-            <span>
-              <strong className="text-app-main font-semibold">Fractal:</strong>{' '}
-              {data.fractal.direction || '—'}
-            </span>
-            {data.chartImageId && (
-              <span className="inline-flex items-center gap-1 text-emerald-theme">
-                <ImageIcon className="w-3.5 h-3.5" /> Chart Attached
-              </span>
-            )}
+            ))}
           </div>
-
-          <button
-            type="button"
-            onClick={onEditDeep}
-            className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-emerald-theme bg-emerald-pale rounded hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
-          >
-            <Edit2 className="w-3 h-3" /> Edit Deep Analysis
-          </button>
-        </div>
-      )}
-
-      {/* Expanded Deep Analysis Editor */}
-      {isExpanded && (
-        <div className="p-3.5 sm:p-5 bg-app-main divide-y divide-app/50">
+        )}
           {/* 1. Overall Interpretation (biasSpecific) */}
           {deepVis?.overallInterpretation !== false && (
             <div className="pb-4">
@@ -980,18 +1147,6 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                 <span>{isSavingDeep ? 'Saving...' : 'Save Deep Analysis'}</span>
               </button>
 
-              {data.isSaved && (
-                <button
-                  type="button"
-                  onClick={onEditDeep}
-                  aria-label={`Edit ${timeframe} Deep Analysis`}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded transition-colors cursor-pointer"
-                >
-                  <Edit2 className="w-3 h-3" />
-                  <span>Edit Deep Analysis</span>
-                </button>
-              )}
-
               <button
                 type="button"
                 onClick={onToggleExpand}
@@ -1036,7 +1191,6 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
             )}
           </div>
         </div>
-      )}
     </section>
   );
 };

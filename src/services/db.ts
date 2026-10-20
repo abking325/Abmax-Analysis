@@ -172,6 +172,10 @@ export async function saveReport(report: SavedReport): Promise<SavedReport> {
     throw new Error(`Storage integrity check failed: report ${sanitizedReport.id} could not be verified with revision ${targetRevision} after save.`);
   }
 
+  // Ensure deletion tombstone is cleared if re-saving, and track pending cloud sync
+  await removeDeletedReportId(sanitizedReport.id);
+  await addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() });
+
   return verified;
 }
 
@@ -202,6 +206,93 @@ export async function saveReportDirectly(report: SavedReport): Promise<SavedRepo
   return report;
 }
 
+/* ================= INTENTIONAL DELETION TRACKING & PENDING CLOUD QUEUE ================= */
+
+export interface PendingCloudItem {
+  id: string;
+  type: 'report' | 'delete' | 'template';
+  timestamp: number;
+}
+
+export async function getDeletedReportIds(): Promise<string[]> {
+  try {
+    const record = await runTransaction<{ key: string; value: string[] } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get('deleted_report_ids')
+    );
+    return Array.isArray(record?.value) ? record.value : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function markReportDeleted(id: string): Promise<void> {
+  try {
+    const existing = await getDeletedReportIds();
+    if (!existing.includes(id)) {
+      const updated = [...existing, id];
+      await runTransaction('preferences', 'readwrite', (store) =>
+        store.put({ key: 'deleted_report_ids', value: updated })
+      );
+    }
+  } catch (err) {
+    console.warn('[DB] Could not record intentional deletion tombstone:', err);
+  }
+}
+
+export async function removeDeletedReportId(id: string): Promise<void> {
+  try {
+    const existing = await getDeletedReportIds();
+    if (existing.includes(id)) {
+      const updated = existing.filter((item) => item !== id);
+      await runTransaction('preferences', 'readwrite', (store) =>
+        store.put({ key: 'deleted_report_ids', value: updated })
+      );
+    }
+  } catch (err) {
+    console.warn('[DB] Could not remove deletion tombstone:', err);
+  }
+}
+
+export async function getPendingCloudQueue(): Promise<PendingCloudItem[]> {
+  try {
+    const record = await runTransaction<{ key: string; value: PendingCloudItem[] } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get('pending_cloud_queue')
+    );
+    return Array.isArray(record?.value) ? record.value : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function addPendingCloudItem(item: PendingCloudItem): Promise<void> {
+  try {
+    const queue = await getPendingCloudQueue();
+    const filtered = queue.filter((i) => i.id !== item.id);
+    filtered.push(item);
+    await runTransaction('preferences', 'readwrite', (store) =>
+      store.put({ key: 'pending_cloud_queue', value: filtered })
+    );
+  } catch (err) {
+    console.warn('[DB] Could not record pending cloud queue item:', err);
+  }
+}
+
+export async function removePendingCloudItem(id: string): Promise<void> {
+  try {
+    const queue = await getPendingCloudQueue();
+    const filtered = queue.filter((i) => i.id !== id);
+    await runTransaction('preferences', 'readwrite', (store) =>
+      store.put({ key: 'pending_cloud_queue', value: filtered })
+    );
+  } catch (err) {
+    console.warn('[DB] Could not remove pending cloud queue item:', err);
+  }
+}
+
 export async function deleteReport(id: string): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
@@ -218,6 +309,10 @@ export async function deleteReport(id: string): Promise<void> {
       reject(err);
     }
   });
+
+  // Track intentional deletion so bidirectional cloud synchronization does not resurrect it
+  await markReportDeleted(id);
+  await addPendingCloudItem({ id, type: 'delete', timestamp: Date.now() });
 }
 
 /* ================= DRAFT ================= */
@@ -481,7 +576,10 @@ export async function createFullBackup(): Promise<BackupData> {
     getUserReportPresentationConfig(),
   ]);
 
-  const theme = (localStorage.getItem('abmax_theme') as 'light' | 'dark') || 'light';
+  const theme =
+    (typeof localStorage !== 'undefined'
+      ? (localStorage.getItem('abmax_theme') as 'light' | 'dark')
+      : null) || 'light';
 
   return {
     version: 1,
@@ -609,7 +707,7 @@ export async function restoreBackup(
   }
 
   // Restore theme preference
-  if (backup.preferences?.theme) {
+  if (backup.preferences?.theme && typeof localStorage !== 'undefined') {
     localStorage.setItem('abmax_theme', backup.preferences.theme);
   }
 

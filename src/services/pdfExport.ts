@@ -25,14 +25,14 @@ const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
 };
 
 /**
- * Generates and triggers download of an A4 portrait PDF with selectable text
+ * Generates an A4 portrait PDF Blob with selectable text
  * matching the organized document layout specification.
  */
-export async function downloadReportPdf({
+export async function generateReportPdfBlob({
   report,
   imagesMap = {},
   presentationConfig,
-}: ExportPdfOptions): Promise<void> {
+}: ExportPdfOptions): Promise<{ blob: Blob; filename: string; doc: jsPDF }> {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -789,8 +789,16 @@ export async function downloadReportPdf({
     '_'
   );
   const filename = `ABMAX_${sanitizedPair}_${sanitizedDate}.pdf`;
-
-  // Trigger universal download (supports Android native save/share sheet & browser)
   const pdfBlob = doc.output('blob');
-  await exportBlobOrDownload(pdfBlob, filename, 'application/pdf', 'ABMAX Analysis PDF');
+
+  return { blob: pdfBlob, filename, doc };
+}
+
+/**
+ * Generates and triggers download of an A4 portrait PDF with selectable text
+ * matching the organized document layout specification.
+ */
+export async function downloadReportPdf(options: ExportPdfOptions): Promise<void> {
+  const { blob, filename } = await generateReportPdfBlob(options);
+  await exportBlobOrDownload(blob, filename, 'application/pdf', 'ABMAX Analysis PDF');
 }

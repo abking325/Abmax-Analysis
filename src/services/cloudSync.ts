@@ -17,6 +17,10 @@ import {
   saveTemplate,
   saveDraft,
   saveImage,
+  getDeletedReportIds,
+  removeDeletedReportId,
+  getPendingCloudQueue,
+  removePendingCloudItem,
 } from './db';
 
 export type SyncState = 'local' | 'syncing' | 'synced' | 'error';
@@ -389,23 +393,40 @@ async function executeSyncOperation(userId: string): Promise<{
   uploaded: number;
   conflicts: number;
 }> {
-  const [cloudData, localReports, localTemplates] = await Promise.all([
+  const [cloudData, localReports, localTemplates, deletedReportIdsList, pendingQueue] = await Promise.all([
     fetchAllUserCloudData(userId),
     getAllReports(),
     getAllTemplates(),
+    getDeletedReportIds(),
+    getPendingCloudQueue(),
   ]);
 
   let downloaded = 0;
   let uploaded = 0;
   let conflicts = 0;
 
+  const deletedReportIds = new Set(deletedReportIdsList);
+
+  // 1. Process pending intentional deletions to cloud so cloud reports don't resurrect
+  for (const delId of deletedReportIds) {
+    if (cloudData.reports.some((r) => r.id === delId)) {
+      await deleteReportFromCloud(userId, delId);
+      await removeDeletedReportId(delId);
+      await removePendingCloudItem(delId);
+    }
+  }
+
   const localReportsMap = new Map<string, SavedReport>();
   for (const rep of localReports) {
     localReportsMap.set(rep.id, rep);
   }
 
-  // 1. Process cloud reports into local store
+  // 2. Process cloud reports into local store (skipping intentionally deleted reports)
   for (const cloudRep of cloudData.reports) {
+    if (deletedReportIds.has(cloudRep.id)) {
+      continue; // Intentionally deleted on this client; do not resurrect
+    }
+
     const localRep = localReportsMap.get(cloudRep.id);
     if (!localRep) {
       // Cloud has report not present locally -> download to local
@@ -424,18 +445,26 @@ async function executeSyncOperation(userId: string): Promise<{
       } else if (localRev > cloudRev || (localRev === cloudRev && localTime > cloudTime)) {
         // Local is newer -> upload to cloud
         const res = await uploadReportToCloud(userId, localRep);
-        if (res.success) uploaded++;
-        else if (res.conflict) conflicts++;
+        if (res.success) {
+          uploaded++;
+          await removePendingCloudItem(localRep.id);
+        } else if (res.conflict) {
+          conflicts++;
+        }
       }
     }
   }
 
-  // 2. Upload any local reports that are completely absent from cloud
+  // 3. Upload any local reports that are completely absent from cloud
   const cloudReportIds = new Set(cloudData.reports.map((r) => r.id));
   for (const localRep of localReports) {
+    if (deletedReportIds.has(localRep.id)) continue;
     if (!cloudReportIds.has(localRep.id)) {
       const res = await uploadReportToCloud(userId, localRep);
-      if (res.success) uploaded++;
+      if (res.success) {
+        uploaded++;
+        await removePendingCloudItem(localRep.id);
+      }
     }
   }
 

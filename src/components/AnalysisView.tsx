@@ -12,6 +12,7 @@ import {
   X,
   Check,
   RefreshCw,
+  Edit2,
 } from 'lucide-react';
 import {
   AnalysisData,
@@ -108,7 +109,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [autosaveStatus, setAutosaveStatus] = useState<string>('Ready');
   const [syncStatus, setSyncStatus] = useState<SyncState>('local');
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-  const autosaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const autosaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSavingReportRef = useRef(false);
 
   // Modals state
@@ -125,10 +126,14 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [isNameReportModalOpen, setIsNameReportModalOpen] = useState(false);
   const [reportNameToSave, setReportNameToSave] = useState('');
 
-  // Opening Candle save state (Phase 2)
-  const [isSavingOc, setIsSavingOc] = useState(false);
-  const [ocSaveSuccess, setOcSaveSuccess] = useState(false);
-  const [ocSaveError, setOcSaveError] = useState<string | null>(null);
+  // Opening Candle state
+  const [isAddingOc, setIsAddingOc] = useState(false);
+  const [newOcSession, setNewOcSession] = useState<OpeningCandleSession>('London');
+  const [newOcLevel, setNewOcLevel] = useState('');
+  const [editingOcId, setEditingOcId] = useState<string | null>(null);
+  const [editOcSession, setEditOcSession] = useState<OpeningCandleSession>('London');
+  const [editOcLevel, setEditOcLevel] = useState('');
+  const [confirmDeleteOcId, setConfirmDeleteOcId] = useState<string | null>(null);
 
   // Template confirmation state (Phase 3)
   const [templateToConfirm, setTemplateToConfirm] = useState<SavedTemplate | null>(null);
@@ -222,11 +227,28 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const alignment = calculateOverallAlignment(data.timeframes, enabledTimeframes);
 
   // Timeframe expansion toggle
+  // Timeframe expansion toggle (preserves entered values and maintains header visibility on manual collapse)
   const toggleTimeframeExpand = (tf: TimeframeId) => {
-    setExpandedTimeframes((prev) => ({
-      ...prev,
-      [tf]: !prev[tf],
-    }));
+    setExpandedTimeframes((prev) => {
+      const willExpand = !prev[tf];
+      if (!willExpand) {
+        requestAnimationFrame(() => {
+          const el = document.getElementById(`section-${tf}`);
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            if (rect.top < 65 || rect.top > window.innerHeight - 80) {
+              const navOffset = 70;
+              const targetY = window.scrollY + rect.top - navOffset;
+              window.scrollTo({ top: Math.max(0, targetY), behavior: 'auto' });
+            }
+          }
+        });
+      }
+      return {
+        ...prev,
+        [tf]: willExpand,
+      };
+    });
   };
 
   // Overall Bias change
@@ -257,7 +279,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }));
   };
 
-  // Save deep analysis across any timeframe: immediately persists draft to IndexedDB, verifies read-back, preserves expanded state without jump
+  // Phase 1: Save deep analysis across any timeframe: immediately persists draft to IndexedDB, verifies read-back, automatically collapses editor, keeps header visible
   const handleSaveDeep = async (tf: TimeframeId): Promise<{ success: boolean; error?: string }> => {
     try {
       const currentLatest = dataRef.current || data;
@@ -280,6 +302,11 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       }
       dataRef.current = updatedData;
       setData(updatedData);
+      // Automatically collapse the editor
+      setExpandedTimeframes((prev) => ({
+        ...prev,
+        [tf]: false,
+      }));
       setAutosaveStatus(
         `Draft saved locally at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
       );
@@ -288,6 +315,18 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           console.warn('Background cloud draft sync failed:', err)
         );
       }
+      // Single layout-aware repositioning: keep that same timeframe's header comfortably visible below navigation. Never jump to scenarios or bottom of page.
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`section-${tf}`);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          if (rect.top < 65 || rect.top > window.innerHeight - 80) {
+            const navOffset = 70;
+            const targetY = window.scrollY + rect.top - navOffset;
+            window.scrollTo({ top: Math.max(0, targetY), behavior: 'auto' });
+          }
+        }
+      });
       return { success: true };
     } catch (err) {
       console.error(`Failed to save deep analysis for timeframe ${tf}:`, err);
@@ -296,7 +335,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   };
 
-  // Edit deep analysis (unlocks fields)
+  // Phase 1: Edit deep analysis (unlocks fields, expands timeframe, keeps user at that timeframe)
   const handleEditDeep = (tf: TimeframeId) => {
     updateAnalysis((prev) => ({
       ...prev,
@@ -309,6 +348,12 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       },
     }));
     setExpandedTimeframes((prev) => ({ ...prev, [tf]: true }));
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`section-${tf}`);
+      if (el) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    });
   };
 
   // Reset deep analysis (clears deep fields & chart image after confirmation, preserves overall bias)
@@ -428,72 +473,72 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }));
   };
 
-  // Opening Candle Handlers (Phase 4)
-  const handleAddOpeningCandle = () => {
+  // Opening Candle Handlers (Phase 3)
+  const handleStartAddOc = () => {
+    setIsAddingOc(true);
+    setNewOcSession('London');
+    setNewOcLevel('');
+    setEditingOcId(null);
+    setConfirmDeleteOcId(null);
+  };
+
+  const handleCancelAddOc = () => {
+    setIsAddingOc(false);
+    setNewOcSession('London');
+    setNewOcLevel('');
+  };
+
+  const handleSaveNewOc = () => {
+    if (!newOcLevel.trim()) {
+      handleCancelAddOc();
+      return;
+    }
     const newEntry: OpeningCandleEntry = {
       id: `oc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      session: 'London',
-      level: '',
+      session: newOcSession,
+      level: newOcLevel, // preserves exact price string including trailing zeros
     };
     updateAnalysis((prev) => ({
       ...prev,
       openingCandles: [...(prev.openingCandles || []), newEntry],
     }));
+    setIsAddingOc(false);
+    setNewOcSession('London');
+    setNewOcLevel('');
   };
 
-  const handleUpdateOpeningCandle = (id: string, updates: Partial<OpeningCandleEntry>) => {
+  const handleStartEditOc = (entry: OpeningCandleEntry) => {
+    setEditingOcId(entry.id);
+    setEditOcSession(entry.session);
+    setEditOcLevel(entry.level);
+    setIsAddingOc(false);
+    setConfirmDeleteOcId(null);
+  };
+
+  const handleCancelEditOc = () => {
+    setEditingOcId(null);
+    setEditOcLevel('');
+  };
+
+  const handleSaveEditOc = (id: string) => {
     updateAnalysis((prev) => ({
       ...prev,
       openingCandles: (prev.openingCandles || []).map((entry) =>
-        entry.id === id ? { ...entry, ...updates } : entry
+        entry.id === id ? { ...entry, session: editOcSession, level: editOcLevel } : entry
       ),
     }));
+    setEditingOcId(null);
+    setEditOcLevel('');
   };
 
-  const handleRemoveOpeningCandle = (id: string) => {
+  const handleConfirmRemoveOc = (id: string) => {
     updateAnalysis((prev) => ({
       ...prev,
       openingCandles: (prev.openingCandles || []).filter((entry) => entry.id !== id),
     }));
+    setConfirmDeleteOcId(null);
   };
 
-  // Save OC Handler (Phase 2): persists current OC entries to working draft immediately, verifies, preserves exact price strings & IDs
-  const handleSaveOc = async () => {
-    setIsSavingOc(true);
-    setOcSaveSuccess(false);
-    setOcSaveError(null);
-    try {
-      const currentLatest = dataRef.current || data;
-      const updatedData: AnalysisData = {
-        ...currentLatest,
-        openingCandles: [...(currentLatest.openingCandles || [])],
-      };
-      await saveDraft(updatedData);
-      const verifiedDraft = await getDraft();
-      if (!verifiedDraft) {
-        throw new Error('Local draft verification failed after saving OC levels.');
-      }
-      dataRef.current = updatedData;
-      setData(updatedData);
-      setOcSaveSuccess(true);
-      setAutosaveStatus(
-        `Draft saved locally at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
-      );
-      if (user) {
-        uploadDraftToCloud(user.id, updatedData).catch((err) =>
-          console.warn('Background cloud draft sync failed:', err)
-        );
-      }
-      setTimeout(() => {
-        setOcSaveSuccess(false);
-      }, 4000);
-    } catch (err) {
-      console.error('Failed to save Opening Candle levels:', err);
-      setOcSaveError((err as Error).message || 'Failed to save OC levels to local storage.');
-    } finally {
-      setIsSavingOc(false);
-    }
-  };
 
   // In-memory recovery backup export when save fails (Phase 2)
   const handleExportInMemoryBackup = async () => {
@@ -576,6 +621,20 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       }
     }
 
+    // Preserve existing OC entries and capture unfinished non-empty inputs
+    let finalOpeningCandles = [...(latestData.openingCandles || [])];
+    if (isAddingOc && newOcLevel.trim()) {
+      finalOpeningCandles.push({
+        id: `oc_${now}_${Math.random().toString(36).substring(2, 7)}`,
+        session: newOcSession,
+        level: newOcLevel.trim(),
+      });
+    } else if (editingOcId && editOcLevel.trim()) {
+      finalOpeningCandles = finalOpeningCandles.map((entry) =>
+        entry.id === editingOcId ? { ...entry, session: editOcSession, level: editOcLevel.trim() } : entry
+      );
+    }
+
     const reportPayload: SavedReport = {
       ...latestData,
       id: targetId,
@@ -589,7 +648,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       crossedLiquidity: latestData.crossedLiquidity || [],
       majorLiquidityWatchlist: latestData.majorLiquidityWatchlist || '',
       supplyDemandLevels: latestData.supplyDemandLevels || [],
-      openingCandles: latestData.openingCandles || [],
+      openingCandles: finalOpeningCandles,
       scenarios: latestData.scenarios || [],
       trades: latestData.trades || [],
       overallNotes: latestData.overallNotes || '',
@@ -1126,121 +1185,220 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           <div className="border border-app rounded-lg bg-app-main p-4 sm:p-5 mb-6 shadow-2xs">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-bold text-app-main uppercase tracking-wider">
-                    Opening Candle (OC)
-                  </h3>
-                  {ocSaveSuccess && (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded animate-fade-in">
-                      <Check className="w-3 h-3" /> Saved
-                    </span>
-                  )}
-                </div>
+                <h3 className="text-xs font-bold text-app-main uppercase tracking-wider">
+                  Opening Candle (OC)
+                </h3>
                 <p className="text-[11px] text-app-secondary mt-0.5">
                   Record session and timeframe opening levels for bias and confluence.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              {!isAddingOc && (
                 <button
                   type="button"
-                  onClick={handleSaveOc}
-                  disabled={isSavingOc}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-theme hover:bg-emerald-700 disabled:opacity-50 rounded transition-colors cursor-pointer shadow-2xs"
-                >
-                  {isSavingOc ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Check className="w-3.5 h-3.5" />
-                  )}
-                  <span>{isSavingOc ? 'Saving...' : 'Save OC'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAddOpeningCandle}
+                  onClick={handleStartAddOc}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded transition-colors cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Add OC Level
                 </button>
-              </div>
+              )}
             </div>
 
-            {ocSaveError && (
-              <div className="flex items-center justify-between gap-2 px-3 py-1.5 mb-3 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-500/40 text-rose-600 dark:text-rose-400 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>{ocSaveError}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSaveOc}
-                  className="font-bold underline hover:no-underline cursor-pointer"
-                >
-                  Retry Save OC
-                </button>
-              </div>
-            )}
-
-            {(!data.openingCandles || data.openingCandles.length === 0) ? (
+            {/* List of compact saved OC boxes */}
+            {(!data.openingCandles || data.openingCandles.length === 0) && !isAddingOc ? (
               <p className="text-xs text-app-secondary italic py-2">
                 No opening candle levels recorded. Click &quot;Add OC Level&quot; to add a session or timeframe opening price.
               </p>
             ) : (
               <div className="space-y-2 mt-2">
-                {data.openingCandles.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2.5 rounded bg-app-secondary/40 border border-app"
-                  >
-                    <div className="w-full sm:w-48 shrink-0">
-                      <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
-                        Opening Period / Session
-                      </label>
-                      <select
-                        value={entry.session}
-                        onChange={(e) =>
-                          handleUpdateOpeningCandle(entry.id, {
-                            session: e.target.value as OpeningCandleSession,
-                          })
-                        }
-                        className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors cursor-pointer"
+                {(data.openingCandles || []).map((entry, idx) => {
+                  const entryId = entry.id || `oc_fallback_${idx}`;
+                  const isEditing = editingOcId === entryId;
+                  const isDeleting = confirmDeleteOcId === entryId;
+
+                  if (isEditing) {
+                    // Inline editor for editing existing entry
+                    return (
+                      <div
+                        key={entryId}
+                        className="p-3 rounded bg-emerald-50/30 dark:bg-emerald-950/20 border border-emerald-500/40 space-y-2"
                       >
-                        <option value="Yearly">Yearly</option>
-                        <option value="Quarterly">Quarterly</option>
-                        <option value="Monthly">Monthly</option>
-                        <option value="Weekly">Weekly</option>
-                        <option value="London">London</option>
-                        <option value="New York">New York</option>
-                        <option value="Asia">Asia</option>
-                      </select>
-                    </div>
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <div className="w-full sm:w-48 shrink-0">
+                            <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
+                              Opening Period / Session
+                            </label>
+                            <select
+                              value={editOcSession}
+                              onChange={(e) => setEditOcSession(e.target.value as OpeningCandleSession)}
+                              className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors cursor-pointer"
+                            >
+                              <option value="Yearly">Yearly</option>
+                              <option value="Quarterly">Quarterly</option>
+                              <option value="Monthly">Monthly</option>
+                              <option value="Weekly">Weekly</option>
+                              <option value="London">London</option>
+                              <option value="New York">New York</option>
+                              <option value="Asia">Asia</option>
+                            </select>
+                          </div>
+                          <div className="flex-1">
+                            <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
+                              Opening Level (exact)
+                            </label>
+                            <input
+                              type="text"
+                              value={editOcLevel}
+                              onChange={(e) => setEditOcLevel(e.target.value)}
+                              placeholder="Enter opening price (e.g. 5500.25)"
+                              className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors"
+                              autoFocus
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEditOc(entryId)}
+                            className="px-3 py-1 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded transition-colors cursor-pointer"
+                          >
+                            Save Changes
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEditOc}
+                            className="px-2.5 py-1 text-xs text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
 
-                    <div className="flex-1">
-                      <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
-                        Opening Level
-                      </label>
-                      <input
-                        type="text"
-                        value={entry.level}
-                        onChange={(e) =>
-                          handleUpdateOpeningCandle(entry.id, { level: e.target.value })
-                        }
-                        placeholder="Enter opening price (e.g. 5500.25)"
-                        className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors"
-                      />
-                    </div>
+                  // Compact Saved Box for OC (e.g. London — 5500)
+                  const isLevelMissing = !entry.level || !entry.level.trim();
 
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveOpeningCandle(entry.id)}
-                      aria-label={`Remove ${entry.session} opening candle level`}
-                      title="Remove entry"
-                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors self-end sm:self-end cursor-pointer"
+                  return (
+                    <div
+                      key={entryId}
+                      className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 p-2.5 rounded bg-app-secondary/50 border border-app hover:border-app-secondary transition-colors"
                     >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span className="font-semibold text-xs px-2.5 py-0.5 rounded bg-emerald-pale text-bullish border border-emerald-500/30 font-sans">
+                          {entry.session}
+                        </span>
+                        <span className="text-app-secondary text-xs">—</span>
+                        {!isLevelMissing ? (
+                          <span className="font-mono font-bold text-sm text-app-main tabular-nums bg-app-main px-2.5 py-0.5 rounded border border-app/60">
+                            {entry.level}
+                          </span>
+                        ) : (
+                          <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded border border-amber-300">
+                            Incomplete: no level
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0 self-end sm:self-center">
+                        {!isDeleting ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditOc(entry)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+                              title="Edit OC entry"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                              <span className="text-xs">Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteOcId(entryId)}
+                              className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors cursor-pointer"
+                              title="Remove OC entry"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        ) : (
+                          <div className="inline-flex items-center gap-1.5 p-1 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 rounded text-xs">
+                            <span className="text-rose-700 dark:text-rose-300 text-xs">Delete {entry.session} OC?</span>
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmRemoveOc(entryId)}
+                              className="px-2 py-0.5 bg-rose-600 text-white rounded text-xs font-bold cursor-pointer"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteOcId(null)}
+                              className="px-1.5 py-0.5 text-app-secondary hover:text-app-main text-xs cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Inline Add Editor for new OC Level */}
+            {isAddingOc && (
+              <div className="mt-2 p-3 rounded bg-emerald-50/30 dark:bg-emerald-950/20 border border-emerald-500/40 space-y-2">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <div className="w-full sm:w-48 shrink-0">
+                    <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
+                      Opening Period / Session
+                    </label>
+                    <select
+                      value={newOcSession}
+                      onChange={(e) => setNewOcSession(e.target.value as OpeningCandleSession)}
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors cursor-pointer"
+                    >
+                      <option value="Yearly">Yearly</option>
+                      <option value="Quarterly">Quarterly</option>
+                      <option value="Monthly">Monthly</option>
+                      <option value="Weekly">Weekly</option>
+                      <option value="London">London</option>
+                      <option value="New York">New York</option>
+                      <option value="Asia">Asia</option>
+                    </select>
                   </div>
-                ))}
+                  <div className="flex-1">
+                    <label className="block text-[10px] uppercase font-bold text-app-secondary mb-1">
+                      Opening Level (exact)
+                    </label>
+                    <input
+                      type="text"
+                      value={newOcLevel}
+                      onChange={(e) => setNewOcLevel(e.target.value)}
+                      placeholder="Enter opening price (e.g. 5500.25)"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleSaveNewOc}
+                    className="px-3 py-1 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded transition-colors cursor-pointer"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelAddOc}
+                    className="px-2.5 py-1 text-xs text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
           </div>

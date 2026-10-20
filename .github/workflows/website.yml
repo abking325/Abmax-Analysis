@@ -1,0 +1,46 @@
+name: Build ABMAX Website
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-website:
+    name: Build & Verify Production Website
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies Cleanly
+        run: npm ci
+
+      - name: Type Check and Code Quality
+        run: npm run lint
+
+      - name: Run Core Persistence Verification Tests
+        run: npm test
+
+      - name: Build Production Web Assets
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL || 'https://fxzurpdymuhlfkdxfgel.supabase.co' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || '' }}
+
+      - name: Upload Production Web Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ABMAX-Web-Build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
