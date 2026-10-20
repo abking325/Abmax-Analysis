@@ -25,11 +25,16 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22'
           cache: 'npm'
+
+      - name: Verify Node.js and npm Environment
+        run: |
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
 
       - name: Install Dependencies Cleanly
         run: npm ci
