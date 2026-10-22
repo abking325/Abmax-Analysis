@@ -18,6 +18,23 @@ interface TakeTradeModalProps {
   report: SavedReport;
   tradeToEdit?: RecordedTrade | null;
   onSaveTrade: (trade: RecordedTrade) => Promise<void>;
+  initialTradeDraft?: {
+    selectedScenarioId: string;
+    direction: 'Buy' | 'Sell';
+    session: TradingSession;
+    timeframeTaken: TimeframeId;
+    entryPrice: string;
+    stopLoss: string;
+    takeProfit: string;
+    exitPrice: string;
+    riskReward: string;
+    outcome: TradeOutcome;
+    rulesFollowed: boolean;
+    notes: string;
+    tradeDate: string;
+    tradeTime: string;
+  } | null;
+  onTradeDraftChange?: (draft: any) => void;
 }
 
 export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
@@ -26,39 +43,94 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   report,
   tradeToEdit = null,
   onSaveTrade,
+  initialTradeDraft,
+  onTradeDraftChange,
 }) => {
   const isEditing = Boolean(tradeToEdit);
   const scenarios = report.scenarios || [];
 
   // Form state
-  const [selectedScenarioId, setSelectedScenarioId] = useState<string>('manual');
-  const [direction, setDirection] = useState<'Buy' | 'Sell'>('Buy');
-  const [session, setSession] = useState<TradingSession>(report.session || 'London');
-  const [timeframeTaken, setTimeframeTaken] = useState<TimeframeId>('5M');
-  const [entryPrice, setEntryPrice] = useState('');
-  const [stopLoss, setStopLoss] = useState('');
-  const [takeProfit, setTakeProfit] = useState('');
-  const [exitPrice, setExitPrice] = useState('');
-  const [riskReward, setRiskReward] = useState('');
-  const [outcome, setOutcome] = useState<TradeOutcome>('Open');
-  const [rulesFollowed, setRulesFollowed] = useState<boolean>(true);
-  const [notes, setNotes] = useState('');
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string>(
+    initialTradeDraft?.selectedScenarioId || 'manual'
+  );
+  const [direction, setDirection] = useState<'Buy' | 'Sell'>(
+    initialTradeDraft?.direction || 'Buy'
+  );
+  const [session, setSession] = useState<TradingSession>(
+    initialTradeDraft?.session || report.session || 'London'
+  );
+  const [timeframeTaken, setTimeframeTaken] = useState<TimeframeId>(
+    initialTradeDraft?.timeframeTaken || '5M'
+  );
+  const [entryPrice, setEntryPrice] = useState(initialTradeDraft?.entryPrice || '');
+  const [stopLoss, setStopLoss] = useState(initialTradeDraft?.stopLoss || '');
+  const [takeProfit, setTakeProfit] = useState(initialTradeDraft?.takeProfit || '');
+  const [exitPrice, setExitPrice] = useState(initialTradeDraft?.exitPrice || '');
+  const [riskReward, setRiskReward] = useState(initialTradeDraft?.riskReward || '');
+  const [outcome, setOutcome] = useState<TradeOutcome>(initialTradeDraft?.outcome || 'Open');
+  const [rulesFollowed, setRulesFollowed] = useState<boolean>(
+    initialTradeDraft?.rulesFollowed !== undefined ? initialTradeDraft.rulesFollowed : true
+  );
+  const [notes, setNotes] = useState(initialTradeDraft?.notes || '');
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
     null
   );
-  const [tradeDate, setTradeDate] = useState(() => report.date || new Date().toISOString().slice(0, 10));
+  const [tradeDate, setTradeDate] = useState(() => initialTradeDraft?.tradeDate || report.date || new Date().toISOString().slice(0, 10));
   const [tradeTime, setTradeTime] = useState(() => {
-    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    return initialTradeDraft?.tradeTime || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   });
 
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
 
+  useEffect(() => {
+    if (isOpen) {
+      onTradeDraftChange?.({
+        isOpen: true,
+        reportId: report.id,
+        tradeToEditId: tradeToEdit?.id || null,
+        selectedScenarioId,
+        direction,
+        session,
+        timeframeTaken,
+        entryPrice,
+        stopLoss,
+        takeProfit,
+        exitPrice,
+        riskReward,
+        outcome,
+        rulesFollowed,
+        notes,
+        tradeDate,
+        tradeTime,
+      });
+    }
+  }, [
+    isOpen,
+    report.id,
+    tradeToEdit?.id,
+    selectedScenarioId,
+    direction,
+    session,
+    timeframeTaken,
+    entryPrice,
+    stopLoss,
+    takeProfit,
+    exitPrice,
+    riskReward,
+    outcome,
+    rulesFollowed,
+    notes,
+    tradeDate,
+    tradeTime,
+    onTradeDraftChange,
+  ]);
+
   // Prepopulate form when modal opens or tradeToEdit changes
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || initialTradeDraft) return;
 
     if (tradeToEdit) {
       // Editing existing trade

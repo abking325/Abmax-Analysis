@@ -14,6 +14,11 @@ on:
         options:
           - debug
           - release
+      require_supabase:
+        description: 'Require Supabase key (fail build if missing for cloud build)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-apk:
@@ -45,6 +50,30 @@ jobs:
       - name: Run Core Persistence Verification Tests
         run: npm test
 
+      - name: Validate Supabase Configuration
+        run: |
+          TARGET_URL="${VITE_SUPABASE_URL}"
+          echo "Verifying Supabase Target URL: $TARGET_URL"
+          if [ "$TARGET_URL" != "https://fxzurpdymuhlfkdxfgel.supabase.co" ]; then
+            echo "::error::VITE_SUPABASE_URL must remain https://fxzurpdymuhlfkdxfgel.supabase.co (found: $TARGET_URL)"
+            exit 1
+          fi
+
+          if [ -n "$VITE_SUPABASE_PUBLISHABLE_KEY" ]; then
+            # Never print or log secret publishable keys
+            echo "✅ VITE_SUPABASE_PUBLISHABLE_KEY is present and validated (${#VITE_SUPABASE_PUBLISHABLE_KEY} characters). Cloud build enabled."
+          else
+            if [ "${{ github.event.inputs.require_supabase }}" = "true" ] || [ "${REQUIRE_SUPABASE}" = "true" ]; then
+              echo "::error::VITE_SUPABASE_PUBLISHABLE_KEY is required for a cloud-enabled build, but no secret or variable was provided! Configure VITE_SUPABASE_PUBLISHABLE_KEY or VITE_SUPABASE_ANON_KEY in your GitHub repository secrets."
+              exit 1
+            else
+              echo "::notice::VITE_SUPABASE_PUBLISHABLE_KEY was not provided. Building APK with full local offline persistence (cloud sync disabled until key is added)."
+            fi
+          fi
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL || 'https://fxzurpdymuhlfkdxfgel.supabase.co' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || '' }}
+
       - name: Build Web Application
         run: npm run build
         env:
@@ -70,11 +99,34 @@ jobs:
       - name: Grant Execute Permissions for gradlew
         run: chmod +x android/gradlew
 
-      - name: Prepare Optional Keystore Signing
+      - name: Prepare Signing Keystores
         id: setup_signing
         run: |
+          mkdir -p ~/.android
+          # Primary persistent debug signing secret name: DEBUG_KEYSTORE_BASE64
+          if [ -n "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" ]; then
+            echo "Restoring persistent debug keystore from DEBUG_KEYSTORE_BASE64..."
+            echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > ~/.android/debug.keystore
+            echo "persistent_debug_key=true" >> $GITHUB_OUTPUT
+          elif [ -n "${{ secrets.KEYSTORE_BASE64 }}" ] && [ "${{ github.event.inputs.build_type }}" != "release" ]; then
+            echo "Note: DEBUG_KEYSTORE_BASE64 not found, but KEYSTORE_BASE64 is present. Using KEYSTORE_BASE64 as explicit fallback for debug signing..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ~/.android/debug.keystore
+            echo "persistent_debug_key=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::DEBUG_KEYSTORE_BASE64 secret is not configured. Gradle will generate a temporary ephemeral keystore unique to this runner VM."
+            echo "persistent_debug_key=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Inspect and report debug certificate SHA-256 fingerprint if keystore exists
+          if [ -f ~/.android/debug.keystore ]; then
+            echo "Extracting debug keystore certificate fingerprint..."
+            DEBUG_SHA256=$(keytool -list -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey 2>/dev/null | grep "SHA256:" | head -n 1 | awk '{print $2}')
+            echo "DEBUG_SHA256=${DEBUG_SHA256}" >> $GITHUB_ENV
+            echo "Debug Keystore Certificate SHA-256: ${DEBUG_SHA256}"
+          fi
+
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Found private signing keystore secret. Decoding..."
+            echo "Found private release signing keystore secret (KEYSTORE_BASE64). Decoding..."
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
             echo "RELEASE_STORE_FILE=release.keystore" >> $GITHUB_ENV
             echo "RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
@@ -82,7 +134,7 @@ jobs:
             echo "RELEASE_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
             echo "signed=true" >> $GITHUB_OUTPUT
           else
-            echo "No custom keystore secret provided. Building personal-testing debug APK."
+            echo "No custom release keystore secret provided. Building debug APK."
             echo "signed=false" >> $GITHUB_OUTPUT
           fi
 
@@ -122,4 +174,8 @@ jobs:
           echo "- **Application ID:** com.abmax.analysis" >> $GITHUB_STEP_SUMMARY
           echo "- **Variant:** Personal Testing Debug APK (Ready for direct sideload installation on Android)" >> $GITHUB_STEP_SUMMARY
           echo "- **Offline Storage:** Bundled locally in APK (no hosting server dependency)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Persistent Debug Keystore:** ${{ steps.setup_signing.outputs.persistent_debug_key == 'true' && '✅ Enabled (Persistent across builds)' || '⚠️ Ephemeral (Unique runner key; will require full uninstall/reinstall unless DEBUG_KEYSTORE_BASE64 is set)' }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$DEBUG_SHA256" ]; then
+            echo "- **Signing Certificate SHA-256:** \`$DEBUG_SHA256\`" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "- **Artifact:** Download \`ABMAX-Android-APK\` from this workflow run, extract the zip, and install \`ABMAX-ANALYSIS-personal-testing.apk\` on your Android device." >> $GITHUB_STEP_SUMMARY

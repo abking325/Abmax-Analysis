@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -139,6 +139,26 @@ interface SupplyDemandProps {
   onUpdateLevel: (level: SupplyDemandLevel) => void;
   onRemoveLevel: (id: string) => void;
   onToggleVisibility: (id: string) => void;
+  initialDraft?: {
+    isAdding: boolean;
+    timeframe: TimeframeId;
+    supply: string;
+    demand: string;
+    editingId: string | null;
+    editTimeframe: TimeframeId;
+    editSupply: string;
+    editDemand: string;
+  };
+  onDraftChange?: (draft: {
+    isAdding: boolean;
+    timeframe: TimeframeId;
+    supply: string;
+    demand: string;
+    editingId: string | null;
+    editTimeframe: TimeframeId;
+    editSupply: string;
+    editDemand: string;
+  }) => void;
 }
 
 export const SupplyDemandSection: React.FC<SupplyDemandProps> = ({
@@ -147,19 +167,35 @@ export const SupplyDemandSection: React.FC<SupplyDemandProps> = ({
   onUpdateLevel,
   onRemoveLevel,
   onToggleVisibility,
+  initialDraft,
+  onDraftChange,
 }) => {
-  const [isAdding, setIsAdding] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [isAdding, setIsAdding] = useState(initialDraft?.isAdding || false);
+  const [editingId, setEditingId] = useState<string | null>(initialDraft?.editingId || null);
 
   // New level draft state
-  const [newTimeframe, setNewTimeframe] = useState<TimeframeId>('4H');
-  const [newSupply, setNewSupply] = useState('');
-  const [newDemand, setNewDemand] = useState('');
+  const [newTimeframe, setNewTimeframe] = useState<TimeframeId>(initialDraft?.timeframe || '4H');
+  const [newSupply, setNewSupply] = useState(initialDraft?.supply || '');
+  const [newDemand, setNewDemand] = useState(initialDraft?.demand || '');
 
   // Editing draft state
-  const [editTimeframe, setEditTimeframe] = useState<TimeframeId>('4H');
-  const [editSupply, setEditSupply] = useState('');
-  const [editDemand, setEditDemand] = useState('');
+  const [editTimeframe, setEditTimeframe] = useState<TimeframeId>(initialDraft?.editTimeframe || '4H');
+  const [editSupply, setEditSupply] = useState(initialDraft?.editSupply || '');
+  const [editDemand, setEditDemand] = useState(initialDraft?.editDemand || '');
+
+  // Notify parent on draft updates
+  useEffect(() => {
+    onDraftChange?.({
+      isAdding,
+      timeframe: newTimeframe,
+      supply: newSupply,
+      demand: newDemand,
+      editingId,
+      editTimeframe,
+      editSupply,
+      editDemand,
+    });
+  }, [isAdding, newTimeframe, newSupply, newDemand, editingId, editTimeframe, editSupply, editDemand, onDraftChange]);
 
   const handleStartEdit = (level: SupplyDemandLevel) => {
     setEditingId(level.id);

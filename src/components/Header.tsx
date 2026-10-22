@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Settings as SettingsIcon } from 'lucide-react';
 import settingsGearPng from '../assets/settings-gear.png';
 
 export type ActiveView = 'home' | 'analysis' | 'reports';
@@ -17,6 +18,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   // Local state tracking whether header is visible (only when on top of page <= 80px)
   const [isVisible, setIsVisible] = useState(true);
+  const [imgFailed, setImgFailed] = useState(false);
   const [headerHeight, setHeaderHeight] = useState(58);
   const headerRef = useRef<HTMLElement>(null);
 
@@ -159,7 +161,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </nav>
 
-          {/* Right: Locally Bundled Transparent PNG Settings Gear Button */}
+          {/* Right: Locally Bundled Transparent PNG Settings Gear Button with SVG Fallback */}
           <div className="flex items-center shrink-0">
             <button
               type="button"
@@ -169,12 +171,19 @@ export const Header: React.FC<HeaderProps> = ({
               title="Settings"
               className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-app bg-app-field/60 hover:bg-app-field text-app-main transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 relative z-10 pointer-events-auto"
             >
-              <img
-                src={settingsGearPng}
-                alt=""
-                aria-hidden="true"
-                className="w-[19px] h-[19px] max-w-[19px] max-h-[19px] object-contain brightness-0 dark:invert opacity-75 hover:opacity-100 transition-opacity select-none pointer-events-none"
-              />
+              {!imgFailed ? (
+                <img
+                  src={settingsGearPng}
+                  alt="Settings"
+                  onError={() => setImgFailed(true)}
+                  className="w-[20px] h-[20px] max-w-[20px] max-h-[20px] object-contain dark:invert opacity-80 hover:opacity-100 transition-opacity select-none pointer-events-none"
+                />
+              ) : (
+                <SettingsIcon
+                  className="w-[20px] h-[20px] text-app-main opacity-80 hover:opacity-100 transition-opacity"
+                  aria-hidden="true"
+                />
+              )}
             </button>
           </div>
         </div>

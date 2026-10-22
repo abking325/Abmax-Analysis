@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -43,6 +43,22 @@ interface TimeframeSectionProps {
   onViewImage: (imageId: string, title: string) => void;
   visibleSupplyDemandLevels: SupplyDemandLevel[];
   visibilityConfig?: WorkspaceVisibilityConfig;
+  initialLevelDraft?: {
+    addingLevelKey: string | null;
+    newLevelPrice: string;
+    newLevelNote: string;
+    editingLevelId: string | null;
+    editLevelPrice: string;
+    editLevelNote: string;
+  };
+  onLevelDraftChange?: (draft: {
+    addingLevelKey: string | null;
+    newLevelPrice: string;
+    newLevelNote: string;
+    editingLevelId: string | null;
+    editLevelPrice: string;
+    editLevelNote: string;
+  }) => void;
 }
 
 export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
@@ -60,6 +76,8 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   onViewImage,
   visibleSupplyDemandLevels,
   visibilityConfig,
+  initialLevelDraft,
+  onLevelDraftChange,
 }) => {
   const sectionRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -71,14 +89,26 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   const [deepSaveErrorMsg, setDeepSaveErrorMsg] = useState<string | null>(null);
 
   // Phase 2: Active inline adding key ('supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels' | null)
-  const [addingLevelKey, setAddingLevelKey] = useState<string | null>(null);
-  const [newLevelPrice, setNewLevelPrice] = useState('');
-  const [newLevelNote, setNewLevelNote] = useState('');
+  const [addingLevelKey, setAddingLevelKey] = useState<string | null>(initialLevelDraft?.addingLevelKey || null);
+  const [newLevelPrice, setNewLevelPrice] = useState(initialLevelDraft?.newLevelPrice || '');
+  const [newLevelNote, setNewLevelNote] = useState(initialLevelDraft?.newLevelNote || '');
 
   // Phase 2: Active inline editing entry ID
-  const [editingLevelId, setEditingLevelId] = useState<string | null>(null);
-  const [editLevelPrice, setEditLevelPrice] = useState('');
-  const [editLevelNote, setEditLevelNote] = useState('');
+  const [editingLevelId, setEditingLevelId] = useState<string | null>(initialLevelDraft?.editingLevelId || null);
+  const [editLevelPrice, setEditLevelPrice] = useState(initialLevelDraft?.editLevelPrice || '');
+  const [editLevelNote, setEditLevelNote] = useState(initialLevelDraft?.editLevelNote || '');
+
+  // Notify parent on draft updates
+  useEffect(() => {
+    onLevelDraftChange?.({
+      addingLevelKey,
+      newLevelPrice,
+      newLevelNote,
+      editingLevelId,
+      editLevelPrice,
+      editLevelNote,
+    });
+  }, [addingLevelKey, newLevelPrice, newLevelNote, editingLevelId, editLevelPrice, editLevelNote, onLevelDraftChange]);
 
   // Phase 2: Confirmation for removal
   const [confirmDeleteLevelId, setConfirmDeleteLevelId] = useState<string | null>(null);

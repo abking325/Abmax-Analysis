@@ -73,6 +73,35 @@ interface AnalysisViewProps {
   onNavigateHome: () => void;
   onReportSavedSuccessfully: (reportId: string) => void;
   workspaceVisibility?: WorkspaceVisibilityConfig;
+  initialSessionUI?: {
+    expandedTimeframes?: Record<TimeframeId, boolean>;
+    unfinishedOc?: {
+      isAdding: boolean;
+      session: OpeningCandleSession;
+      level: string;
+      editingId: string | null;
+      editSession: OpeningCandleSession;
+      editLevel: string;
+    };
+    unfinishedSupplyDemand?: any;
+    unfinishedTfLevels?: Record<string, any>;
+    expandedScenarios?: Record<string, boolean>;
+  };
+  onSessionUIChange?: (ui: {
+    expandedTimeframes: Record<TimeframeId, boolean>;
+    unfinishedOc?: {
+      isAdding: boolean;
+      session: OpeningCandleSession;
+      level: string;
+      editingId: string | null;
+      editSession: OpeningCandleSession;
+      editLevel: string;
+    };
+    unfinishedSupplyDemand?: any;
+    unfinishedTfLevels?: Record<string, any>;
+    expandedScenarios?: Record<string, boolean>;
+  }) => void;
+  onAnalysisDataChange?: (data: AnalysisData) => void;
 }
 
 export const AnalysisView: React.FC<AnalysisViewProps> = ({
@@ -81,18 +110,25 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   onNavigateHome,
   onReportSavedSuccessfully,
   workspaceVisibility,
+  initialSessionUI,
+  onSessionUIChange,
+  onAnalysisDataChange,
 }) => {
   const { user } = useAuth();
   const [data, setData] = useState<AnalysisData>(initialData);
-  const [expandedTimeframes, setExpandedTimeframes] = useState<Record<TimeframeId, boolean>>({
-    Monthly: false,
-    Weekly: false,
-    Daily: false,
-    '4H': false,
-    '1H': false,
-    '15M': false,
-    '5M': false,
-    '1M': false,
+  const [expandedTimeframes, setExpandedTimeframes] = useState<Record<TimeframeId, boolean>>(() => {
+    return (
+      initialSessionUI?.expandedTimeframes || {
+        Monthly: false,
+        Weekly: false,
+        Daily: false,
+        '4H': false,
+        '1H': false,
+        '15M': false,
+        '5M': false,
+        '1M': false,
+      }
+    );
   });
 
   // Live local clock state for display
@@ -127,13 +163,60 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [reportNameToSave, setReportNameToSave] = useState('');
 
   // Opening Candle state
-  const [isAddingOc, setIsAddingOc] = useState(false);
-  const [newOcSession, setNewOcSession] = useState<OpeningCandleSession>('London');
-  const [newOcLevel, setNewOcLevel] = useState('');
-  const [editingOcId, setEditingOcId] = useState<string | null>(null);
-  const [editOcSession, setEditOcSession] = useState<OpeningCandleSession>('London');
-  const [editOcLevel, setEditOcLevel] = useState('');
+  const [isAddingOc, setIsAddingOc] = useState(initialSessionUI?.unfinishedOc?.isAdding || false);
+  const [newOcSession, setNewOcSession] = useState<OpeningCandleSession>(
+    initialSessionUI?.unfinishedOc?.session || 'London'
+  );
+  const [newOcLevel, setNewOcLevel] = useState(initialSessionUI?.unfinishedOc?.level || '');
+  const [editingOcId, setEditingOcId] = useState<string | null>(
+    initialSessionUI?.unfinishedOc?.editingId || null
+  );
+  const [editOcSession, setEditOcSession] = useState<OpeningCandleSession>(
+    initialSessionUI?.unfinishedOc?.editSession || 'London'
+  );
+  const [editOcLevel, setEditOcLevel] = useState(initialSessionUI?.unfinishedOc?.editLevel || '');
   const [confirmDeleteOcId, setConfirmDeleteOcId] = useState<string | null>(null);
+
+  // Sub-section drafts state
+  const [unfinishedSupplyDemand, setUnfinishedSupplyDemand] = useState(
+    initialSessionUI?.unfinishedSupplyDemand || null
+  );
+  const [unfinishedTfLevels, setUnfinishedTfLevels] = useState<Record<string, any>>(
+    initialSessionUI?.unfinishedTfLevels || {}
+  );
+  const [expandedScenarios, setExpandedScenarios] = useState<Record<string, boolean>>(
+    initialSessionUI?.expandedScenarios || {}
+  );
+
+  // Notify parent of UI session changes
+  useEffect(() => {
+    onSessionUIChange?.({
+      expandedTimeframes,
+      unfinishedOc: {
+        isAdding: isAddingOc,
+        session: newOcSession,
+        level: newOcLevel,
+        editingId: editingOcId,
+        editSession: editOcSession,
+        editLevel: editOcLevel,
+      },
+      unfinishedSupplyDemand,
+      unfinishedTfLevels,
+      expandedScenarios,
+    });
+  }, [
+    expandedTimeframes,
+    isAddingOc,
+    newOcSession,
+    newOcLevel,
+    editingOcId,
+    editOcSession,
+    editOcLevel,
+    unfinishedSupplyDemand,
+    unfinishedTfLevels,
+    expandedScenarios,
+    onSessionUIChange,
+  ]);
 
   // Template confirmation state (Phase 3)
   const [templateToConfirm, setTemplateToConfirm] = useState<SavedTemplate | null>(null);
@@ -210,6 +293,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       const next = updater(prev);
       dataRef.current = next;
       triggerAutosave(next);
+      onAnalysisDataChange?.(next);
       return next;
     });
   };
@@ -1121,6 +1205,10 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 onViewImage={(imgId, title) => handleViewImage(imgId, title)}
                 visibleSupplyDemandLevels={visibleSd}
                 visibilityConfig={activeVisibility}
+                initialLevelDraft={unfinishedTfLevels[tf]}
+                onLevelDraftChange={(levelDraft) => {
+                  setUnfinishedTfLevels((prev) => ({ ...prev, [tf]: levelDraft }));
+                }}
               />
             </React.Fragment>
           );
@@ -1163,6 +1251,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             onUpdateLevel={handleUpdateSDLevel}
             onRemoveLevel={handleRemoveSDLevel}
             onToggleVisibility={handleToggleSDVisibility}
+            initialDraft={unfinishedSupplyDemand}
+            onDraftChange={(sdDraft) => setUnfinishedSupplyDemand(sdDraft)}
           />
         </>
       )}
@@ -1437,6 +1527,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
               updateAnalysis((prev) => ({ ...prev, scenarios: updatedScenarios }))
             }
             onSaveScenario={handleSaveScenarioDirectly}
+            initialExpandedMap={expandedScenarios}
+            onExpandedMapChange={(scnMap) => setExpandedScenarios(scnMap)}
           />
         </>
       )}

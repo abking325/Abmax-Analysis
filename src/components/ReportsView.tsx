@@ -28,6 +28,18 @@ interface ReportsViewProps {
   onDeleteReport: (id: string) => void;
   onUpdateReport?: (updated: SavedReport) => Promise<void>;
   onRefreshData: () => void;
+  initialSession?: {
+    selectedPair?: string;
+    searchQuery?: string;
+    activeReportDetailsId?: string | null;
+  };
+  onSessionChange?: (session: {
+    selectedPair: string;
+    searchQuery: string;
+    activeReportDetailsId: string | null;
+  }) => void;
+  initialTradeDraft?: any;
+  onTradeDraftChange?: (draft: any) => void;
 }
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
@@ -37,14 +49,37 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   onDeleteReport,
   onUpdateReport,
   onRefreshData,
+  initialSession,
+  onSessionChange,
+  initialTradeDraft,
+  onTradeDraftChange,
 }) => {
   const { user } = useAuth();
-  const [selectedPair, setSelectedPair] = useState<string>('All');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedPair, setSelectedPair] = useState<string>(initialSession?.selectedPair || 'All');
+  const [searchQuery, setSearchQuery] = useState(initialSession?.searchQuery || '');
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [activeReportDetails, setActiveReportDetails] = useState<SavedReport | null>(null);
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  // Restore activeReportDetails on mount from initialSession
+  useEffect(() => {
+    if (initialSession?.activeReportDetailsId && !activeReportDetails && reports.length > 0) {
+      const found = reports.find((r) => r.id === initialSession.activeReportDetailsId);
+      if (found) {
+        setActiveReportDetails(found);
+      }
+    }
+  }, [initialSession?.activeReportDetailsId, reports, activeReportDetails]);
+
+  // Notify parent of reports UI session change
+  useEffect(() => {
+    onSessionChange?.({
+      selectedPair,
+      searchQuery,
+      activeReportDetailsId: activeReportDetails?.id || null,
+    });
+  }, [selectedPair, searchQuery, activeReportDetails?.id, onSessionChange]);
 
   // Keep activeReportDetails in sync when reports array updates
   useEffect(() => {
@@ -428,6 +463,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             await onUpdateReport(updated);
           }
         }}
+        initialTradeDraft={initialTradeDraft}
+        onTradeDraftChange={onTradeDraftChange}
       />
 
       {/* Backup and Restore Modal */}

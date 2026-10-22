@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import { ActiveView, Header } from './components/Header';
 import { HomeView } from './components/HomeView';
@@ -42,10 +42,27 @@ import {
   uploadPreferencesToCloud,
   uploadReportToCloud,
 } from './services/cloudSync';
+import {
+  sessionManager,
+  registerLifecycleSessionListeners,
+  restoreScrollPosition,
+  WorkingSessionState,
+} from './services/sessionRestoration';
 
 function MainApp() {
   const { user, isPasswordRecovery } = useAuth();
-  const [activeView, setActiveView] = useState<ActiveView>('home');
+  const accountId = user?.id || 'local';
+  const initialSession = sessionManager.loadSession(accountId);
+
+  const [activeView, setActiveView] = useState<ActiveView>(() => {
+    if (initialSession && ['home', 'analysis', 'reports'].includes(initialSession.activeView)) {
+      return initialSession.activeView;
+    }
+    const saved = localStorage.getItem('abmax_active_view') as ActiveView;
+    if (saved && ['home', 'analysis', 'reports'].includes(saved)) return saved;
+    return 'home';
+  });
+
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('abmax_theme');
     if (saved === 'dark' || saved === 'light') return saved;
@@ -60,8 +77,24 @@ function MainApp() {
     createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG)
   );
   const [savedDraft, setSavedDraft] = useState<AnalysisData | null>(null);
-  const [isEditingExistingReport, setIsEditingExistingReport] = useState(false);
+  const [isEditingExistingReport, setIsEditingExistingReport] = useState<boolean>(() => {
+    return initialSession?.isEditingExistingReport || false;
+  });
   const [reportsList, setReportsList] = useState<SavedReport[]>([]);
+
+  // Ref tracking full working session state to avoid UI churn during serialized debounce
+  const sessionStateRef = useRef<WorkingSessionState>({
+    version: 2,
+    timestamp: Date.now(),
+    accountId,
+    activeView: initialSession?.activeView || 'home',
+    isEditingExistingReport: initialSession?.isEditingExistingReport || false,
+    activeReportId: initialSession?.activeReportId,
+    scrollPositions: initialSession?.scrollPositions || {},
+    analysisUI: initialSession?.analysisUI,
+    reportsUI: initialSession?.reportsUI,
+    tradeModalDraft: initialSession?.tradeModalDraft,
+  });
 
   // Modals state
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -93,33 +126,33 @@ function MainApp() {
     };
   }, []);
 
-  // Restore working view from localStorage after tab recreation
+  // Update session account ID when user changes
   useEffect(() => {
-    const savedView = localStorage.getItem('abmax_active_view') as ActiveView;
-    if (savedView && ['home', 'analysis', 'reports'].includes(savedView)) {
-      setActiveView(savedView);
-    }
-  }, []);
+    const currentAccountId = user?.id || 'local';
+    sessionStateRef.current.accountId = currentAccountId;
+  }, [user?.id]);
+
+  // Capacitor and browser lifecycle hook: immediate flush before suspension / app switch
+  useEffect(() => {
+    const unbind = registerLifecycleSessionListeners(
+      () => {
+        sessionStateRef.current.scrollPositions[activeView] = window.scrollY;
+        sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 0);
+        sessionManager.flushNow();
+      },
+      () => {
+        // Active in-memory resume: preserve live user interface without remounting
+      }
+    );
+    return unbind;
+  }, [activeView, currentAnalysis]);
 
   // Save current active view on change
   useEffect(() => {
+    sessionStateRef.current.activeView = activeView;
+    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 300);
     localStorage.setItem('abmax_active_view', activeView);
-  }, [activeView]);
-
-  // Tab suspension & process recreation safeguard: persist in-memory work on hide
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && currentAnalysis) {
-        saveDraft(currentAnalysis).catch(console.warn);
-      }
-    };
-    window.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('pagehide', handleVisibilityChange);
-    return () => {
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('pagehide', handleVisibilityChange);
-    };
-  }, [currentAnalysis]);
+  }, [activeView, currentAnalysis]);
 
   // Load visibility preferences from local DB on mount
   useEffect(() => {
@@ -156,9 +189,12 @@ function MainApp() {
     localStorage.setItem('abmax_theme', theme);
   }, [theme]);
 
-  // Navigate helper that scrolls window to top and switches view
+  // Navigate helper that scrolls window to top and switches view with session serialization
   const navigateTo = (view: ActiveView) => {
+    sessionStateRef.current.scrollPositions[activeView] = window.scrollY;
+    sessionStateRef.current.activeView = view;
     setActiveView(view);
+    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 200);
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   };
 
@@ -173,7 +209,7 @@ function MainApp() {
     }
   }, []);
 
-  // Hydrate on mount
+  // Hydrate on mount: restores latest persisted working state before empty defaults or autosave can overwrite
   useEffect(() => {
     let isMounted = true;
     (async () => {
@@ -182,8 +218,25 @@ function MainApp() {
         if (!isMounted) return;
         setSavedDraft(draft);
         setReportsList(reports);
-        if (draft) {
+
+        const sess = sessionStateRef.current;
+        if (sess.isEditingExistingReport && sess.activeReportId) {
+          const matched = reports.find((r) => r.id === sess.activeReportId);
+          if (matched) {
+            setCurrentAnalysis(JSON.parse(JSON.stringify(matched)));
+          } else if (draft) {
+            setCurrentAnalysis(draft);
+          }
+        } else if (draft) {
           setCurrentAnalysis(draft);
+        }
+
+        sessionManager.setHydrated(true);
+
+        // Restore scroll position after DOM paint
+        const targetScroll = sess.scrollPositions[sess.activeView];
+        if (targetScroll && targetScroll > 0) {
+          restoreScrollPosition(targetScroll);
         }
       } catch (e) {
         console.error('Failed to hydrate storage on initial mount', e);
@@ -284,6 +337,9 @@ function MainApp() {
     const fresh = createInitialAnalysisData('XAUUSD', visibilityConfig);
     setCurrentAnalysis(fresh);
     setIsEditingExistingReport(false);
+    sessionStateRef.current.isEditingExistingReport = false;
+    sessionStateRef.current.activeReportId = undefined;
+    sessionStateRef.current.analysisUI = undefined;
     setShowReplaceDraftDialog(false);
     navigateTo('analysis');
   };
@@ -294,6 +350,8 @@ function MainApp() {
     if (draft) {
       setCurrentAnalysis(draft);
       setIsEditingExistingReport(false);
+      sessionStateRef.current.isEditingExistingReport = false;
+      sessionStateRef.current.activeReportId = undefined;
       navigateTo('analysis');
     } else {
       handleStartAnalysisClick();
@@ -304,6 +362,9 @@ function MainApp() {
   const handleReportSavedSuccessfully = async () => {
     await refreshStorageData();
     setIsEditingExistingReport(false);
+    sessionStateRef.current.isEditingExistingReport = false;
+    sessionStateRef.current.activeReportId = undefined;
+    sessionStateRef.current.analysisUI = undefined;
     navigateTo('reports');
   };
 
@@ -311,6 +372,8 @@ function MainApp() {
   const handleModifyReport = (report: SavedReport) => {
     setCurrentAnalysis(JSON.parse(JSON.stringify(report)));
     setIsEditingExistingReport(true);
+    sessionStateRef.current.isEditingExistingReport = true;
+    sessionStateRef.current.activeReportId = report.id;
     navigateTo('analysis');
   };
 
@@ -475,6 +538,15 @@ function MainApp() {
             }}
             onReportSavedSuccessfully={handleReportSavedSuccessfully}
             workspaceVisibility={visibilityConfig}
+            initialSessionUI={sessionStateRef.current.analysisUI}
+            onSessionUIChange={(ui) => {
+              sessionStateRef.current.analysisUI = ui;
+              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 500);
+            }}
+            onAnalysisDataChange={(updated) => {
+              setCurrentAnalysis(updated);
+              sessionManager.scheduleSave(sessionStateRef.current, updated, 400);
+            }}
           />
         )}
 
@@ -486,6 +558,16 @@ function MainApp() {
             onDeleteReport={handleDeleteReport}
             onUpdateReport={handleUpdateReportDirectly}
             onRefreshData={refreshStorageData}
+            initialSession={sessionStateRef.current.reportsUI}
+            onSessionChange={(ui) => {
+              sessionStateRef.current.reportsUI = ui;
+              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 500);
+            }}
+            initialTradeDraft={sessionStateRef.current.tradeModalDraft}
+            onTradeDraftChange={(tradeDraft) => {
+              sessionStateRef.current.tradeModalDraft = tradeDraft;
+              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 400);
+            }}
           />
         )}
       </div>

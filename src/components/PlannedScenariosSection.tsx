@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronUp, Check, Edit2 } from 'lucide-react';
 import { PlannedScenario } from '../types/journal';
 import { ImageAttachmentManager } from './ImageAttachmentManager';
@@ -8,20 +8,28 @@ interface PlannedScenariosSectionProps {
   scenarios: PlannedScenario[];
   onChange: (scenarios: PlannedScenario[]) => void;
   onSaveScenario?: (scenarioId: string) => Promise<void>;
+  initialExpandedMap?: Record<string, boolean>;
+  onExpandedMapChange?: (map: Record<string, boolean>) => void;
 }
 
 export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = ({
   scenarios = [],
   onChange,
   onSaveScenario,
+  initialExpandedMap,
+  onExpandedMapChange,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() => initialExpandedMap || {});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
     null
   );
   const scenarioCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  useEffect(() => {
+    onExpandedMapChange?.(expandedMap);
+  }, [expandedMap, onExpandedMapChange]);
 
   const handleAddScenario = () => {
     const nextIndex = scenarios.length + 1;

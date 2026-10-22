@@ -205,9 +205,17 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                     </span>
                   </div>
 
-                  <div className="p-2 rounded bg-app-main border border-app col-span-2">
+                  <div className="p-2 rounded bg-app-main border border-app">
                     <span className="text-app-secondary block">Chart Screenshots Included</span>
                     <strong className="text-app-main text-xs">{preview.imagesCount} images</strong>
+                  </div>
+
+                  <div className="p-2 rounded bg-app-main border border-app">
+                    <span className="text-app-secondary block">Draft &amp; In-Flight Forms</span>
+                    <strong className="text-app-main text-xs">
+                      {preview.hasDraft ? 'Draft Preserved' : 'None'}
+                      {preview.hasWorkingSession ? ' + Forms' : ''}
+                    </strong>
                   </div>
                 </div>
 
@@ -233,7 +241,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                   <div className="font-bold text-xs">Restore Completed Successfully!</div>
                   <div className="text-[11px] mt-0.5 text-app-main">
                     Added {restoreResult.addedReports} new report(s), {restoreResult.addedTemplates} template(s),
-                    and {restoreResult.addedImages} chart screenshot(s).
+                    {restoreResult.addedImages} chart screenshot(s), and restored active workspace states.
                   </div>
                 </div>
               </div>

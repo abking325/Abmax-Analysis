@@ -443,6 +443,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
 
               {/* Status alerts */}
+              {!isConfigured && (
+                <div className="p-2.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
+                  <div>
+                    <span className="font-semibold">Cloud Sync Not Configured:</span> Supabase API key was not detected during web build. All analyses, journal reports, screenshots, and trade plans are fully functional in local offline storage on this device.
+                  </div>
+                </div>
+              )}
+
               {errorMsg && (
                 <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />

@@ -403,6 +403,7 @@ export interface BackupData {
     visibilityConfig?: WorkspaceVisibilityConfig;
     presentationConfig?: ReportPresentationConfig;
   };
+  workingSessions?: Record<string, unknown>;
 }
 
 export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {

@@ -52,6 +52,8 @@ interface ReportDetailsModalProps {
   onCopy: (report: SavedReport) => void;
   onDelete: (id: string) => void;
   onUpdateReport?: (updated: SavedReport) => Promise<void>;
+  initialTradeDraft?: any;
+  onTradeDraftChange?: (draft: any) => void;
 }
 
 export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
@@ -62,6 +64,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   onCopy,
   onDelete,
   onUpdateReport,
+  initialTradeDraft,
+  onTradeDraftChange,
 }) => {
   const { user } = useAuth();
   const [viewMode, setViewMode] = useState<'standard' | 'organized'>('standard');
@@ -82,7 +86,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
     null
   );
-  const [isTakeTradeOpen, setIsTakeTradeOpen] = useState(false);
+  const [isTakeTradeOpen, setIsTakeTradeOpen] = useState(Boolean(initialTradeDraft?.isOpen));
   const [editingTrade, setEditingTrade] = useState<RecordedTrade | null>(null);
   const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
   const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
@@ -1325,9 +1329,12 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
           onClose={() => {
             setIsTakeTradeOpen(false);
             setEditingTrade(null);
+            onTradeDraftChange?.(null);
           }}
           report={report}
           tradeToEdit={editingTrade}
+          initialTradeDraft={initialTradeDraft}
+          onTradeDraftChange={onTradeDraftChange}
           onSaveTrade={async (savedTrade) => {
             if (onUpdateReport) {
               const currentTrades = report.trades || [];

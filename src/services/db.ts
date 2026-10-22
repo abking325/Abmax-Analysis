@@ -581,8 +581,30 @@ export async function createFullBackup(): Promise<BackupData> {
       ? (localStorage.getItem('abmax_theme') as 'light' | 'dark')
       : null) || 'light';
 
+  // Capture all active working sessions and unfinished form states from localStorage
+  const workingSessions: Record<string, unknown> = {};
+  if (typeof localStorage !== 'undefined') {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('abmax_session_v2_') || key === 'abmax_last_active_account')) {
+          const val = localStorage.getItem(key);
+          if (val) {
+            try {
+              workingSessions[key] = JSON.parse(val);
+            } catch {
+              workingSessions[key] = val;
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore storage read limitations
+    }
+  }
+
   return {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     app: 'ABMAX_ANALYSIS',
     reports,
@@ -593,6 +615,7 @@ export async function createFullBackup(): Promise<BackupData> {
       theme,
       presentationConfig,
     },
+    workingSessions,
   };
 }
 
@@ -605,6 +628,7 @@ export interface RestorePreview {
   skippedTemplatesCount: number;
   hasDraft: boolean;
   imagesCount: number;
+  hasWorkingSession?: boolean;
 }
 
 export async function analyzeBackup(backup: BackupData): Promise<RestorePreview> {
@@ -643,6 +667,7 @@ export async function analyzeBackup(backup: BackupData): Promise<RestorePreview>
     skippedTemplatesCount,
     hasDraft: Boolean(backup.draft),
     imagesCount: backup.images?.length || 0,
+    hasWorkingSession: Boolean(backup.workingSessions && Object.keys(backup.workingSessions).length > 0),
   };
 }
 
@@ -701,9 +726,24 @@ export async function restoreBackup(
     imgTx.onerror = () => rej(imgTx.error);
   });
 
-  // Optionally restore draft if requested and available
-  if (options.restoreDraft && backup.draft) {
+  // Restore draft: default to true whenever backup.draft is present unless explicitly set to false
+  const shouldRestoreDraft = options.restoreDraft !== false && Boolean(backup.draft);
+  if (shouldRestoreDraft && backup.draft) {
     await saveDraft(backup.draft);
+  }
+
+  // Restore working sessions and unfinished forms into localStorage
+  if (backup.workingSessions && typeof localStorage !== 'undefined') {
+    try {
+      for (const [key, val] of Object.entries(backup.workingSessions)) {
+        if (key.startsWith('abmax_session_v2_') || key === 'abmax_last_active_account') {
+          const serialized = typeof val === 'string' ? val : JSON.stringify(val);
+          localStorage.setItem(key, serialized);
+        }
+      }
+    } catch (e) {
+      console.warn('[DB] Warning restoring working sessions:', e);
+    }
   }
 
   // Restore theme preference

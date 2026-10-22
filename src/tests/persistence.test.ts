@@ -3,13 +3,20 @@ import {
   saveReport,
   getReportById,
   getAllReports,
+  deleteReport,
   saveDraft,
   getDraft,
   clearDraft,
   saveTemplate,
   getTemplateById,
   getAllTemplates,
+  deleteTemplate,
+  saveImage,
+  getImage,
+  deleteImage,
   createFullBackup,
+  restoreBackup,
+  analyzeBackup,
 } from '../services/db';
 import {
   createInitialAnalysisData,
@@ -829,6 +836,277 @@ async function runTests() {
     assert(tryReserve('user2', 'reqA') === true, 'Different user with same request ID is isolated');
   } catch (err) {
     assert(false, 'Test Suite 13 execution', (err as Error).message);
+  }
+
+  // --- TEST 14: Reliable Resume and Session Restoration Verification ---
+  console.log('\n--- Test Suite 14: Reliable Resume and Session Restoration Verification ---');
+  try {
+    // 1. Emulate local storage for session restoration and backup
+    const fakeLocalStorage: Record<string, string> = {};
+    const storageShim = {
+      getItem: (k: string) => fakeLocalStorage[k] || null,
+      setItem: (k: string, v: string) => { fakeLocalStorage[k] = v; },
+      removeItem: (k: string) => { delete fakeLocalStorage[k]; },
+      clear: () => { Object.keys(fakeLocalStorage).forEach((k) => delete fakeLocalStorage[k]); },
+      key: (i: number) => Object.keys(fakeLocalStorage)[i] || null,
+      get length() { return Object.keys(fakeLocalStorage).length; },
+    };
+    (globalThis as any).localStorage = storageShim;
+
+    const { sessionManager } = await import('../services/sessionRestoration');
+
+    // 2. Account-scoped session key isolation
+    const localSession = {
+      version: 2 as const,
+      timestamp: Date.now(),
+      accountId: 'local',
+      activeView: 'analysis' as const,
+      isEditingExistingReport: false,
+      scrollPositions: { analysis: 420 },
+      analysisUI: {
+        expandedTimeframes: {
+          Monthly: false,
+          Weekly: false,
+          Daily: true,
+          '4H': true,
+          '1H': false,
+          '15M': false,
+          '5M': false,
+          '1M': false,
+        },
+        unfinishedOc: {
+          isAdding: true,
+          session: 'London' as const,
+          level: '2645.50',
+          editingId: null,
+          editSession: 'London' as const,
+          editLevel: '',
+        },
+        unfinishedSupplyDemand: {
+          isAdding: true,
+          timeframe: '4H' as const,
+          supply: '2680.00 - 2690.00',
+          demand: '2610.00 - 2620.00',
+          editingId: null,
+          editTimeframe: '4H' as const,
+          editSupply: '',
+          editDemand: '',
+        },
+      },
+    };
+
+    sessionManager.scheduleSave(localSession, undefined, 0);
+    await sessionManager.flushNow();
+
+    const loadedLocal = sessionManager.loadSession('local');
+    assert(Boolean(loadedLocal), 'Session saved and retrieved successfully for local account');
+    assert(loadedLocal?.activeView === 'analysis', 'Active view restored accurately');
+    assert(loadedLocal?.scrollPositions.analysis === 420, 'Scroll position preserved in session state');
+    assert(loadedLocal?.analysisUI?.expandedTimeframes.Daily === true, 'Daily timeframe expanded state preserved');
+    assert(loadedLocal?.analysisUI?.unfinishedOc?.level === '2645.50', 'Unfinished OC draft preserved');
+    assert(loadedLocal?.analysisUI?.unfinishedSupplyDemand?.supply === '2680.00 - 2690.00', 'Unfinished Supply/Demand draft preserved');
+
+    // 3. Verify Account Isolation: Another account cannot read local session
+    const loadedOtherAccount = sessionManager.loadSession('user-xyz-987');
+    assert(loadedOtherAccount === null, 'Different account does not expose another account session (strict account isolation)');
+
+    // 4. Test Serialized Queue (Older write cannot overwrite newer save)
+    let writeOrder: number[] = [];
+    const sessA = { ...localSession, timestamp: 100, scrollPositions: { analysis: 100 } };
+    const sessB = { ...localSession, timestamp: 200, scrollPositions: { analysis: 250 } };
+
+    sessionManager.scheduleSave(sessA, undefined, 10);
+    sessionManager.scheduleSave(sessB, undefined, 10);
+    await sessionManager.flushNow();
+
+    const finalLoaded = sessionManager.loadSession('local');
+    assert(finalLoaded?.scrollPositions.analysis === 250, 'Serialized queue ensures latest state (sessB) supersedes older state (sessA)');
+
+    // 5. Test Clear Session on explicit logout
+    sessionManager.clearSession('local');
+    assert(sessionManager.loadSession('local') === null, 'clearSession removes session on logout/completion');
+  } catch (err) {
+    assert(false, 'Test Suite 14 execution', (err as Error).message);
+  }
+
+  // --- TEST 15: Continuous Typing MaxWait Autosave & Last Completed Write Confirmation ---
+  console.log('\n--- Test Suite 15: Continuous Typing MaxWait Autosave & Last Completed Write Confirmation ---');
+  try {
+    const { sessionManager } = await import('../services/sessionRestoration');
+    const baseSess = {
+      version: 2 as const,
+      timestamp: Date.now(),
+      accountId: 'test_typing_user',
+      activeView: 'analysis' as const,
+      isEditingExistingReport: false,
+      scrollPositions: {},
+    };
+
+    // Initially, last completed write timestamp is null or a previous timestamp
+    const t0 = Date.now();
+    sessionManager.scheduleSave({ ...baseSess, scrollPositions: { analysis: 10 } }, undefined, 100);
+
+    // Immediate flush
+    await sessionManager.flushNow();
+    const lastWrite = sessionManager.getLastCompletedWriteTimestamp();
+    assert(typeof lastWrite === 'number' && lastWrite >= t0, 'lastCompletedWriteTimestamp tracks completed persistent write');
+
+    // Recovery strictly loads from last completed write
+    const loadedAfterFlush = sessionManager.loadSession('test_typing_user');
+    assert(loadedAfterFlush?.scrollPositions.analysis === 10, 'Recovery restores exact state from the last successfully completed write');
+  } catch (err) {
+    assert(false, 'Test Suite 15 execution', (err as Error).message);
+  }
+
+  // --- TEST 16: Comprehensive Backup Export & Restoration (Reports, Templates, Images, Drafts, Unfinished Forms) ---
+  console.log('\n--- Test Suite 16: Comprehensive Backup Export & Restoration ---');
+  try {
+    // 1. Populate full ecosystem: report, template, image, draft, and in-flight unfinished forms
+    const uniqueReportId = `rep_backup_test_${Date.now()}`;
+    const testReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: uniqueReportId,
+      title: 'Report for Backup Verification',
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+    await saveReport(testReport);
+
+    const uniqueTmplId = `tmpl_backup_test_${Date.now()}`;
+    const testTemplate: SavedTemplate = {
+      id: uniqueTmplId,
+      name: 'Template for Backup Verification',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      data: {
+        pair: 'XAUUSD',
+        session: 'London',
+        timezone: 'UTC',
+        analysisTiming: 'On time',
+        timeframes: createInitialAnalysisData('XAUUSD').timeframes,
+        crossedLiquidity: [],
+        supplyDemandLevels: [],
+        overallNotes: 'Template note',
+      },
+    };
+    await saveTemplate(testTemplate);
+
+    const testImageData = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const savedImgId = await saveImage(testImageData, 'test_chart.png');
+
+    const testDraft: AnalysisData = {
+      ...createInitialAnalysisData('EURUSD'),
+      id: 'active_draft_for_backup',
+      title: 'Active In-Progress Draft',
+      overallNotes: 'Uncommitted live draft notes',
+    };
+    await saveDraft(testDraft);
+
+    // In-flight unfinished form state in localStorage
+    const testUnfinishedSession = {
+      version: 2 as const,
+      timestamp: Date.now(),
+      accountId: 'local',
+      activeView: 'analysis' as const,
+      isEditingExistingReport: false,
+      scrollPositions: { analysis: 550 },
+      analysisUI: {
+        expandedTimeframes: {
+          Monthly: false,
+          Weekly: false,
+          Daily: true,
+          '4H': false,
+          '1H': false,
+          '15M': false,
+          '5M': false,
+          '1M': false,
+        },
+        unfinishedOc: {
+          isAdding: true,
+          session: 'London' as const,
+          level: '2745.80',
+          editingId: null,
+          editSession: 'London' as const,
+          editLevel: '',
+        },
+      },
+      tradeModalDraft: {
+        isOpen: true,
+        reportId: uniqueReportId,
+        selectedScenarioId: 'scn_1',
+        direction: 'Buy' as const,
+        session: 'London' as const,
+        timeframeTaken: '5M' as const,
+        entryPrice: '2740.00',
+        stopLoss: '2735.00',
+        takeProfit: '2755.00',
+        exitPrice: '',
+        riskReward: '3.0',
+        outcome: 'Open' as const,
+        rulesFollowed: true,
+        notes: 'In-flight trade modal form input',
+        tradeDate: '2026-10-22',
+        tradeTime: '08:00',
+      },
+    };
+    localStorage.setItem('abmax_session_v2_local', JSON.stringify(testUnfinishedSession));
+
+    // 2. Perform Full Backup Export
+    const backup = await createFullBackup();
+    assert(backup.app === 'ABMAX_ANALYSIS', 'Backup app identifier verified');
+    assert(backup.reports.some((r) => r.id === uniqueReportId), 'Backup contains target report');
+    assert(backup.templates.some((t) => t.id === uniqueTmplId), 'Backup contains target template');
+    assert(backup.images.some((img) => img.id === savedImgId), 'Backup contains target image attachment');
+    assert(backup.draft?.title === 'Active In-Progress Draft', 'Backup contains active draft');
+    assert(Boolean(backup.workingSessions && backup.workingSessions['abmax_session_v2_local']), 'Backup contains unfinished form states in workingSessions');
+
+    // 3. Analyze Backup Preview
+    const preview = await analyzeBackup(backup);
+    assert(preview.hasDraft === true, 'Backup analysis confirms draft is present');
+    assert(preview.hasWorkingSession === true, 'Backup analysis confirms working session and unfinished forms are present');
+    assert(preview.imagesCount >= 1, 'Backup analysis confirms image count');
+
+    // 4. Simulate complete storage wipe (e.g. app uninstalled or browser cache reset)
+    await deleteReport(uniqueReportId);
+    await deleteTemplate(uniqueTmplId);
+    await deleteImage(savedImgId);
+    await clearDraft();
+    localStorage.removeItem('abmax_session_v2_local');
+
+    // Confirm wipe
+    assert(await getReportById(uniqueReportId) === null, 'Report confirmed deleted prior to restore');
+    assert(await getTemplateById(uniqueTmplId) === null, 'Template confirmed deleted prior to restore');
+    assert(await getImage(savedImgId) === null, 'Image confirmed deleted prior to restore');
+    assert(await getDraft() === null, 'Draft confirmed cleared prior to restore');
+    assert(localStorage.getItem('abmax_session_v2_local') === null, 'Working session confirmed cleared prior to restore');
+
+    // 5. Execute Full Restore
+    const restoreStats = await restoreBackup(backup);
+    assert(restoreStats.addedReports >= 1, 'Restore added reports successfully');
+    assert(restoreStats.addedTemplates >= 1, 'Restore added templates successfully');
+    assert(restoreStats.addedImages >= 1, 'Restore added images successfully');
+
+    // 6. Verify full post-restore integrity
+    const restoredReport = await getReportById(uniqueReportId);
+    assert(restoredReport?.title === 'Report for Backup Verification', 'Restored report content verified');
+
+    const restoredTemplate = await getTemplateById(uniqueTmplId);
+    assert(restoredTemplate?.name === 'Template for Backup Verification', 'Restored template content verified');
+
+    const restoredImage = await getImage(savedImgId);
+    assert(restoredImage === testImageData, 'Restored image data verified');
+
+    const restoredDraft = await getDraft();
+    assert(restoredDraft?.title === 'Active In-Progress Draft', 'Restored active draft content verified');
+
+    const restoredSessionRaw = localStorage.getItem('abmax_session_v2_local');
+    assert(restoredSessionRaw !== null, 'Restored working session verified in localStorage');
+    const parsedRestoredSession = JSON.parse(restoredSessionRaw!);
+    assert(parsedRestoredSession.analysisUI?.unfinishedOc?.level === '2745.80', 'Unfinished OC draft restored intact');
+    assert(parsedRestoredSession.tradeModalDraft?.entryPrice === '2740.00', 'In-flight trade modal form inputs restored intact');
+  } catch (err) {
+    assert(false, 'Test Suite 16 execution', (err as Error).message);
   }
 
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);
