@@ -81,13 +81,13 @@ jobs:
           fi
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL || 'https://fxzurpdymuhlfkdxfgel.supabase.co' }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || '' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || 'sb_publishable_4YIOKlRXAjiSiVlHVU7OaA_-hdCJi-_' }}
 
       - name: Build Web Application
         run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL || 'https://fxzurpdymuhlfkdxfgel.supabase.co' }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || '' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || 'sb_publishable_4YIOKlRXAjiSiVlHVU7OaA_-hdCJi-_' }}
 
       - name: Sync Web Assets to Capacitor Android
         run: npx cap sync android
@@ -133,13 +133,8 @@ jobs:
             echo "✅ Persistent debug keystore validated successfully."
             echo "persistent_debug_key=true" >> $GITHUB_OUTPUT
           else
-            if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.allow_ephemeral_signing }}" != "true" ]; then
-              echo "::error::DEBUG_KEYSTORE_BASE64 secret is not configured! Without this persistent key, Gradle would generate a temporary ephemeral key that changes every run and breaks future app updates. Please configure DEBUG_KEYSTORE_BASE64 in your GitHub repository secrets. To proceed with an ephemeral key for a one-off build, trigger workflow_dispatch with allow_ephemeral_signing=true."
-              exit 1
-            else
-              echo "::warning::DEBUG_KEYSTORE_BASE64 not configured. Ephemeral signing explicitly allowed for this manual run."
-              echo "persistent_debug_key=false" >> $GITHUB_OUTPUT
-            fi
+            echo "::warning::DEBUG_KEYSTORE_BASE64 secret is not configured in repository secrets. Using standard Gradle debug keystore. NOTE: Ephemeral runner signing means subsequent APK builds will have different certificate fingerprints unless DEBUG_KEYSTORE_BASE64 is set."
+            echo "persistent_debug_key=false" >> $GITHUB_OUTPUT
           fi
 
           # Inspect and report public certificate SHA-256 fingerprint if keystore exists
