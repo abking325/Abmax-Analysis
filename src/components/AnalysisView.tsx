@@ -177,20 +177,19 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [editOcLevel, setEditOcLevel] = useState(initialSessionUI?.unfinishedOc?.editLevel || '');
   const [confirmDeleteOcId, setConfirmDeleteOcId] = useState<string | null>(null);
 
-  // Sub-section drafts state
-  const [unfinishedSupplyDemand, setUnfinishedSupplyDemand] = useState(
-    initialSessionUI?.unfinishedSupplyDemand || null
-  );
-  const [unfinishedTfLevels, setUnfinishedTfLevels] = useState<Record<string, any>>(
-    initialSessionUI?.unfinishedTfLevels || {}
-  );
-  const [expandedScenarios, setExpandedScenarios] = useState<Record<string, boolean>>(
-    initialSessionUI?.expandedScenarios || {}
-  );
+  // Sub-section drafts state stored in refs to avoid triggering unnecessary re-renders of AnalysisView
+  const unfinishedSupplyDemandRef = useRef(initialSessionUI?.unfinishedSupplyDemand || null);
+  const unfinishedTfLevelsRef = useRef<Record<string, any>>(initialSessionUI?.unfinishedTfLevels || {});
+  const expandedScenariosRef = useRef<Record<string, boolean>>(initialSessionUI?.expandedScenarios || {});
 
-  // Notify parent of UI session changes
+  // Stable ref for onSessionUIChange to prevent dependency loop
+  const onSessionUIChangeRef = useRef(onSessionUIChange);
   useEffect(() => {
-    onSessionUIChange?.({
+    onSessionUIChangeRef.current = onSessionUIChange;
+  }, [onSessionUIChange]);
+
+  const notifySessionUIChange = useCallback(() => {
+    onSessionUIChangeRef.current?.({
       expandedTimeframes,
       unfinishedOc: {
         isAdding: isAddingOc,
@@ -200,9 +199,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         editSession: editOcSession,
         editLevel: editOcLevel,
       },
-      unfinishedSupplyDemand,
-      unfinishedTfLevels,
-      expandedScenarios,
+      unfinishedSupplyDemand: unfinishedSupplyDemandRef.current,
+      unfinishedTfLevels: unfinishedTfLevelsRef.current,
+      expandedScenarios: expandedScenariosRef.current,
     });
   }, [
     expandedTimeframes,
@@ -212,11 +211,31 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     editingOcId,
     editOcSession,
     editOcLevel,
-    unfinishedSupplyDemand,
-    unfinishedTfLevels,
-    expandedScenarios,
-    onSessionUIChange,
   ]);
+
+  // Notify parent of UI session changes
+  useEffect(() => {
+    notifySessionUIChange();
+  }, [notifySessionUIChange]);
+
+  // Stable callbacks for child draft changes: updates refs and notifies session without re-rendering AnalysisView
+  const handleLevelDraftChange = useCallback((tf: string, levelDraft: any) => {
+    unfinishedTfLevelsRef.current = {
+      ...unfinishedTfLevelsRef.current,
+      [tf]: levelDraft,
+    };
+    notifySessionUIChange();
+  }, [notifySessionUIChange]);
+
+  const handleSupplyDemandDraftChange = useCallback((sdDraft: any) => {
+    unfinishedSupplyDemandRef.current = sdDraft;
+    notifySessionUIChange();
+  }, [notifySessionUIChange]);
+
+  const handleExpandedScenariosChange = useCallback((scnMap: Record<string, boolean>) => {
+    expandedScenariosRef.current = scnMap;
+    notifySessionUIChange();
+  }, [notifySessionUIChange]);
 
   // Template confirmation state (Phase 3)
   const [templateToConfirm, setTemplateToConfirm] = useState<SavedTemplate | null>(null);
@@ -242,9 +261,12 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Update data if initialData changes (e.g. from template or report loading)
+  // Update data if initialData changes externally (e.g. from template or report loading)
   useEffect(() => {
-    setData(initialData);
+    if (initialData && initialData !== dataRef.current) {
+      setData(initialData);
+      dataRef.current = initialData;
+    }
   }, [initialData]);
 
   // Clean up pending autosave timer on unmount
@@ -1205,10 +1227,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 onViewImage={(imgId, title) => handleViewImage(imgId, title)}
                 visibleSupplyDemandLevels={visibleSd}
                 visibilityConfig={activeVisibility}
-                initialLevelDraft={unfinishedTfLevels[tf]}
-                onLevelDraftChange={(levelDraft) => {
-                  setUnfinishedTfLevels((prev) => ({ ...prev, [tf]: levelDraft }));
-                }}
+                initialLevelDraft={unfinishedTfLevelsRef.current[tf]}
+                onLevelDraftChange={(levelDraft) => handleLevelDraftChange(tf, levelDraft)}
               />
             </React.Fragment>
           );
@@ -1251,8 +1271,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             onUpdateLevel={handleUpdateSDLevel}
             onRemoveLevel={handleRemoveSDLevel}
             onToggleVisibility={handleToggleSDVisibility}
-            initialDraft={unfinishedSupplyDemand}
-            onDraftChange={(sdDraft) => setUnfinishedSupplyDemand(sdDraft)}
+            initialDraft={unfinishedSupplyDemandRef.current}
+            onDraftChange={handleSupplyDemandDraftChange}
           />
         </>
       )}
@@ -1527,8 +1547,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
               updateAnalysis((prev) => ({ ...prev, scenarios: updatedScenarios }))
             }
             onSaveScenario={handleSaveScenarioDirectly}
-            initialExpandedMap={expandedScenarios}
-            onExpandedMapChange={(scnMap) => setExpandedScenarios(scnMap)}
+            initialExpandedMap={expandedScenariosRef.current}
+            onExpandedMapChange={handleExpandedScenariosChange}
           />
         </>
       )}

@@ -1109,6 +1109,94 @@ async function runTests() {
     assert(false, 'Test Suite 16 execution', (err as Error).message);
   }
 
+  // --- TEST 17: Legacy Installed App Backup Format Compatibility ---
+  console.log('\n--- Test Suite 17: Legacy Installed App Backup Format Compatibility ---');
+  try {
+    // Legacy backup payload from older installed app (version 1, lacking workingSessions, images, draft, preferences)
+    const legacyReportId = `rep_legacy_${Date.now()}`;
+    const legacyTemplateId = `tmpl_legacy_${Date.now()}`;
+    const legacyBackup: any = {
+      version: 1,
+      exportedAt: '2026-09-01T12:00:00.000Z',
+      app: 'ABMAX_ANALYSIS',
+      reports: [
+        {
+          id: legacyReportId,
+          title: 'Legacy Installed App Report',
+          pair: 'EURUSD',
+          date: '2026-09-01',
+          time: '14:30',
+          timezone: 'UTC',
+          session: 'New York',
+          analysisTiming: 'On time',
+          timeframes: createInitialAnalysisData('EURUSD').timeframes,
+          scenarios: [],
+          trades: [],
+          overallNotes: 'Legacy report from installed APK before updates',
+          createdAt: 1725192000000,
+          updatedAt: 1725192000000,
+        },
+      ],
+      templates: [
+        {
+          id: legacyTemplateId,
+          name: 'Legacy Template',
+          createdAt: 1725192000000,
+          updatedAt: 1725192000000,
+          data: {
+            pair: 'EURUSD',
+            session: 'New York',
+            timezone: 'UTC',
+            analysisTiming: 'On time',
+            timeframes: createInitialAnalysisData('EURUSD').timeframes,
+            crossedLiquidity: [],
+            supplyDemandLevels: [],
+            overallNotes: 'Legacy template data',
+          },
+        },
+      ],
+      // Explicitly testing what legacy backups DO NOT have:
+      // images: undefined,
+      // draft: undefined,
+      // workingSessions: undefined,
+      // preferences: undefined
+    };
+
+    // 1. Analyze preview of legacy backup
+    const legacyPreview = await analyzeBackup(legacyBackup);
+    assert(legacyPreview.totalReportsInBackup === 1, 'Legacy backup reports count detected correctly');
+    assert(legacyPreview.totalTemplatesInBackup === 1, 'Legacy backup templates count detected correctly');
+    assert(legacyPreview.hasDraft === false, 'Legacy backup correctly indicates draft is not present');
+    assert(legacyPreview.imagesCount === 0, 'Legacy backup correctly indicates 0 images');
+    assert(legacyPreview.hasWorkingSession === false, 'Legacy backup correctly indicates workingSessions is not present');
+
+    // 2. Restore legacy backup
+    const legacyRestoreStats = await restoreBackup(legacyBackup);
+    assert(legacyRestoreStats.addedReports === 1, 'Legacy report restored successfully');
+    assert(legacyRestoreStats.addedTemplates === 1, 'Legacy template restored successfully');
+    assert(legacyRestoreStats.addedImages === 0, 'Zero images added for legacy backup');
+
+    // 3. Verify restored data in isolated database
+    const restoredLegacyReport = await getReportById(legacyReportId);
+    assert(restoredLegacyReport !== null, 'Legacy report successfully retrievable after restore');
+    assert(restoredLegacyReport?.title === 'Legacy Installed App Report', 'Legacy report title matches exactly');
+    assert(restoredLegacyReport?.pair === 'EURUSD', 'Legacy report pair matches exactly');
+
+    const restoredLegacyTemplate = await getTemplateById(legacyTemplateId);
+    assert(restoredLegacyTemplate !== null, 'Legacy template successfully retrievable after restore');
+    assert(restoredLegacyTemplate?.name === 'Legacy Template', 'Legacy template name matches exactly');
+
+    // 4. Verify existing active draft and working sessions were NOT corrupted or overwritten
+    const currentDraft = await getDraft();
+    assert(currentDraft?.title === 'Active In-Progress Draft', 'Current active draft remains preserved and unaffected by legacy import');
+
+    // Clean up isolated test entries
+    await deleteReport(legacyReportId);
+    await deleteTemplate(legacyTemplateId);
+  } catch (err) {
+    assert(false, 'Test Suite 17 execution', (err as Error).message);
+  }
+
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);
   if (failed > 0) {
     process.exit(1);

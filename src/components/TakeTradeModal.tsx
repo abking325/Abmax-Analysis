@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, TrendingUp, AlertCircle, Edit3, Image as ImageIcon } from 'lucide-react';
 import {
   ImageAttachment,
@@ -85,9 +85,14 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
 
+  const onTradeDraftChangeRef = useRef(onTradeDraftChange);
+  useEffect(() => {
+    onTradeDraftChangeRef.current = onTradeDraftChange;
+  }, [onTradeDraftChange]);
+
   useEffect(() => {
     if (isOpen) {
-      onTradeDraftChange?.({
+      onTradeDraftChangeRef.current?.({
         isOpen: true,
         reportId: report.id,
         tradeToEditId: tradeToEdit?.id || null,
@@ -125,7 +130,6 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
     notes,
     tradeDate,
     tradeTime,
-    onTradeDraftChange,
   ]);
 
   // Prepopulate form when modal opens or tradeToEdit changes

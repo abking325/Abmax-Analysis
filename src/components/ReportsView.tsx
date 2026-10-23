@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   Search,
   Download,
@@ -72,14 +72,19 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     }
   }, [initialSession?.activeReportDetailsId, reports, activeReportDetails]);
 
+  const onSessionChangeRef = useRef(onSessionChange);
+  useEffect(() => {
+    onSessionChangeRef.current = onSessionChange;
+  }, [onSessionChange]);
+
   // Notify parent of reports UI session change
   useEffect(() => {
-    onSessionChange?.({
+    onSessionChangeRef.current?.({
       selectedPair,
       searchQuery,
       activeReportDetailsId: activeReportDetails?.id || null,
     });
-  }, [selectedPair, searchQuery, activeReportDetails?.id, onSessionChange]);
+  }, [selectedPair, searchQuery, activeReportDetails?.id]);
 
   // Keep activeReportDetails in sync when reports array updates
   useEffect(() => {

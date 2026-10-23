@@ -14,15 +14,6 @@ on:
         options:
           - debug
           - release
-    inputs:
-      build_type:
-        description: 'Build variant (debug or release if signed)'
-        required: false
-        default: 'debug'
-        type: choice
-        options:
-          - debug
-          - release
       allow_local_only:
         description: 'Allow local-only build without cloud sync (skips Supabase key requirement)'
         required: false
@@ -172,9 +163,16 @@ jobs:
             echo "signed=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Set Android version
+        shell: bash
+        run: |
+          echo "ANDROID_VERSION_CODE=$((GITHUB_RUN_NUMBER + 10))" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_NAME=1.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
       - name: Assemble Android APK with Gradle
         working-directory: ./android
         run: |
+          echo "Building with Android versionCode=${ANDROID_VERSION_CODE}, versionName=${ANDROID_VERSION_NAME}"
           if [ "${{ steps.setup_signing.outputs.signed }}" = "true" ] && [ "${{ github.event.inputs.build_type }}" = "release" ]; then
             ./gradlew assembleRelease --stacktrace
           else
@@ -206,6 +204,8 @@ jobs:
           echo "### ABMAX Android APK Build Succeeded 🚀" >> $GITHUB_STEP_SUMMARY
           echo "- **App Name:** ABMAX ANALYSIS" >> $GITHUB_STEP_SUMMARY
           echo "- **Application ID:** com.abmax.analysis" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version Code:** ${ANDROID_VERSION_CODE} (strictly increasing monotonic build number across workflow runs)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version Name:** ${ANDROID_VERSION_NAME}" >> $GITHUB_STEP_SUMMARY
           echo "- **Variant:** Personal Testing Debug APK (Ready for direct sideload installation on Android)" >> $GITHUB_STEP_SUMMARY
           echo "- **Cloud Build Status:** ${{ steps.validate_supabase.outputs.cloud_enabled == 'true' && '✅ Cloud-Enabled (Supabase connected)' || '⚠️ Local-Only Offline Mode (Explicitly Requested via allow_local_only)' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Persistent Debug Keystore:** ${{ steps.setup_signing.outputs.persistent_debug_key == 'true' && '✅ Enabled (Persistent across builds via DEBUG_KEYSTORE_BASE64)' || '⚠️ Ephemeral (Unique runner key; will require full uninstall/reinstall unless DEBUG_KEYSTORE_BASE64 is set)' }}" >> $GITHUB_STEP_SUMMARY

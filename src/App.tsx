@@ -198,6 +198,32 @@ function MainApp() {
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   };
 
+  const currentAnalysisRef = useRef(currentAnalysis);
+  useEffect(() => {
+    currentAnalysisRef.current = currentAnalysis;
+  }, [currentAnalysis]);
+
+  const handleSessionUIChange = useCallback((ui: any) => {
+    sessionStateRef.current.analysisUI = ui;
+    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 500);
+  }, []);
+
+  const handleAnalysisDataChange = useCallback((updated: AnalysisData) => {
+    setCurrentAnalysis(updated);
+    currentAnalysisRef.current = updated;
+    sessionManager.scheduleSave(sessionStateRef.current, updated, 400);
+  }, []);
+
+  const handleReportsSessionChange = useCallback((ui: any) => {
+    sessionStateRef.current.reportsUI = ui;
+    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 500);
+  }, []);
+
+  const handleTradeDraftChange = useCallback((tradeDraft: any) => {
+    sessionStateRef.current.tradeModalDraft = tradeDraft;
+    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 400);
+  }, []);
+
   // Load draft and reports from IndexedDB without overriding active analysis
   const refreshStorageData = useCallback(async () => {
     try {
@@ -286,15 +312,16 @@ function MainApp() {
 
   // When user signs in, load cloud preferences if any
   useEffect(() => {
-    if (user) {
-      fetchPreferencesFromCloud(user.id).then((cloudPref) => {
+    const userId = user?.id;
+    if (userId) {
+      fetchPreferencesFromCloud(userId).then((cloudPref) => {
         if (cloudPref?.preferences?.visibilityConfig) {
           setVisibilityConfig(cloudPref.preferences.visibilityConfig);
           saveUserVisibilityConfig(cloudPref.preferences.visibilityConfig);
         }
       });
     }
-  }, [user]);
+  }, [user?.id]);
 
   const handleUpdateVisibilityConfig = (newCfg: WorkspaceVisibilityConfig) => {
     setVisibilityConfig(newCfg);
@@ -539,14 +566,8 @@ function MainApp() {
             onReportSavedSuccessfully={handleReportSavedSuccessfully}
             workspaceVisibility={visibilityConfig}
             initialSessionUI={sessionStateRef.current.analysisUI}
-            onSessionUIChange={(ui) => {
-              sessionStateRef.current.analysisUI = ui;
-              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 500);
-            }}
-            onAnalysisDataChange={(updated) => {
-              setCurrentAnalysis(updated);
-              sessionManager.scheduleSave(sessionStateRef.current, updated, 400);
-            }}
+            onSessionUIChange={handleSessionUIChange}
+            onAnalysisDataChange={handleAnalysisDataChange}
           />
         )}
 
@@ -559,15 +580,9 @@ function MainApp() {
             onUpdateReport={handleUpdateReportDirectly}
             onRefreshData={refreshStorageData}
             initialSession={sessionStateRef.current.reportsUI}
-            onSessionChange={(ui) => {
-              sessionStateRef.current.reportsUI = ui;
-              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 500);
-            }}
+            onSessionChange={handleReportsSessionChange}
             initialTradeDraft={sessionStateRef.current.tradeModalDraft}
-            onTradeDraftChange={(tradeDraft) => {
-              sessionStateRef.current.tradeModalDraft = tradeDraft;
-              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 400);
-            }}
+            onTradeDraftChange={handleTradeDraftChange}
           />
         )}
       </div>

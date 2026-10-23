@@ -98,9 +98,14 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   const [editLevelPrice, setEditLevelPrice] = useState(initialLevelDraft?.editLevelPrice || '');
   const [editLevelNote, setEditLevelNote] = useState(initialLevelDraft?.editLevelNote || '');
 
+  const onLevelDraftChangeRef = useRef(onLevelDraftChange);
+  useEffect(() => {
+    onLevelDraftChangeRef.current = onLevelDraftChange;
+  }, [onLevelDraftChange]);
+
   // Notify parent on draft updates
   useEffect(() => {
-    onLevelDraftChange?.({
+    onLevelDraftChangeRef.current?.({
       addingLevelKey,
       newLevelPrice,
       newLevelNote,
@@ -108,7 +113,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
       editLevelPrice,
       editLevelNote,
     });
-  }, [addingLevelKey, newLevelPrice, newLevelNote, editingLevelId, editLevelPrice, editLevelNote, onLevelDraftChange]);
+  }, [addingLevelKey, newLevelPrice, newLevelNote, editingLevelId, editLevelPrice, editLevelNote]);
 
   // Phase 2: Confirmation for removal
   const [confirmDeleteLevelId, setConfirmDeleteLevelId] = useState<string | null>(null);

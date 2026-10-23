@@ -27,9 +27,14 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
   );
   const scenarioCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
+  const onExpandedMapChangeRef = useRef(onExpandedMapChange);
   useEffect(() => {
-    onExpandedMapChange?.(expandedMap);
-  }, [expandedMap, onExpandedMapChange]);
+    onExpandedMapChangeRef.current = onExpandedMapChange;
+  }, [onExpandedMapChange]);
+
+  useEffect(() => {
+    onExpandedMapChangeRef.current?.(expandedMap);
+  }, [expandedMap]);
 
   const handleAddScenario = () => {
     const nextIndex = scenarios.length + 1;

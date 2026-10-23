@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -183,9 +183,14 @@ export const SupplyDemandSection: React.FC<SupplyDemandProps> = ({
   const [editSupply, setEditSupply] = useState(initialDraft?.editSupply || '');
   const [editDemand, setEditDemand] = useState(initialDraft?.editDemand || '');
 
+  const onDraftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+
   // Notify parent on draft updates
   useEffect(() => {
-    onDraftChange?.({
+    onDraftChangeRef.current?.({
       isAdding,
       timeframe: newTimeframe,
       supply: newSupply,
@@ -195,7 +200,7 @@ export const SupplyDemandSection: React.FC<SupplyDemandProps> = ({
       editSupply,
       editDemand,
     });
-  }, [isAdding, newTimeframe, newSupply, newDemand, editingId, editTimeframe, editSupply, editDemand, onDraftChange]);
+  }, [isAdding, newTimeframe, newSupply, newDemand, editingId, editTimeframe, editSupply, editDemand]);
 
   const handleStartEdit = (level: SupplyDemandLevel) => {
     setEditingId(level.id);
