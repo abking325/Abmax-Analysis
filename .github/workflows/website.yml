@@ -16,10 +16,10 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22'
           cache: 'npm'
 
       - name: Install Dependencies Cleanly
@@ -30,6 +30,24 @@ jobs:
 
       - name: Run Core Persistence Verification Tests
         run: npm test
+
+      - name: Validate Supabase Configuration
+        run: |
+          TARGET_URL="${VITE_SUPABASE_URL}"
+          echo "Verifying Supabase Target URL: $TARGET_URL"
+          if [ "$TARGET_URL" != "https://fxzurpdymuhlfkdxfgel.supabase.co" ]; then
+            echo "::error::VITE_SUPABASE_URL must remain https://fxzurpdymuhlfkdxfgel.supabase.co (found: $TARGET_URL)"
+            exit 1
+          fi
+
+          if [ -n "$VITE_SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "✅ VITE_SUPABASE_PUBLISHABLE_KEY is present (${#VITE_SUPABASE_PUBLISHABLE_KEY} characters). Note: Key presence check confirms configuration is wired; authentication is validated live at runtime."
+          else
+            echo "::warning::VITE_SUPABASE_PUBLISHABLE_KEY is not configured in secrets. Building web bundle in local-only offline mode."
+          fi
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL || 'https://fxzurpdymuhlfkdxfgel.supabase.co' }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || '' }}
 
       - name: Build Production Web Assets
         run: npm run build

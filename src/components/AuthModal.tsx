@@ -521,7 +521,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     disabled={loading || !isConfigured}
                     className="w-full py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors disabled:opacity-40"
                   >
-                    {loading ? 'Signing in...' : 'Sign In to Account'}
+                    {!isConfigured
+                      ? 'Cloud Sync Unavailable (Offline Mode)'
+                      : loading
+                      ? 'Signing in...'
+                      : 'Sign In to Account'}
                   </button>
                 </form>
               )}
@@ -548,7 +552,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                   <div>
                     <label className="block text-xs font-medium text-app-secondary mb-1">
-                      Password
+                      Password (min. 6 characters)
                     </label>
                     <div className="relative">
                       <Lock className="w-3.5 h-3.5 text-app-secondary absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -568,7 +572,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     disabled={loading || !isConfigured}
                     className="w-full py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors disabled:opacity-40"
                   >
-                    {loading ? 'Creating account...' : 'Create Account'}
+                    {!isConfigured
+                      ? 'Cloud Sync Unavailable (Offline Mode)'
+                      : loading
+                      ? 'Creating account...'
+                      : 'Create Account'}
                   </button>
                 </form>
               )}
@@ -609,7 +617,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       disabled={loading || !isConfigured}
                       className="flex-1 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs disabled:opacity-40"
                     >
-                      {loading ? 'Sending link...' : 'Send Reset Link'}
+                      {!isConfigured
+                        ? 'Unavailable Offline'
+                        : loading
+                        ? 'Sending link...'
+                        : 'Send Reset Link'}
                     </button>
                   </div>
                 </form>
