@@ -326,6 +326,10 @@ function MainApp() {
   const handleUpdateVisibilityConfig = (newCfg: WorkspaceVisibilityConfig) => {
     setVisibilityConfig(newCfg);
     saveUserVisibilityConfig(newCfg);
+    setCurrentAnalysis((prev) => ({
+      ...prev,
+      visibilityConfig: JSON.parse(JSON.stringify(newCfg)),
+    }));
     if (user) {
       uploadPreferencesToCloud(user.id, theme, { visibilityConfig: newCfg });
     }

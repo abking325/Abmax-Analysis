@@ -7,6 +7,9 @@ import {
   ReportPresentationConfig,
   SavedReport,
   SavedTemplate,
+  WorkspaceVisibilityConfig,
+  normalizeWorkspaceVisibilityConfig,
+  normalizeReportVisibilityConfig,
 } from '../types/journal';
 
 const DB_NAME = 'abmax_analysis_db';
@@ -389,14 +392,14 @@ export async function clearDraft(): Promise<void> {
 
 /* ================= USER VISIBILITY PREFERENCES ================= */
 
-export async function getUserVisibilityConfig(): Promise<any | null> {
+export async function getUserVisibilityConfig(): Promise<WorkspaceVisibilityConfig | null> {
   try {
     const record = await runTransaction<{ key: string; value: any } | undefined>(
       'preferences',
       'readonly',
       (store) => store.get('workspace_visibility')
     );
-    return record ? record.value : null;
+    return record?.value ? normalizeWorkspaceVisibilityConfig(record.value) : null;
   } catch {
     return null;
   }
@@ -424,28 +427,7 @@ export async function getUserReportPresentationConfig(): Promise<ReportPresentat
     return {
       ...DEFAULT_REPORT_PRESENTATION,
       ...val,
-      sectionVisibility: {
-        general: {
-          ...DEFAULT_REPORT_VISIBILITY.general,
-          ...(val.sectionVisibility?.general || {}),
-        },
-        timeframes: {
-          ...DEFAULT_REPORT_VISIBILITY.timeframes,
-          ...(val.sectionVisibility?.timeframes || {}),
-        },
-        timeframeFields: {
-          ...DEFAULT_REPORT_VISIBILITY.timeframeFields,
-          ...(val.sectionVisibility?.timeframeFields || {}),
-        },
-        notesAndLevels: {
-          ...DEFAULT_REPORT_VISIBILITY.notesAndLevels,
-          ...(val.sectionVisibility?.notesAndLevels || {}),
-        },
-        scenariosAndTrades: {
-          ...DEFAULT_REPORT_VISIBILITY.scenariosAndTrades,
-          ...(val.sectionVisibility?.scenariosAndTrades || {}),
-        },
-      },
+      sectionVisibility: normalizeReportVisibilityConfig(val.sectionVisibility),
       pdfImages: {
         ...DEFAULT_REPORT_PRESENTATION.pdfImages,
         ...(val.pdfImages || {}),

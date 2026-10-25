@@ -167,9 +167,56 @@ export interface OpeningCandleEntry {
   level: string; // string price to preserve exact decimal formatting, blank not zero
 }
 
+export interface TimeframeDeepFieldsVisibility {
+  overallInterpretation: boolean;
+  priceLocation: boolean;
+  swingStructure: boolean;
+  internalStructure: boolean;
+  fractalStructure: boolean;
+  deepAlignment: boolean;
+  supplyLevels: boolean;
+  demandLevels: boolean;
+  supportLevels: boolean;
+  resistanceLevels: boolean;
+  liquidityLevels: boolean;
+  timeframeNotes: boolean;
+  chartAttachments: boolean;
+  timeframeImages: boolean;
+}
+
+export const DEFAULT_DEEP_FIELDS_VISIBILITY: TimeframeDeepFieldsVisibility = {
+  overallInterpretation: true,
+  priceLocation: true,
+  swingStructure: true,
+  internalStructure: true,
+  fractalStructure: true,
+  deepAlignment: true,
+  supplyLevels: true,
+  demandLevels: true,
+  supportLevels: true,
+  resistanceLevels: true,
+  liquidityLevels: true,
+  timeframeNotes: true,
+  chartAttachments: true,
+  timeframeImages: true,
+};
+
+export function createDefaultPerTimeframeFields(): Record<TimeframeId, TimeframeDeepFieldsVisibility> {
+  return {
+    Monthly: { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    Weekly: { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    Daily: { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    '4H': { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    '1H': { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    '15M': { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    '5M': { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+    '1M': { ...DEFAULT_DEEP_FIELDS_VISIBILITY },
+  };
+}
+
 export interface WorkspaceVisibilityConfig {
   timeframes: Record<TimeframeId, boolean>;
-  deepSections: {
+  deepSections?: {
     overallInterpretation: boolean;
     priceLocation: boolean;
     swingStructure: boolean;
@@ -183,6 +230,7 @@ export interface WorkspaceVisibilityConfig {
     timeframeNotes: boolean;
     chartAttachments: boolean;
   };
+  perTimeframeFields?: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
   otherSections: {
     majorLiquidityChecklist: boolean;
     majorLiquidityWatchlist: boolean;
@@ -218,6 +266,7 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
     timeframeNotes: true,
     chartAttachments: true,
   },
+  perTimeframeFields: createDefaultPerTimeframeFields(),
   otherSections: {
     majorLiquidityChecklist: true,
     majorLiquidityWatchlist: true,
@@ -227,6 +276,90 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
     plannedScenarios: true,
   },
 };
+
+export function normalizeWorkspaceVisibilityConfig(
+  raw?: Partial<WorkspaceVisibilityConfig> | null
+): WorkspaceVisibilityConfig {
+  const timeframes = { ...DEFAULT_VISIBILITY_CONFIG.timeframes };
+  if (raw?.timeframes) {
+    for (const tf of TIMEFRAME_ORDER) {
+      if (raw.timeframes[tf] !== undefined) {
+        timeframes[tf] = Boolean(raw.timeframes[tf]);
+      }
+    }
+  }
+
+  const legacyDeep = raw?.deepSections || DEFAULT_VISIBILITY_CONFIG.deepSections!;
+  const perTimeframeFields: Record<TimeframeId, TimeframeDeepFieldsVisibility> = createDefaultPerTimeframeFields();
+
+  for (const tf of TIMEFRAME_ORDER) {
+    const existing = raw?.perTimeframeFields?.[tf];
+    perTimeframeFields[tf] = {
+      overallInterpretation: existing?.overallInterpretation !== undefined
+        ? Boolean(existing.overallInterpretation)
+        : (legacyDeep?.overallInterpretation !== false),
+      priceLocation: existing?.priceLocation !== undefined
+        ? Boolean(existing.priceLocation)
+        : (legacyDeep?.priceLocation !== false),
+      swingStructure: existing?.swingStructure !== undefined
+        ? Boolean(existing.swingStructure)
+        : (legacyDeep?.swingStructure !== false),
+      internalStructure: existing?.internalStructure !== undefined
+        ? Boolean(existing.internalStructure)
+        : (legacyDeep?.internalStructure !== false),
+      fractalStructure: existing?.fractalStructure !== undefined
+        ? Boolean(existing.fractalStructure)
+        : (legacyDeep?.fractalStructure !== false),
+      deepAlignment: existing?.deepAlignment !== undefined
+        ? Boolean(existing.deepAlignment)
+        : true,
+      supplyLevels: existing?.supplyLevels !== undefined
+        ? Boolean(existing.supplyLevels)
+        : (legacyDeep?.supplyLevels !== false),
+      demandLevels: existing?.demandLevels !== undefined
+        ? Boolean(existing.demandLevels)
+        : (legacyDeep?.demandLevels !== false),
+      supportLevels: existing?.supportLevels !== undefined
+        ? Boolean(existing.supportLevels)
+        : (legacyDeep?.supportLevels !== false),
+      resistanceLevels: existing?.resistanceLevels !== undefined
+        ? Boolean(existing.resistanceLevels)
+        : (legacyDeep?.resistanceLevels !== false),
+      liquidityLevels: existing?.liquidityLevels !== undefined
+        ? Boolean(existing.liquidityLevels)
+        : (legacyDeep?.liquidityLevels !== false),
+      timeframeNotes: existing?.timeframeNotes !== undefined
+        ? Boolean(existing.timeframeNotes)
+        : (legacyDeep?.timeframeNotes !== false),
+      chartAttachments: existing?.chartAttachments !== undefined
+        ? Boolean(existing.chartAttachments)
+        : (existing?.timeframeImages !== undefined
+            ? Boolean(existing.timeframeImages)
+            : (legacyDeep?.chartAttachments !== false)),
+      timeframeImages: existing?.timeframeImages !== undefined
+        ? Boolean(existing.timeframeImages)
+        : (existing?.chartAttachments !== undefined
+            ? Boolean(existing.chartAttachments)
+            : (legacyDeep?.chartAttachments !== false)),
+    };
+  }
+
+  const otherSections = {
+    majorLiquidityChecklist: raw?.otherSections?.majorLiquidityChecklist !== false,
+    majorLiquidityWatchlist: raw?.otherSections?.majorLiquidityWatchlist !== false,
+    supplyDemandManager: raw?.otherSections?.supplyDemandManager !== false,
+    openingCandle: raw?.otherSections?.openingCandle !== false,
+    overallNotes: raw?.otherSections?.overallNotes !== false,
+    plannedScenarios: raw?.otherSections?.plannedScenarios !== false,
+  };
+
+  return {
+    timeframes,
+    deepSections: legacyDeep,
+    perTimeframeFields,
+    otherSections,
+  };
+}
 
 export interface AnalysisData {
   id: string; // Report ID or 'draft'
@@ -283,7 +416,7 @@ export interface ReportVisibilityConfig {
     majorLiquidityWatchlist: boolean;
   };
   timeframes: Record<TimeframeId, boolean>;
-  timeframeFields: {
+  timeframeFields?: {
     overallInterpretation: boolean;
     priceLocation: boolean;
     swingStructure: boolean;
@@ -297,7 +430,9 @@ export interface ReportVisibilityConfig {
     liquidityLevels: boolean;
     timeframeNotes: boolean;
     timeframeImages: boolean;
+    chartAttachments?: boolean;
   };
+  perTimeframeFields?: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
   notesAndLevels: {
     openingCandleLevels: boolean;
     generalSupplyDemand: boolean;
@@ -344,6 +479,7 @@ export const DEFAULT_REPORT_VISIBILITY: ReportVisibilityConfig = {
     timeframeNotes: true,
     timeframeImages: true,
   },
+  perTimeframeFields: createDefaultPerTimeframeFields(),
   notesAndLevels: {
     openingCandleLevels: true,
     generalSupplyDemand: true,
@@ -357,6 +493,104 @@ export const DEFAULT_REPORT_VISIBILITY: ReportVisibilityConfig = {
     tradeImages: true,
   },
 };
+
+export function normalizeReportVisibilityConfig(
+  raw?: Partial<ReportVisibilityConfig> | null
+): ReportVisibilityConfig {
+  const timeframes = { ...DEFAULT_REPORT_VISIBILITY.timeframes };
+  if (raw?.timeframes) {
+    for (const tf of TIMEFRAME_ORDER) {
+      if (raw.timeframes[tf] !== undefined) {
+        timeframes[tf] = Boolean(raw.timeframes[tf]);
+      }
+    }
+  }
+
+  const legacyFields = raw?.timeframeFields || DEFAULT_REPORT_VISIBILITY.timeframeFields!;
+  const perTimeframeFields: Record<TimeframeId, TimeframeDeepFieldsVisibility> = createDefaultPerTimeframeFields();
+
+  for (const tf of TIMEFRAME_ORDER) {
+    const existing = raw?.perTimeframeFields?.[tf];
+    perTimeframeFields[tf] = {
+      overallInterpretation: existing?.overallInterpretation !== undefined
+        ? Boolean(existing.overallInterpretation)
+        : (legacyFields?.overallInterpretation !== false),
+      priceLocation: existing?.priceLocation !== undefined
+        ? Boolean(existing.priceLocation)
+        : (legacyFields?.priceLocation !== false),
+      swingStructure: existing?.swingStructure !== undefined
+        ? Boolean(existing.swingStructure)
+        : (legacyFields?.swingStructure !== false),
+      internalStructure: existing?.internalStructure !== undefined
+        ? Boolean(existing.internalStructure)
+        : (legacyFields?.internalStructure !== false),
+      fractalStructure: existing?.fractalStructure !== undefined
+        ? Boolean(existing.fractalStructure)
+        : (legacyFields?.fractalStructure !== false),
+      deepAlignment: existing?.deepAlignment !== undefined
+        ? Boolean(existing.deepAlignment)
+        : (legacyFields?.deepAlignment !== false),
+      supplyLevels: existing?.supplyLevels !== undefined
+        ? Boolean(existing.supplyLevels)
+        : (legacyFields?.supplyLevels !== false),
+      demandLevels: existing?.demandLevels !== undefined
+        ? Boolean(existing.demandLevels)
+        : (legacyFields?.demandLevels !== false),
+      supportLevels: existing?.supportLevels !== undefined
+        ? Boolean(existing.supportLevels)
+        : (legacyFields?.supportLevels !== false),
+      resistanceLevels: existing?.resistanceLevels !== undefined
+        ? Boolean(existing.resistanceLevels)
+        : (legacyFields?.resistanceLevels !== false),
+      liquidityLevels: existing?.liquidityLevels !== undefined
+        ? Boolean(existing.liquidityLevels)
+        : (legacyFields?.liquidityLevels !== false),
+      timeframeNotes: existing?.timeframeNotes !== undefined
+        ? Boolean(existing.timeframeNotes)
+        : (legacyFields?.timeframeNotes !== false),
+      chartAttachments: existing?.chartAttachments !== undefined
+        ? Boolean(existing.chartAttachments)
+        : (existing?.timeframeImages !== undefined
+            ? Boolean(existing.timeframeImages)
+            : (legacyFields?.timeframeImages !== false)),
+      timeframeImages: existing?.timeframeImages !== undefined
+        ? Boolean(existing.timeframeImages)
+        : (existing?.chartAttachments !== undefined
+            ? Boolean(existing.chartAttachments)
+            : (legacyFields?.timeframeImages !== false)),
+    };
+  }
+
+  const general = {
+    metadataAndTimestamps: raw?.general?.metadataAndTimestamps !== false,
+    overallAlignment: raw?.general?.overallAlignment !== false,
+    majorLiquidityChecklist: raw?.general?.majorLiquidityChecklist !== false,
+    majorLiquidityWatchlist: raw?.general?.majorLiquidityWatchlist !== false,
+  };
+
+  const notesAndLevels = {
+    openingCandleLevels: raw?.notesAndLevels?.openingCandleLevels !== false,
+    generalSupplyDemand: raw?.notesAndLevels?.generalSupplyDemand !== false,
+    overallNotes: raw?.notesAndLevels?.overallNotes !== false,
+    matchingValues: raw?.notesAndLevels?.matchingValues !== false,
+  };
+
+  const scenariosAndTrades = {
+    plannedScenarios: raw?.scenariosAndTrades?.plannedScenarios !== false,
+    scenarioImages: raw?.scenariosAndTrades?.scenarioImages !== false,
+    tradesTaken: raw?.scenariosAndTrades?.tradesTaken !== false,
+    tradeImages: raw?.scenariosAndTrades?.tradeImages !== false,
+  };
+
+  return {
+    general,
+    timeframes,
+    timeframeFields: legacyFields,
+    perTimeframeFields,
+    notesAndLevels,
+    scenariosAndTrades,
+  };
+}
 
 export interface ReportPresentationConfig {
   defaultView: 'standard' | 'organized';

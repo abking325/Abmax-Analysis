@@ -39,8 +39,7 @@ export async function exportBlobOrDownload(
 
       await Share.share({
         title: filename,
-        text: `Exported from ABMAX ANALYSIS: ${filename}`,
-        url: writeResult.uri,
+        files: [writeResult.uri],
         dialogTitle,
       });
       return;

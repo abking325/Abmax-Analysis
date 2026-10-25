@@ -322,7 +322,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
 
   // Determine active visibility configuration
   const activeVisibility: WorkspaceVisibilityConfig =
-    data.visibilityConfig || workspaceVisibility || DEFAULT_VISIBILITY_CONFIG;
+    workspaceVisibility || data.visibilityConfig || DEFAULT_VISIBILITY_CONFIG;
 
   // Filter enabled timeframes based on visibility config
   const enabledTimeframes = TIMEFRAME_ORDER.filter(

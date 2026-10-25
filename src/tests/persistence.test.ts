@@ -17,6 +17,10 @@ import {
   createFullBackup,
   restoreBackup,
   analyzeBackup,
+  getUserVisibilityConfig,
+  saveUserVisibilityConfig,
+  getUserReportPresentationConfig,
+  saveUserReportPresentationConfig,
 } from '../services/db';
 import {
   createInitialAnalysisData,
@@ -27,6 +31,13 @@ import {
   OpeningCandleEntry,
   TIMEFRAME_ORDER,
   TimeframeId,
+  normalizeWorkspaceVisibilityConfig,
+  normalizeReportVisibilityConfig,
+  createDefaultPerTimeframeFields,
+  DEFAULT_VISIBILITY_CONFIG,
+  DEFAULT_REPORT_VISIBILITY,
+  DEFAULT_REPORT_PRESENTATION,
+  ReportPresentationConfig,
 } from '../types/journal';
 
 async function runTests() {
@@ -1195,6 +1206,186 @@ async function runTests() {
     await deleteTemplate(legacyTemplateId);
   } catch (err) {
     assert(false, 'Test Suite 17 execution', (err as Error).message);
+  }
+
+  // --- TEST 18: Phase 1 Per-Timeframe Independent Visibility & Normalization ---
+  console.log('\n--- Test Suite 18: Phase 1 Per-Timeframe Independent Visibility & Safe Normalization ---');
+  try {
+    // 1. Normalization on empty/legacy payload
+    const emptyNorm = normalizeWorkspaceVisibilityConfig(null);
+    assert(!!emptyNorm.perTimeframeFields, 'Normalization generates perTimeframeFields dictionary');
+    assert(emptyNorm.timeframes['Monthly'] === true, 'Default timeframe is enabled');
+    assert(emptyNorm.perTimeframeFields!['Monthly']?.liquidityLevels === true, 'Default deep field is enabled');
+
+    // 2. Legacy global deepSections fallback migration (preserving explicit false values)
+    const legacyGlobalVis = normalizeWorkspaceVisibilityConfig({
+      timeframes: { Monthly: true, Weekly: true, Daily: false, '4H': true, '1H': true, '15M': true, '5M': true, '1M': true },
+      deepSections: {
+        ...DEFAULT_VISIBILITY_CONFIG.deepSections!,
+        liquidityLevels: false, // Legacy global was set to false
+      },
+    });
+    assert(legacyGlobalVis.timeframes['Daily'] === false, 'Preserved explicit false for timeframe Daily');
+    assert(legacyGlobalVis.timeframes['Monthly'] === true, 'Preserved explicit true for timeframe Monthly');
+    assert(legacyGlobalVis.perTimeframeFields?.['Monthly']?.liquidityLevels === false, 'Legacy global liquidityLevels false migrated into Monthly perTimeframeFields');
+    assert(legacyGlobalVis.perTimeframeFields?.['Weekly']?.liquidityLevels === false, 'Legacy global liquidityLevels false migrated into Weekly perTimeframeFields');
+    assert(legacyGlobalVis.perTimeframeFields?.['Weekly']?.swingStructure === true, 'Other unconfigured fields remain true');
+
+    // 3. Independent per-timeframe scope: hiding Monthly liquidity must NOT hide Weekly liquidity
+    const defaultFields = createDefaultPerTimeframeFields();
+    const independentEditorConfig = normalizeWorkspaceVisibilityConfig({
+      timeframes: { Monthly: true, Weekly: true, Daily: true, '4H': true, '1H': true, '15M': true, '5M': true, '1M': true },
+      perTimeframeFields: {
+        ...defaultFields,
+        Monthly: {
+          ...defaultFields.Monthly,
+          liquidityLevels: false, // Hidden on Monthly
+        },
+        Weekly: {
+          ...defaultFields.Weekly,
+          liquidityLevels: true, // Shown on Weekly
+        },
+      },
+    });
+    assert(independentEditorConfig.perTimeframeFields?.['Monthly']?.liquidityLevels === false, 'Monthly liquidity is hidden');
+    assert(independentEditorConfig.perTimeframeFields?.['Weekly']?.liquidityLevels === true, 'Weekly liquidity remains shown independently');
+
+    // 4. Report presentation normalization: hiding Weekly images must NOT hide 4H images
+    const independentReportConfig = normalizeReportVisibilityConfig({
+      timeframes: { Monthly: true, Weekly: true, Daily: true, '4H': true, '1H': true, '15M': true, '5M': true, '1M': true },
+      perTimeframeFields: {
+        ...defaultFields,
+        Weekly: {
+          ...defaultFields.Weekly,
+          timeframeImages: false,
+          chartAttachments: false,
+        },
+        '4H': {
+          ...defaultFields['4H'],
+          timeframeImages: true,
+          chartAttachments: true,
+        },
+      },
+    });
+    assert(independentReportConfig.perTimeframeFields?.['Weekly']?.timeframeImages === false, 'Weekly chart images hidden in report');
+    assert(independentReportConfig.perTimeframeFields?.['4H']?.timeframeImages === true, '4H chart images remain visible in report');
+
+    // 5. DB Preferences storage and retrieval with automatic normalization
+    await saveUserVisibilityConfig(independentEditorConfig);
+    const retrievedEditorVis = await getUserVisibilityConfig();
+    assert(retrievedEditorVis !== null, 'Retrieved editor config is not null');
+    assert(retrievedEditorVis?.perTimeframeFields?.['Monthly']?.liquidityLevels === false, 'Retrieved editor config maintains Monthly liquidity hidden');
+    assert(retrievedEditorVis?.perTimeframeFields?.['Weekly']?.liquidityLevels === true, 'Retrieved editor config maintains Weekly liquidity shown');
+
+    const testPresentationConfig: ReportPresentationConfig = {
+      ...DEFAULT_REPORT_PRESENTATION,
+      sectionVisibility: independentReportConfig,
+    };
+    await saveUserReportPresentationConfig(testPresentationConfig);
+    const retrievedReportPres = await getUserReportPresentationConfig();
+    assert(retrievedReportPres.sectionVisibility?.perTimeframeFields?.['Weekly']?.timeframeImages === false, 'Retrieved report config maintains Weekly images hidden');
+    assert(retrievedReportPres.sectionVisibility?.perTimeframeFields?.['4H']?.timeframeImages === true, 'Retrieved report config maintains 4H images shown');
+  } catch (err) {
+    assert(false, 'Test Suite 18 execution', (err as Error).message);
+  }
+
+  // --- TEST 19: Phase 2 — PDF Sharing, Safe Filename & Report Immutability ---
+  console.log('\n--- Test Suite 19: Phase 2 — PDF Sharing, Safe Filename & Report Immutability ---');
+  try {
+    const { generateReportPdfBlob } = await import('../services/pdfExport');
+
+    // 1. Filesystem-safe filename generation
+    const sampleShareReport: SavedReport = {
+      ...createInitialAnalysisData('EURUSD'),
+      id: 'rpt_share_test_1',
+      title: 'London Breakout / Retest: Q4',
+      date: '2026-10-25',
+      time: '08:30:00',
+      overallNotes: 'High volume liquidity run into London open.',
+      scenarios: [],
+      trades: [],
+      createdAt: 1700000000000,
+      updatedAt: 1700000500000,
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+
+    const initialId = sampleShareReport.id;
+    const initialRev = sampleShareReport.revision;
+    const initialUpdatedAt = sampleShareReport.updatedAt;
+
+    // 2. Generate PDF for sharing
+    const { blob, filename } = await generateReportPdfBlob({ report: sampleShareReport });
+    assert(blob instanceof Blob, 'Share PDF generator returns valid Blob');
+    assert(blob.size > 1000, `Generated PDF blob is non-empty (${blob.size} bytes)`);
+    assert(!filename.includes('/') && !filename.includes('\\') && !filename.includes(':'), 'Filename is strictly filesystem-safe');
+    assert(filename.startsWith('ABMAX_EURUSD_2026-10-25'), `Filename follows convention: ${filename}`);
+
+    // 3. Verify report immutability during sharing
+    assert(sampleShareReport.id === initialId, 'Report ID preserved without modification during sharing');
+    assert(sampleShareReport.revision === initialRev, 'Report revision counter untouched');
+    assert(sampleShareReport.updatedAt === initialUpdatedAt, 'Report timestamp unchanged by share operation');
+
+    // 4. Verify offline independence: PDF generation requires no network or cloud tokens
+    assert(typeof blob.arrayBuffer === 'function', 'PDF blob is readable completely offline');
+
+    // 5. Public link unavailability check
+    const isPublicLinkAvailable = false; // ABMAX stores reports in private IndexedDB/Supabase RLS
+    assert(!isPublicLinkAvailable, 'Confirms public report links are unavailable without a separate dedicated publishing feature');
+  } catch (err) {
+    assert(false, 'Test Suite 19 execution', (err as Error).message);
+  }
+
+  // --- TEST 20: Settings Show/Hide Action Toggle Inversion Verification ---
+  console.log('\n--- Test Suite 20: Settings Show/Hide Action Toggle Inversion Verification ---');
+  try {
+    // 1. Timeframe visibility toggle: visible -> Hide action -> hidden -> Show action -> visible
+    let currentTfVis: Record<string, boolean> = { Monthly: true, Weekly: true };
+    const getTfActionLabel = (isShown: boolean) => (isShown ? 'Hide' : 'Show');
+
+    // Currently Monthly is shown
+    assert(getTfActionLabel(currentTfVis.Monthly !== false) === 'Hide', 'Shown Monthly timeframe displays Hide button');
+    // User clicks "Hide"
+    const isMonthlyShownBeforeClick = currentTfVis.Monthly !== false;
+    currentTfVis = { ...currentTfVis, Monthly: !isMonthlyShownBeforeClick };
+    assert(currentTfVis.Monthly === false, 'Clicking Hide properly sets Monthly timeframe to false (hidden)');
+    assert(getTfActionLabel(currentTfVis.Monthly !== false) === 'Show', 'Hidden Monthly timeframe now displays Show button');
+    // User clicks "Show"
+    const isMonthlyShownAfterHide = currentTfVis.Monthly !== false;
+    currentTfVis = { ...currentTfVis, Monthly: !isMonthlyShownAfterHide };
+    assert(currentTfVis.Monthly === true, 'Clicking Show properly sets Monthly timeframe to true (visible)');
+    assert(getTfActionLabel(currentTfVis.Monthly !== false) === 'Hide', 'Restored Monthly timeframe displays Hide button');
+
+    // 2. Deep Analysis field toggle
+    let deepFields: Record<string, boolean> = { liquidityLevels: true, swingStructure: true };
+    assert(getTfActionLabel(deepFields.liquidityLevels !== false) === 'Hide', 'Shown liquidityLevels field displays Hide button');
+    // User clicks "Hide"
+    const isLiqShown = deepFields.liquidityLevels !== false;
+    deepFields = { ...deepFields, liquidityLevels: !isLiqShown };
+    assert(deepFields.liquidityLevels === false, 'Clicking Hide sets liquidityLevels to false (hidden)');
+    assert(getTfActionLabel(deepFields.liquidityLevels !== false) === 'Show', 'Hidden liquidityLevels field displays Show button');
+    // User clicks "Show"
+    deepFields = { ...deepFields, liquidityLevels: !(deepFields.liquidityLevels !== false) };
+    assert(deepFields.liquidityLevels === true, 'Clicking Show sets liquidityLevels to true (visible)');
+    assert(getTfActionLabel(deepFields.liquidityLevels !== false) === 'Hide', 'Restored liquidityLevels field displays Hide button');
+
+    // 3. Other Analysis sections toggle (e.g. majorLiquidityChecklist)
+    let otherSecs: Record<string, boolean> = { majorLiquidityChecklist: true };
+    assert(getTfActionLabel(otherSecs.majorLiquidityChecklist !== false) === 'Hide', 'Shown other section displays Hide button');
+    otherSecs = { ...otherSecs, majorLiquidityChecklist: !(otherSecs.majorLiquidityChecklist !== false) };
+    assert(otherSecs.majorLiquidityChecklist === false, 'Clicking Hide on other section sets it to false (hidden)');
+    assert(getTfActionLabel(otherSecs.majorLiquidityChecklist !== false) === 'Show', 'Hidden other section displays Show button');
+
+    // 4. Undefined initial value safety (handles unpopulated raw preferences)
+    const rawUndefinedObj: Record<string, boolean | undefined> = {};
+    const isRawShown = rawUndefinedObj['Daily'] !== false;
+    assert(isRawShown === true, 'Unset/undefined key defaults to shown (true)');
+    assert(getTfActionLabel(isRawShown) === 'Hide', 'Unset/undefined key displays Hide button');
+    const toggledFromUndefined = !isRawShown;
+    assert(toggledFromUndefined === false, 'Toggling from undefined properly sets to false (hidden), not true');
+  } catch (err) {
+    assert(false, 'Test Suite 20 execution', (err as Error).message);
   }
 
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);

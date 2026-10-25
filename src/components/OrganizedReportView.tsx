@@ -58,6 +58,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   const separators = presentationConfig?.separators || 'subtle';
   const chartDisplay = presentationConfig?.chartDisplay || 'collapsed';
   const showEmptySections = presentationConfig?.showEmptySections !== false;
+  const secVis = presentationConfig?.sectionVisibility;
 
   const toggleChart = (tf: TimeframeId) => {
     setExpandedCharts((prev) => {
@@ -119,6 +120,11 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   };
 
   const renderTimeframeSection = (tfId: TimeframeId) => {
+    const secVis = presentationConfig?.sectionVisibility;
+    if (secVis?.timeframes && secVis.timeframes[tfId] === false) {
+      return null;
+    }
+
     const tf = report.timeframes[tfId];
     const label = TIMEFRAME_DISPLAY_NAMES[tfId];
 
@@ -143,34 +149,35 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
       (sd) => sd.timeframe === tfId
     );
 
-    const hasInterpretation = Boolean(tf.biasSpecific && tf.biasSpecific.trim());
-    const hasPriceLoc = Boolean(tf.priceLocation?.location || tf.priceLocation?.levelRange);
+    const tfVis = secVis?.perTimeframeFields?.[tfId] || secVis?.timeframeFields;
+
+    const hasInterpretation = Boolean(tf.biasSpecific && tf.biasSpecific.trim()) && tfVis?.overallInterpretation !== false;
+    const hasPriceLoc = Boolean(tf.priceLocation?.location || tf.priceLocation?.levelRange) && tfVis?.priceLocation !== false;
     const hasSwing = Boolean(
       tf.swing.direction ||
       tf.swing.high?.trim() ||
       tf.swing.low?.trim() ||
       tf.swing.bosAt?.trim()
-    );
+    ) && tfVis?.swingStructure !== false;
     const hasInternal = Boolean(
       tf.internal.direction ||
       tf.internal.high?.trim() ||
       tf.internal.low?.trim() ||
       tf.internal.ibosAt?.trim()
-    );
+    ) && tfVis?.internalStructure !== false;
     const hasFractal = Boolean(
       tf.fractal.direction ||
       tf.fractal.fractalBosAt?.trim()
-    );
-    const hasStructuredLevels = Boolean(
-      (tf.supplyLevels && tf.supplyLevels.length > 0) ||
-      (tf.demandLevels && tf.demandLevels.length > 0) ||
-      (tf.supportLevels && tf.supportLevels.length > 0) ||
-      (tf.resistanceLevels && tf.resistanceLevels.length > 0) ||
-      (tf.liquidityLevels && tf.liquidityLevels.length > 0)
-    );
-    const hasSd = tfSdLevels.length > 0;
-    const hasNote = Boolean(tf.note && tf.note.trim());
-    const hasChart = Boolean(chartUrl);
+    ) && tfVis?.fractalStructure !== false;
+    const showSupply = Boolean(tf.supplyLevels && tf.supplyLevels.length > 0) && tfVis?.supplyLevels !== false;
+    const showDemand = Boolean(tf.demandLevels && tf.demandLevels.length > 0) && tfVis?.demandLevels !== false;
+    const showSupport = Boolean(tf.supportLevels && tf.supportLevels.length > 0) && tfVis?.supportLevels !== false;
+    const showResistance = Boolean(tf.resistanceLevels && tf.resistanceLevels.length > 0) && tfVis?.resistanceLevels !== false;
+    const showLiquidity = Boolean(tf.liquidityLevels && tf.liquidityLevels.length > 0) && tfVis?.liquidityLevels !== false;
+    const hasStructuredLevels = showSupply || showDemand || showSupport || showResistance || showLiquidity;
+    const hasSd = tfSdLevels.length > 0 && secVis?.notesAndLevels?.generalSupplyDemand !== false;
+    const hasNote = Boolean(tf.note && tf.note.trim()) && tfVis?.timeframeNotes !== false;
+    const hasChart = Boolean(chartUrl) && ((tfVis as any)?.timeframeImages !== false && (tfVis as any)?.chartAttachments !== false);
 
     const hasAnyDetail =
       Boolean(tf.overallBias) ||
@@ -323,34 +330,34 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
             {/* Structured Levels (Supply, Demand, Support, Resistance, Liquidity) */}
             {hasStructuredLevels && (
               <div className="space-y-1 bg-gray-50/50 p-2 rounded border border-gray-100 font-mono text-[10px]">
-                {tf.supplyLevels && tf.supplyLevels.length > 0 && (
+                {showSupply && (
                   <div className="flex flex-wrap items-baseline gap-x-1.5">
                     <span className="font-sans font-bold text-rose-700 uppercase tracking-wider text-[9px]">Supply:</span>
-                    <span className="text-gray-800">{tf.supplyLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                    <span className="text-gray-800">{tf.supplyLevels!.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
                   </div>
                 )}
-                {tf.demandLevels && tf.demandLevels.length > 0 && (
+                {showDemand && (
                   <div className="flex flex-wrap items-baseline gap-x-1.5">
                     <span className="font-sans font-bold text-emerald-700 uppercase tracking-wider text-[9px]">Demand:</span>
-                    <span className="text-gray-800">{tf.demandLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                    <span className="text-gray-800">{tf.demandLevels!.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
                   </div>
                 )}
-                {tf.supportLevels && tf.supportLevels.length > 0 && (
+                {showSupport && (
                   <div className="flex flex-wrap items-baseline gap-x-1.5">
                     <span className="font-sans font-bold text-blue-700 uppercase tracking-wider text-[9px]">Support:</span>
-                    <span className="text-gray-800">{tf.supportLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                    <span className="text-gray-800">{tf.supportLevels!.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
                   </div>
                 )}
-                {tf.resistanceLevels && tf.resistanceLevels.length > 0 && (
+                {showResistance && (
                   <div className="flex flex-wrap items-baseline gap-x-1.5">
                     <span className="font-sans font-bold text-amber-700 uppercase tracking-wider text-[9px]">Resistance:</span>
-                    <span className="text-gray-800">{tf.resistanceLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                    <span className="text-gray-800">{tf.resistanceLevels!.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
                   </div>
                 )}
-                {tf.liquidityLevels && tf.liquidityLevels.length > 0 && (
+                {showLiquidity && (
                   <div className="flex flex-wrap items-baseline gap-x-1.5">
                     <span className="font-sans font-bold text-purple-700 uppercase tracking-wider text-[9px]">Liquidity:</span>
-                    <span className="text-gray-800">{tf.liquidityLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
+                    <span className="text-gray-800">{tf.liquidityLevels!.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ')}</span>
                   </div>
                 )}
               </div>
@@ -394,7 +401,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
             )}
 
             {/* Attached Chart (expandable preserving aspect ratio) */}
-            {chartUrl && (
+            {hasChart && (
               <div className="pt-1">
                 <button
                   type="button"
@@ -411,7 +418,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     <ChevronDown className="w-3.5 h-3.5 text-emerald-700" />
                   )}
                 </button>
-                {isChartOpen(tfId) && (
+                {isChartOpen(tfId) && chartUrl && (
                   <div className="mt-2 p-2 bg-gray-50 rounded border border-gray-200 space-y-1.5">
                     <img
                       src={chartUrl}
@@ -498,78 +505,82 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
         </div>
 
         {/* Compact metadata lines */}
-        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-gray-600 pt-2 border-t border-gray-100">
-          <div>
-            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
-              Analysis Date
-            </span>
-            <span className="font-medium text-gray-900">
-              {report.date || 'Not specified'}
-            </span>
-          </div>
+        {secVis?.general?.metadataAndTimestamps !== false && (
+          <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-gray-600 pt-2 border-t border-gray-100">
+            <div>
+              <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+                Analysis Date
+              </span>
+              <span className="font-medium text-gray-900">
+                {report.date || 'Not specified'}
+              </span>
+            </div>
 
-          <div>
-            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
-              Session
-            </span>
-            <span className="font-medium text-gray-900">
-              {report.session || 'Not specified'}
-            </span>
-          </div>
+            <div>
+              <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+                Session
+              </span>
+              <span className="font-medium text-gray-900">
+                {report.session || 'Not specified'}
+              </span>
+            </div>
 
-          <div>
-            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
-              Analysis Time
-            </span>
-            <span className="font-medium text-gray-900">
-              {report.time
-                ? `${report.time}${report.timezone ? ` (${report.timezone})` : ''}`
-                : '—'}
-            </span>
-          </div>
+            <div>
+              <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+                Analysis Time
+              </span>
+              <span className="font-medium text-gray-900">
+                {report.time
+                  ? `${report.time}${report.timezone ? ` (${report.timezone})` : ''}`
+                  : '—'}
+              </span>
+            </div>
 
-          <div>
-            <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
-              Timing Made
-            </span>
-            <span className="font-medium text-gray-900">
-              {report.analysisTiming || '—'}
-            </span>
+            <div>
+              <span className="text-[9px] uppercase tracking-wider text-gray-400 block font-semibold">
+                Timing Made
+              </span>
+              <span className="font-medium text-gray-900">
+                {report.analysisTiming || '—'}
+              </span>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Timeframe Alignment strip */}
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 p-2 bg-emerald-50/70 rounded border border-emerald-200 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900">
-              Timeframe Alignment:
-            </span>
-            <span
-              className={`font-semibold ${
-                overallAlign.status === 'ALIGNED'
-                  ? overallAlign.bias === 'Bullish'
-                    ? 'text-emerald-700'
-                    : 'text-rose-700'
-                  : 'text-amber-700'
-              }`}
-            >
-              {overallAlign.label}
-            </span>
-          </div>
+        {secVis?.general?.overallAlignment !== false && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 p-2 bg-emerald-50/70 rounded border border-emerald-200 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900">
+                Timeframe Alignment:
+              </span>
+              <span
+                className={`font-semibold ${
+                  overallAlign.status === 'ALIGNED'
+                    ? overallAlign.bias === 'Bullish'
+                      ? 'text-emerald-700'
+                      : 'text-rose-700'
+                    : 'text-amber-700'
+                }`}
+              >
+                {overallAlign.label}
+              </span>
+            </div>
 
-          <div className="flex items-center gap-1.5 text-[11px]">
-            {isAllDeepAligned ? (
-              <span className="inline-flex items-center gap-1 text-emerald-800 font-medium">
-                <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                Deep Analysis Aligned
-              </span>
-            ) : (
-              <span className="text-gray-500">
-                Deep: {deepAlignedCount > 0 ? `${deepAlignedCount}/7 Aligned` : 'Mixed / Transition'}
-              </span>
-            )}
+            <div className="flex items-center gap-1.5 text-[11px]">
+              {isAllDeepAligned ? (
+                <span className="inline-flex items-center gap-1 text-emerald-800 font-medium">
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                  Deep Analysis Aligned
+                </span>
+              ) : (
+                <span className="text-gray-500">
+                  Deep: {deepAlignedCount > 0 ? `${deepAlignedCount}/7 Aligned` : 'Mixed / Transition'}
+                </span>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </header>
 
       {/* B. Document Body: 1, 2, or 3 columns on desktop based on presentationConfig (always 1 col on mobile) */}
@@ -577,49 +588,53 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
         {/* LEFT COLUMN */}
         <div className={`space-y-3 ${desktopLayout !== '1-col' ? 'md:border-r md:border-gray-200 md:pr-6 lg:pr-8' : ''}`}>
           {/* 1. External Liquidity */}
-          <section className={`pb-3.5 ${separatorClass} space-y-2`}>
-            <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
-              1. EXTERNAL LIQUIDITY
-            </h2>
+          {(secVis?.general?.majorLiquidityChecklist !== false || secVis?.general?.majorLiquidityWatchlist !== false) && (
+            <section className={`pb-3.5 ${separatorClass} space-y-2`}>
+              <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
+                1. EXTERNAL LIQUIDITY
+              </h2>
 
-            {report.crossedLiquidity && report.crossedLiquidity.length > 0 ? (
-              <div className="space-y-1.5">
-                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
-                  Liquidity Crossed
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {report.crossedLiquidity.map((liq) => (
-                    <span
-                      key={liq}
-                      className="font-medium text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[10px]"
-                    >
-                      {liq}
+              {secVis?.general?.majorLiquidityChecklist !== false && (
+                report.crossedLiquidity && report.crossedLiquidity.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
+                      Liquidity Crossed
                     </span>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p className={`${baseTextClass} text-gray-400 italic`}>No crossed liquidity recorded</p>
-            )}
+                    <div className="flex flex-wrap gap-1.5">
+                      {report.crossedLiquidity.map((liq) => (
+                        <span
+                          key={liq}
+                          className="font-medium text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[10px]"
+                        >
+                          {liq}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className={`${baseTextClass} text-gray-400 italic`}>No crossed liquidity recorded</p>
+                )
+              )}
 
-            {/* Major Liquidity Watchlist */}
-            {report.majorLiquidityWatchlist && report.majorLiquidityWatchlist.trim() && (
-              <div className="pt-2 border-t border-gray-100 space-y-1">
-                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
-                  Major Liquidity to Watch Today
-                </span>
-                <p className="text-[10px] text-gray-800 whitespace-pre-wrap font-mono bg-gray-50/70 p-1.5 rounded border border-gray-100">
-                  {report.majorLiquidityWatchlist.trim()}
-                </p>
-              </div>
-            )}
-          </section>
+              {/* Major Liquidity Watchlist */}
+              {secVis?.general?.majorLiquidityWatchlist !== false && report.majorLiquidityWatchlist && report.majorLiquidityWatchlist.trim() && (
+                <div className="pt-2 border-t border-gray-100 space-y-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 block">
+                    Major Liquidity to Watch Today
+                  </span>
+                  <p className="text-[10px] text-gray-800 whitespace-pre-wrap font-mono bg-gray-50/70 p-1.5 rounded border border-gray-100">
+                    {report.majorLiquidityWatchlist.trim()}
+                  </p>
+                </div>
+              )}
+            </section>
+          )}
 
           {/* 2. Left Timeframes */}
           {leftTfs.map((tfId) => renderTimeframeSection(tfId))}
 
           {/* In 1-column layout, append overall notes in this column */}
-          {desktopLayout === '1-col' && (
+          {desktopLayout === '1-col' && secVis?.notesAndLevels?.overallNotes !== false && (
             <section className="pt-2 space-y-1.5">
               <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
                 OVERALL NOTES
@@ -641,7 +656,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
             {midTfs.map((tfId) => renderTimeframeSection(tfId))}
 
             {/* In 2-column layout, append overall notes in this column */}
-            {desktopLayout === '2-col' && (
+            {desktopLayout === '2-col' && secVis?.notesAndLevels?.overallNotes !== false && (
               <section className="pt-2 space-y-1.5">
                 <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
                   OVERALL NOTES
@@ -664,338 +679,344 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
             {rightTfs.map((tfId) => renderTimeframeSection(tfId))}
 
             {/* 9. Overall Notes */}
-            <section className="pt-2 space-y-1.5">
-              <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
-                OVERALL NOTES
-              </h2>
-              {report.overallNotes?.trim() ? (
-                <p className={`${baseTextClass} leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans`}>
-                  {report.overallNotes}
-                </p>
-              ) : (
-                <p className={`${baseTextClass} text-gray-400 italic`}>No notes recorded</p>
-              )}
-            </section>
+            {secVis?.notesAndLevels?.overallNotes !== false && (
+              <section className="pt-2 space-y-1.5">
+                <h2 className={`${headingTextClass} font-bold tracking-wider text-emerald-800 uppercase`}>
+                  OVERALL NOTES
+                </h2>
+                {report.overallNotes?.trim() ? (
+                  <p className={`${baseTextClass} leading-relaxed text-gray-800 whitespace-pre-wrap break-words bg-gray-50/70 p-2.5 rounded border border-gray-200 font-sans`}>
+                    {report.overallNotes}
+                  </p>
+                ) : (
+                  <p className={`${baseTextClass} text-gray-400 italic`}>No notes recorded</p>
+                )}
+              </section>
+            )}
           </div>
         )}
       </div>
 
       {/* PLANNED SCENARIOS SECTION (Appended below analysis content) */}
-      <section className="mt-8 pt-6 border-t-2 border-emerald-800/20 space-y-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
-            PLANNED SCENARIOS
-          </h2>
-          {report.scenarios && report.scenarios.length > 0 && (
-            <span className="text-[10px] text-gray-500 font-medium">
-              {report.scenarios.length} {report.scenarios.length === 1 ? 'scenario' : 'scenarios'} recorded
-            </span>
-          )}
-        </div>
-
-        {report.scenarios && report.scenarios.length > 0 ? (
-          <div className="space-y-3">
-            {report.scenarios.map((sc, idx) => (
-              <div
-                key={sc.id || idx}
-                className="bg-gray-50/70 p-3 rounded border border-gray-200 space-y-2 text-[11px] leading-relaxed"
-              >
-                <div className="flex items-center justify-between gap-2 flex-wrap pb-1.5 border-b border-gray-200">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-gray-900">
-                      {sc.label || `Scenario ${idx + 1}`}
-                    </span>
-                    {sc.strategy && (
-                      <span className="text-gray-600 font-medium">— {sc.strategy}</span>
-                    )}
-                  </div>
-                  {sc.direction && (
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
-                        sc.direction === 'Buy'
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                          : 'bg-rose-50 text-rose-800 border-rose-300'
-                      }`}
-                    >
-                      {sc.direction}
-                    </span>
-                  )}
-                </div>
-
-                {sc.description && (
-                  <div>
-                    <span className="font-bold text-gray-700">Description: </span>
-                    <span className="text-gray-800 whitespace-pre-wrap">{sc.description}</span>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
-                  {sc.entryConditions && (
-                    <div className="bg-white/80 p-2 rounded border border-gray-200">
-                      <span className="font-bold text-gray-700 block mb-0.5">
-                        Entry Conditions / Rules:
-                      </span>
-                      <span className="text-gray-800 whitespace-pre-wrap">
-                        {sc.entryConditions}
-                      </span>
-                    </div>
-                  )}
-                  {sc.invalidationConditions && (
-                    <div className="bg-white/80 p-2 rounded border border-gray-200">
-                      <span className="font-bold text-rose-800 block mb-0.5">
-                        Invalidation Conditions:
-                      </span>
-                      <span className="text-gray-800 whitespace-pre-wrap">
-                        {sc.invalidationConditions}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Scenario Setup Images */}
-                {sc.images && sc.images.length > 0 && (
-                  <div className="pt-2 border-t border-gray-200">
-                    <span className="font-bold text-gray-700 block mb-1">
-                      Setup Charts ({sc.images.length}):
-                    </span>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {sc.images.map((img, i) => (
-                        <div
-                          key={img.id || i}
-                          onClick={() =>
-                            onOpenViewer?.(
-                              img.dataUrl,
-                              img.caption || img.name || `${sc.label} Setup Chart`
-                            )
-                          }
-                          className="border border-gray-200 rounded overflow-hidden bg-white cursor-pointer hover:border-emerald-600 transition-colors"
-                        >
-                          <div className="aspect-video bg-gray-100 overflow-hidden">
-                            <img
-                              src={img.dataUrl}
-                              alt={img.caption || 'Setup Chart'}
-                              className="w-full h-full object-cover hover:scale-105 transition-transform"
-                              loading="lazy"
-                            />
-                          </div>
-                          {img.caption && (
-                            <p className="p-1 text-[9px] text-gray-600 truncate bg-gray-50" title={img.caption}>
-                              {img.caption}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+      {secVis?.scenariosAndTrades?.plannedScenarios !== false && (
+        <section className="mt-8 pt-6 border-t-2 border-emerald-800/20 space-y-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+              PLANNED SCENARIOS
+            </h2>
+            {report.scenarios && report.scenarios.length > 0 && (
+              <span className="text-[10px] text-gray-500 font-medium">
+                {report.scenarios.length} {report.scenarios.length === 1 ? 'scenario' : 'scenarios'} recorded
+              </span>
+            )}
           </div>
-        ) : (
-          <p className="text-[11px] text-gray-400 italic">No scenarios recorded.</p>
-        )}
-      </section>
 
-      {/* TRADES TAKEN SECTION (Appended below Planned Scenarios) */}
-      <section className="mt-6 pt-5 border-t border-gray-200 space-y-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
-            TRADES TAKEN
-          </h2>
-          {report.trades && report.trades.length > 0 && (
-            <span className="text-[10px] text-gray-500 font-medium">
-              {report.trades.length} {report.trades.length === 1 ? 'trade' : 'trades'} logged
-            </span>
-          )}
-        </div>
-
-        {report.trades && report.trades.length > 0 ? (
-          <div className="space-y-2.5">
-            {report.trades.map((trd, idx) => (
-              <div
-                key={trd.id || idx}
-                className="bg-gray-50/70 p-3 rounded border border-gray-200 space-y-1.5 text-[11px]"
-              >
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
-                        trd.direction === 'Buy'
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                          : 'bg-rose-50 text-rose-800 border-rose-300'
-                      }`}
-                    >
-                      {trd.direction}
-                    </span>
-                    <span className="font-bold text-gray-900">
-                      {trd.scenarioLabel || 'Planned Execution'}
-                    </span>
-                    {trd.timeframeTaken && (
-                      <span className="text-gray-500 font-mono text-[10px]">
-                        [{trd.timeframeTaken}]
+          {report.scenarios && report.scenarios.length > 0 ? (
+            <div className="space-y-3">
+              {report.scenarios.map((sc, idx) => (
+                <div
+                  key={sc.id || idx}
+                  className="bg-gray-50/70 p-3 rounded border border-gray-200 space-y-2 text-[11px] leading-relaxed"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap pb-1.5 border-b border-gray-200">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-gray-900">
+                        {sc.label || `Scenario ${idx + 1}`}
                       </span>
-                    )}
-                    {trd.session && (
-                      <span className="text-gray-500 text-[10px]">{trd.session}</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {trd.outcome && (
+                      {sc.strategy && (
+                        <span className="text-gray-600 font-medium">— {sc.strategy}</span>
+                      )}
+                    </div>
+                    {sc.direction && (
                       <span
-                        className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase ${
-                          trd.outcome === 'Win'
-                            ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
-                            : trd.outcome === 'Loss'
-                            ? 'bg-rose-100 text-rose-900 border-rose-400'
-                            : 'bg-gray-100 text-gray-800 border-gray-300'
+                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                          sc.direction === 'Buy'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                            : 'bg-rose-50 text-rose-800 border-rose-300'
                         }`}
                       >
-                        {trd.outcome}
+                        {sc.direction}
                       </span>
                     )}
-                    <span
-                      className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
-                        trd.rulesFollowed !== false
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                          : 'bg-rose-50 text-rose-800 border-rose-200'
-                      }`}
-                    >
-                      {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
-                    </span>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {onEditTrade && (
-                        <button
-                          type="button"
-                          onClick={() => onEditTrade(trd)}
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-300 transition-colors cursor-pointer"
-                          title="Edit this recorded trade"
-                        >
-                          <Edit className="w-2.5 h-2.5" />
-                          Edit Trade
-                        </button>
-                      )}
-                      {onRemoveTrade && (
-                        deleteTradeConfirmId === trd.id ? (
-                          <div className="flex items-center gap-1 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-300 text-[9px]">
-                            <span className="text-rose-700 font-medium">Remove?</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onRemoveTrade(trd.id);
-                                setDeleteTradeConfirmId(null);
-                              }}
-                              className="px-1.5 py-0.2 bg-rose-600 text-white rounded font-bold text-[9px] cursor-pointer"
-                            >
-                              Yes
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeleteTradeConfirmId(null)}
-                              className="px-1 py-0.2 text-gray-500 hover:text-gray-700 text-[9px] cursor-pointer"
-                            >
-                              Cancel
-                            </button>
+                  </div>
+
+                  {sc.description && (
+                    <div>
+                      <span className="font-bold text-gray-700">Description: </span>
+                      <span className="text-gray-800 whitespace-pre-wrap">{sc.description}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-1">
+                    {sc.entryConditions && (
+                      <div className="bg-white/80 p-2 rounded border border-gray-200">
+                        <span className="font-bold text-gray-700 block mb-0.5">
+                          Entry Conditions / Rules:
+                        </span>
+                        <span className="text-gray-800 whitespace-pre-wrap">
+                          {sc.entryConditions}
+                        </span>
+                      </div>
+                    )}
+                    {sc.invalidationConditions && (
+                      <div className="bg-white/80 p-2 rounded border border-gray-200">
+                        <span className="font-bold text-rose-800 block mb-0.5">
+                          Invalidation Conditions:
+                        </span>
+                        <span className="text-gray-800 whitespace-pre-wrap">
+                          {sc.invalidationConditions}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Scenario Setup Images */}
+                  {secVis?.scenariosAndTrades?.scenarioImages !== false && sc.images && sc.images.length > 0 && (
+                    <div className="pt-2 border-t border-gray-200">
+                      <span className="font-bold text-gray-700 block mb-1">
+                        Setup Charts ({sc.images.length}):
+                      </span>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {sc.images.map((img, i) => (
+                          <div
+                            key={img.id || i}
+                            onClick={() =>
+                              onOpenViewer?.(
+                                img.dataUrl,
+                                img.caption || img.name || `${sc.label} Setup Chart`
+                              )
+                            }
+                            className="border border-gray-200 rounded overflow-hidden bg-white cursor-pointer hover:border-emerald-600 transition-colors"
+                          >
+                            <div className="aspect-video bg-gray-100 overflow-hidden">
+                              <img
+                                src={img.dataUrl}
+                                alt={img.caption || 'Setup Chart'}
+                                className="w-full h-full object-cover hover:scale-105 transition-transform"
+                                loading="lazy"
+                              />
+                            </div>
+                            {img.caption && (
+                              <p className="p-1 text-[9px] text-gray-600 truncate bg-gray-50" title={img.caption}>
+                                {img.caption}
+                              </p>
+                            )}
                           </div>
-                        ) : (
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-gray-400 italic">No scenarios recorded.</p>
+          )}
+        </section>
+      )}
+
+      {/* TRADES TAKEN SECTION (Appended below Planned Scenarios) */}
+      {secVis?.scenariosAndTrades?.tradesTaken !== false && (
+        <section className="mt-6 pt-5 border-t border-gray-200 space-y-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-xs font-bold tracking-wider text-emerald-800 uppercase">
+              TRADES TAKEN
+            </h2>
+            {report.trades && report.trades.length > 0 && (
+              <span className="text-[10px] text-gray-500 font-medium">
+                {report.trades.length} {report.trades.length === 1 ? 'trade' : 'trades'} logged
+              </span>
+            )}
+          </div>
+
+          {report.trades && report.trades.length > 0 ? (
+            <div className="space-y-2.5">
+              {report.trades.map((trd, idx) => (
+                <div
+                  key={trd.id || idx}
+                  className="bg-gray-50/70 p-3 rounded border border-gray-200 space-y-1.5 text-[11px]"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                          trd.direction === 'Buy'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                            : 'bg-rose-50 text-rose-800 border-rose-300'
+                        }`}
+                      >
+                        {trd.direction}
+                      </span>
+                      <span className="font-bold text-gray-900">
+                        {trd.scenarioLabel || 'Planned Execution'}
+                      </span>
+                      {trd.timeframeTaken && (
+                        <span className="text-gray-500 font-mono text-[10px]">
+                          [{trd.timeframeTaken}]
+                        </span>
+                      )}
+                      {trd.session && (
+                        <span className="text-gray-500 text-[10px]">{trd.session}</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {trd.outcome && (
+                        <span
+                          className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase ${
+                            trd.outcome === 'Win'
+                              ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
+                              : trd.outcome === 'Loss'
+                              ? 'bg-rose-100 text-rose-900 border-rose-400'
+                              : 'bg-gray-100 text-gray-800 border-gray-300'
+                          }`}
+                        >
+                          {trd.outcome}
+                        </span>
+                      )}
+                      <span
+                        className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
+                          trd.rulesFollowed !== false
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : 'bg-rose-50 text-rose-800 border-rose-200'
+                        }`}
+                      >
+                        {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {onEditTrade && (
                           <button
                             type="button"
-                            onClick={() => setDeleteTradeConfirmId(trd.id)}
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded border border-rose-300 transition-colors cursor-pointer"
-                            title="Remove this recorded trade"
+                            onClick={() => onEditTrade(trd)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-300 transition-colors cursor-pointer"
+                            title="Edit this recorded trade"
                           >
-                            <Trash2 className="w-2.5 h-2.5" />
-                            Remove Trade
+                            <Edit className="w-2.5 h-2.5" />
+                            Edit Trade
                           </button>
-                        )
-                      )}
+                        )}
+                        {onRemoveTrade && (
+                          deleteTradeConfirmId === trd.id ? (
+                            <div className="flex items-center gap-1 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-300 text-[9px]">
+                              <span className="text-rose-700 font-medium">Remove?</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onRemoveTrade(trd.id);
+                                  setDeleteTradeConfirmId(null);
+                                }}
+                                className="px-1.5 py-0.2 bg-rose-600 text-white rounded font-bold text-[9px] cursor-pointer"
+                              >
+                                Yes
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeleteTradeConfirmId(null)}
+                                className="px-1 py-0.2 text-gray-500 hover:text-gray-700 text-[9px] cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTradeConfirmId(trd.id)}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded border border-rose-300 transition-colors cursor-pointer"
+                              title="Remove this recorded trade"
+                            >
+                              <Trash2 className="w-2.5 h-2.5" />
+                              Remove Trade
+                            </button>
+                          )
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Price parameters */}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] text-gray-700 bg-white/70 p-2 rounded border border-gray-200">
-                  {trd.entryPrice && (
-                    <span>
-                      Entry: <strong className="text-gray-900">{trd.entryPrice}</strong>
-                    </span>
-                  )}
-                  {trd.stopLoss && (
-                    <span>
-                      SL: <strong className="text-rose-700">{trd.stopLoss}</strong>
-                    </span>
-                  )}
-                  {trd.takeProfit && (
-                    <span>
-                      TP: <strong className="text-emerald-700">{trd.takeProfit}</strong>
-                    </span>
-                  )}
-                  {trd.exitPrice && (
-                    <span>
-                      Exit: <strong className="text-gray-900">{trd.exitPrice}</strong>
-                    </span>
-                  )}
-                  {trd.riskReward && (
-                    <span>
-                      R:R: <strong className="text-gray-900">{trd.riskReward}</strong>
-                    </span>
-                  )}
-                </div>
-
-                {trd.notes && (
-                  <div className="text-gray-700 whitespace-pre-wrap italic pt-0.5">
-                    &ldquo;{trd.notes}&rdquo;
+                  {/* Price parameters */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] text-gray-700 bg-white/70 p-2 rounded border border-gray-200">
+                    {trd.entryPrice && (
+                      <span>
+                        Entry: <strong className="text-gray-900">{trd.entryPrice}</strong>
+                      </span>
+                    )}
+                    {trd.stopLoss && (
+                      <span>
+                        SL: <strong className="text-rose-700">{trd.stopLoss}</strong>
+                      </span>
+                    )}
+                    {trd.takeProfit && (
+                      <span>
+                        TP: <strong className="text-emerald-700">{trd.takeProfit}</strong>
+                      </span>
+                    )}
+                    {trd.exitPrice && (
+                      <span>
+                        Exit: <strong className="text-gray-900">{trd.exitPrice}</strong>
+                      </span>
+                    )}
+                    {trd.riskReward && (
+                      <span>
+                        R:R: <strong className="text-gray-900">{trd.riskReward}</strong>
+                      </span>
+                    )}
                   </div>
-                )}
 
-                {/* Trade Execution Screenshots */}
-                {trd.images && trd.images.length > 0 && (
-                  <div className="pt-2 border-t border-gray-200">
-                    <span className="font-bold text-gray-700 block mb-1">
-                      Trade Screenshots ({trd.images.length}):
-                    </span>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {trd.images.map((img, i) => (
-                        <div
-                          key={img.id || i}
-                          onClick={() =>
-                            onOpenViewer?.(
-                              img.dataUrl,
-                              img.caption || img.name || `Trade ${trd.direction} Screenshot`
-                            )
-                          }
-                          className="border border-gray-200 rounded overflow-hidden bg-white cursor-pointer hover:border-emerald-600 transition-colors"
-                        >
-                          <div className="aspect-video bg-gray-100 overflow-hidden">
-                            <img
-                              src={img.dataUrl}
-                              alt={img.caption || 'Trade Screenshot'}
-                              className="w-full h-full object-cover hover:scale-105 transition-transform"
-                              loading="lazy"
-                            />
+                  {trd.notes && (
+                    <div className="text-gray-700 whitespace-pre-wrap italic pt-0.5">
+                      &ldquo;{trd.notes}&rdquo;
+                    </div>
+                  )}
+
+                  {/* Trade Execution Screenshots */}
+                  {secVis?.scenariosAndTrades?.tradeImages !== false && trd.images && trd.images.length > 0 && (
+                    <div className="pt-2 border-t border-gray-200">
+                      <span className="font-bold text-gray-700 block mb-1">
+                        Trade Screenshots ({trd.images.length}):
+                      </span>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {trd.images.map((img, i) => (
+                          <div
+                            key={img.id || i}
+                            onClick={() =>
+                              onOpenViewer?.(
+                                img.dataUrl,
+                                img.caption || img.name || `Trade ${trd.direction} Screenshot`
+                              )
+                            }
+                            className="border border-gray-200 rounded overflow-hidden bg-white cursor-pointer hover:border-emerald-600 transition-colors"
+                          >
+                            <div className="aspect-video bg-gray-100 overflow-hidden">
+                              <img
+                                src={img.dataUrl}
+                                alt={img.caption || 'Trade Screenshot'}
+                                className="w-full h-full object-cover hover:scale-105 transition-transform"
+                                loading="lazy"
+                              />
+                            </div>
+                            {img.caption && (
+                              <p className="p-1 text-[9px] text-gray-600 truncate bg-gray-50" title={img.caption}>
+                                {img.caption}
+                              </p>
+                            )}
                           </div>
-                          {img.caption && (
-                            <p className="p-1 text-[9px] text-gray-600 truncate bg-gray-50" title={img.caption}>
-                              {img.caption}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[11px] text-gray-400 italic">No trades recorded.</p>
-        )}
-      </section>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-gray-400 italic">No trades recorded.</p>
+          )}
+        </section>
+      )}
 
       {/* D. Document Footer & Cross-Timeframe Confluence */}
       <footer className="mt-8 pt-4 border-t border-gray-200 text-xs text-gray-600">
         {/* Confluent Structural Price Points */}
-        {matchingValues.length > 0 && (
+        {secVis?.notesAndLevels?.matchingValues !== false && matchingValues.length > 0 && (
           <div className="mb-4 p-3 bg-emerald-50/40 rounded-lg border border-emerald-200">
             <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900 block mb-1">
               Confluent Structural Price Points ({matchingValues.length})

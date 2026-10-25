@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Settings as SettingsIcon } from 'lucide-react';
-import settingsGearPng from '../assets/settings-gear.png';
 
 export type ActiveView = 'home' | 'analysis' | 'reports';
 
@@ -18,7 +17,6 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   // Local state tracking whether header is visible (only when on top of page <= 80px)
   const [isVisible, setIsVisible] = useState(true);
-  const [imgFailed, setImgFailed] = useState(false);
   const [headerHeight, setHeaderHeight] = useState(58);
   const headerRef = useRef<HTMLElement>(null);
 
@@ -161,29 +159,31 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </nav>
 
-          {/* Right: Locally Bundled Transparent PNG Settings Gear Button with SVG Fallback */}
-          <div className="flex items-center shrink-0">
+          {/* Right: High-contrast 19px SVG Settings Gear Button with >=44x44px Tap Target */}
+          <div className="flex items-center shrink-0 z-20">
             <button
               type="button"
               tabIndex={buttonTabIndex}
               onClick={onOpenSettings}
               aria-label="Open settings"
               title="Settings"
-              className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-app bg-app-field/60 hover:bg-app-field text-app-main transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 relative z-10 pointer-events-auto"
+              className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 relative pointer-events-auto shadow-2xs"
             >
-              {!imgFailed ? (
-                <img
-                  src={settingsGearPng}
-                  alt="Settings"
-                  onError={() => setImgFailed(true)}
-                  className="w-[20px] h-[20px] max-w-[20px] max-h-[20px] object-contain dark:invert opacity-80 hover:opacity-100 transition-opacity select-none pointer-events-none"
-                />
-              ) : (
-                <SettingsIcon
-                  className="w-[20px] h-[20px] text-app-main opacity-80 hover:opacity-100 transition-opacity"
-                  aria-hidden="true"
-                />
-              )}
+              <svg
+                width="19"
+                height="19"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.25"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-[19px] h-[19px] shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none"
+                aria-hidden="true"
+              >
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
             </button>
           </div>
         </div>

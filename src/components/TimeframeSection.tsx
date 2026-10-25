@@ -119,7 +119,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   const [confirmDeleteLevelId, setConfirmDeleteLevelId] = useState<string | null>(null);
 
   const deepAligned = isDeepAnalysisAligned(data);
-  const deepVis = visibilityConfig?.deepSections;
+  const deepVis = visibilityConfig?.perTimeframeFields?.[timeframe] || visibilityConfig?.deepSections;
 
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -528,7 +528,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               </span>
             )}
 
-            {isExpanded && deepAligned && (
+            {isExpanded && deepAligned && (deepVis as any)?.deepAlignment !== false && (
               <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-theme/30 px-2 py-0.5 rounded">
                 Deep Analysis Aligned ({data.swing.direction})
               </span>

@@ -15,6 +15,7 @@ import {
   TrendingUp,
   Plus,
   Send,
+  Share2,
 } from 'lucide-react';
 import {
   DEFAULT_REPORT_PRESENTATION,
@@ -42,7 +43,7 @@ import { OrganizedReportView } from './OrganizedReportView';
 import { downloadReportPdf } from '../services/pdfExport';
 import { EditScenariosModal } from './EditScenariosModal';
 import { TakeTradeModal } from './TakeTradeModal';
-import { SendTelegramModal } from './SendTelegramModal';
+import { ShareReportModal } from './ShareReportModal';
 
 interface ReportDetailsModalProps {
   isOpen: boolean;
@@ -90,7 +91,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [editingTrade, setEditingTrade] = useState<RecordedTrade | null>(null);
   const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
   const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
-  const [isSendTelegramOpen, setIsSendTelegramOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -136,11 +137,14 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     if (overrideShowAll) return false;
     const v = presentationConfig?.sectionVisibility;
     if (!v) return false;
-    const checkGroup = (grp: Record<string, any>) => Object.values(grp || {}).some((x) => x === false);
+    const checkGroup = (grp?: Record<string, any>) => Object.values(grp || {}).some((x) => x === false);
+    const checkPerTf = (ptf?: Record<string, any>) =>
+      Object.values(ptf || {}).some((tfFields) => checkGroup(tfFields));
     return (
       checkGroup(v.general) ||
       checkGroup(v.timeframes) ||
       checkGroup(v.timeframeFields) ||
+      checkPerTf(v.perTimeframeFields) ||
       checkGroup(v.notesAndLevels) ||
       checkGroup(v.scenariosAndTrades)
     );
@@ -479,33 +483,35 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   (sd) => sd.timeframe === tf
                 );
 
-                const hasInterpretation = Boolean(tfData.biasSpecific && tfData.biasSpecific.trim()) && secVis.timeframeFields?.overallInterpretation !== false;
+                const tfVis = secVis.perTimeframeFields?.[tf] || secVis.timeframeFields;
+
+                const hasInterpretation = Boolean(tfData.biasSpecific && tfData.biasSpecific.trim()) && tfVis?.overallInterpretation !== false;
                 const hasSwing = Boolean(
                   tfData.swing.direction ||
                   tfData.swing.high?.trim() ||
                   tfData.swing.low?.trim() ||
                   tfData.swing.bosAt?.trim()
-                ) && secVis.timeframeFields?.swingStructure !== false;
+                ) && tfVis?.swingStructure !== false;
                 const hasInternal = Boolean(
                   tfData.internal.direction ||
                   tfData.internal.high?.trim() ||
                   tfData.internal.low?.trim() ||
                   tfData.internal.ibosAt?.trim()
-                ) && secVis.timeframeFields?.internalStructure !== false;
+                ) && tfVis?.internalStructure !== false;
                 const hasFractal = Boolean(
                   tfData.fractal.direction ||
                   tfData.fractal.fractalBosAt?.trim()
-                ) && secVis.timeframeFields?.fractalStructure !== false;
-                const hasPriceLoc = Boolean(tfData.priceLocation?.location || tfData.priceLocation?.levelRange) && secVis.timeframeFields?.priceLocation !== false;
-                const showSupply = Boolean(tfData.supplyLevels && tfData.supplyLevels.length > 0) && secVis.timeframeFields?.supplyLevels !== false;
-                const showDemand = Boolean(tfData.demandLevels && tfData.demandLevels.length > 0) && secVis.timeframeFields?.demandLevels !== false;
-                const showSupport = Boolean(tfData.supportLevels && tfData.supportLevels.length > 0) && secVis.timeframeFields?.supportLevels !== false;
-                const showResistance = Boolean(tfData.resistanceLevels && tfData.resistanceLevels.length > 0) && secVis.timeframeFields?.resistanceLevels !== false;
-                const showLiquidity = Boolean(tfData.liquidityLevels && tfData.liquidityLevels.length > 0) && secVis.timeframeFields?.liquidityLevels !== false;
+                ) && tfVis?.fractalStructure !== false;
+                const hasPriceLoc = Boolean(tfData.priceLocation?.location || tfData.priceLocation?.levelRange) && tfVis?.priceLocation !== false;
+                const showSupply = Boolean(tfData.supplyLevels && tfData.supplyLevels.length > 0) && tfVis?.supplyLevels !== false;
+                const showDemand = Boolean(tfData.demandLevels && tfData.demandLevels.length > 0) && tfVis?.demandLevels !== false;
+                const showSupport = Boolean(tfData.supportLevels && tfData.supportLevels.length > 0) && tfVis?.supportLevels !== false;
+                const showResistance = Boolean(tfData.resistanceLevels && tfData.resistanceLevels.length > 0) && tfVis?.resistanceLevels !== false;
+                const showLiquidity = Boolean(tfData.liquidityLevels && tfData.liquidityLevels.length > 0) && tfVis?.liquidityLevels !== false;
                 const hasStructuredLevels = showSupply || showDemand || showSupport || showResistance || showLiquidity;
                 const hasSd = tfSdLevels.length > 0 && secVis.notesAndLevels?.generalSupplyDemand !== false;
-                const hasNote = Boolean(tfData.note && tfData.note.trim()) && secVis.timeframeFields?.timeframeNotes !== false;
-                const hasChart = Boolean(tfImageUrl) && secVis.timeframeFields?.timeframeImages !== false;
+                const hasNote = Boolean(tfData.note && tfData.note.trim()) && tfVis?.timeframeNotes !== false;
+                const hasChart = Boolean(tfImageUrl) && ((tfVis as any)?.timeframeImages !== false && (tfVis as any)?.chartAttachments !== false);
 
                 const hasAnyDetail =
                   hasInterpretation ||
@@ -1202,15 +1208,15 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                   {exportingPdf ? 'Exporting PDF...' : 'Download PDF'}
                 </button>
 
-                {/* Send to Telegram button (Phase 5) */}
+                {/* Share PDF button */}
                 <button
                   type="button"
-                  onClick={() => setIsSendTelegramOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded shadow-2xs transition-colors cursor-pointer"
-                  title="Send report PDF to Telegram bot @Abmaxanalysisbot in group -1004337945630"
+                  onClick={() => setIsShareModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer"
+                  title="Share report PDF via Android Share Sheet or Web Share"
                 >
-                  <Send className="w-3.5 h-3.5" />
-                  Send to Telegram
+                  <Share2 className="w-3.5 h-3.5" />
+                  Share
                 </button>
 
                 {/* Take Trade button (Replaces bottom Print / Save as PDF button per Phase 3) */}
@@ -1362,11 +1368,11 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
           }}
         />
       )}
-      {/* Send to Telegram Modal (Phase 5) */}
-      {isSendTelegramOpen && report && (
-        <SendTelegramModal
-          isOpen={isSendTelegramOpen}
-          onClose={() => setIsSendTelegramOpen(false)}
+      {/* Share Report Modal (Phase 2) */}
+      {isShareModalOpen && report && (
+        <ShareReportModal
+          isOpen={isShareModalOpen}
+          onClose={() => setIsShareModalOpen(false)}
           report={report}
           imagesMap={imagesMap}
           presentationConfig={presentationConfig || undefined}

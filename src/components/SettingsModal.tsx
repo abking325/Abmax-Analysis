@@ -15,14 +15,21 @@ import {
   AlertTriangle,
   FileText,
   Eye,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
+  createDefaultPerTimeframeFields,
+  DEFAULT_DEEP_FIELDS_VISIBILITY,
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
   DEFAULT_VISIBILITY_CONFIG,
+  normalizeReportVisibilityConfig,
+  normalizeWorkspaceVisibilityConfig,
   ReportPresentationConfig,
   ReportVisibilityConfig,
+  TimeframeDeepFieldsVisibility,
   TimeframeId,
   WorkspaceVisibilityConfig,
 } from '../types/journal';
@@ -64,6 +71,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [adminSubTab, setAdminSubTab] = useState<'editor_visibility' | 'report_presentation'>('editor_visibility');
   const [presentationConfig, setPresentationConfig] = useState<ReportPresentationConfig>(DEFAULT_REPORT_PRESENTATION);
   const [appliedNotice, setAppliedNotice] = useState(false);
+  const [selectedEditorTf, setSelectedEditorTf] = useState<TimeframeId>('Monthly');
+  const [selectedReportTf, setSelectedReportTf] = useState<TimeframeId>('Monthly');
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
@@ -117,37 +126,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const toggleTimeframeVis = (tf: TimeframeId) => {
+    const isCurrentlyShown = visibilityConfig.timeframes?.[tf] !== false;
+    const nextVal = !isCurrentlyShown;
     onChangeVisibilityConfig({
       ...visibilityConfig,
       timeframes: {
         ...visibilityConfig.timeframes,
-        [tf]: !visibilityConfig.timeframes[tf],
+        [tf]: nextVal,
       },
     });
   };
 
-  const toggleDeepSectionVis = (key: keyof WorkspaceVisibilityConfig['deepSections']) => {
-    onChangeVisibilityConfig({
+  const toggleEditorTimeframeField = (tf: TimeframeId, field: keyof TimeframeDeepFieldsVisibility) => {
+    const currentPerTf = visibilityConfig.perTimeframeFields || createDefaultPerTimeframeFields();
+    const currentTfFields = currentPerTf[tf] || { ...DEFAULT_DEEP_FIELDS_VISIBILITY };
+    const isCurrentlyShown = (currentTfFields as any)[field] !== false;
+    const nextVal = !isCurrentlyShown;
+
+    const updatedTfFields: TimeframeDeepFieldsVisibility = {
+      ...currentTfFields,
+      [field]: nextVal,
+    };
+    if (field === 'chartAttachments') {
+      updatedTfFields.timeframeImages = nextVal;
+    } else if (field === 'timeframeImages') {
+      updatedTfFields.chartAttachments = nextVal;
+    }
+
+    const updatedConfig: WorkspaceVisibilityConfig = {
       ...visibilityConfig,
-      deepSections: {
-        ...visibilityConfig.deepSections,
-        [key]: !visibilityConfig.deepSections[key],
+      perTimeframeFields: {
+        ...currentPerTf,
+        [tf]: updatedTfFields,
       },
-    });
+    };
+    onChangeVisibilityConfig(updatedConfig);
   };
 
   const toggleOtherSectionVis = (key: keyof WorkspaceVisibilityConfig['otherSections']) => {
+    const isCurrentlyShown = visibilityConfig.otherSections?.[key] !== false;
+    const nextVal = !isCurrentlyShown;
     onChangeVisibilityConfig({
       ...visibilityConfig,
       otherSections: {
         ...visibilityConfig.otherSections,
-        [key]: !visibilityConfig.otherSections[key],
+        [key]: nextVal,
       },
     });
   };
 
   const handleRestoreDefaults = () => {
-    onChangeVisibilityConfig(JSON.parse(JSON.stringify(DEFAULT_VISIBILITY_CONFIG)));
+    onChangeVisibilityConfig(normalizeWorkspaceVisibilityConfig(DEFAULT_VISIBILITY_CONFIG));
   };
 
   const handleApplyToCurrent = () => {
@@ -158,18 +187,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  // Report Section Visibility helpers (Phase 5)
+  // Report Section Visibility helpers
   const toggleReportVisibility = (
     group: 'general' | 'timeframeFields' | 'notesAndLevels' | 'scenariosAndTrades',
     key: string
   ) => {
     const currentVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
-    const groupObj = (currentVis as any)[group];
+    const groupObj = (currentVis as any)[group] || {};
+    const isCurrentlyShown = groupObj[key] !== false;
+    const nextVal = !isCurrentlyShown;
     const updatedVis: ReportVisibilityConfig = {
       ...currentVis,
       [group]: {
         ...groupObj,
-        [key]: !groupObj[key],
+        [key]: nextVal,
       },
     };
     const updatedConfig: ReportPresentationConfig = {
@@ -185,11 +216,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const toggleReportTimeframe = (tf: TimeframeId) => {
     const currentVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+    const isCurrentlyShown = currentVis.timeframes?.[tf] !== false;
+    const nextVal = !isCurrentlyShown;
     const updatedVis: ReportVisibilityConfig = {
       ...currentVis,
       timeframes: {
         ...currentVis.timeframes,
-        [tf]: !currentVis.timeframes[tf],
+        [tf]: nextVal,
+      },
+    };
+    const updatedConfig: ReportPresentationConfig = {
+      ...presentationConfig,
+      sectionVisibility: updatedVis,
+    };
+    setPresentationConfig(updatedConfig);
+    saveUserReportPresentationConfig(updatedConfig);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { presentationConfig: updatedConfig });
+    }
+  };
+
+  const toggleReportTimeframeField = (tf: TimeframeId, field: keyof TimeframeDeepFieldsVisibility) => {
+    const currentVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+    const currentPerTf = currentVis.perTimeframeFields || createDefaultPerTimeframeFields();
+    const currentTfFields = currentPerTf[tf] || { ...DEFAULT_DEEP_FIELDS_VISIBILITY };
+    const isCurrentlyShown = (currentTfFields as any)[field] !== false;
+    const nextVal = !isCurrentlyShown;
+
+    const updatedTfFields: TimeframeDeepFieldsVisibility = {
+      ...currentTfFields,
+      [field]: nextVal,
+    };
+    if (field === 'chartAttachments') {
+      updatedTfFields.timeframeImages = nextVal;
+    } else if (field === 'timeframeImages') {
+      updatedTfFields.chartAttachments = nextVal;
+    }
+
+    const updatedVis: ReportVisibilityConfig = {
+      ...currentVis,
+      perTimeframeFields: {
+        ...currentPerTf,
+        [tf]: updatedTfFields,
       },
     };
     const updatedConfig: ReportPresentationConfig = {
@@ -206,7 +274,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleRestoreReportVisibilityDefaults = async () => {
     const updatedConfig: ReportPresentationConfig = {
       ...presentationConfig,
-      sectionVisibility: JSON.parse(JSON.stringify(DEFAULT_REPORT_VISIBILITY)),
+      sectionVisibility: normalizeReportVisibilityConfig(DEFAULT_REPORT_VISIBILITY),
     };
     setPresentationConfig(updatedConfig);
     await saveUserReportPresentationConfig(updatedConfig);
@@ -216,7 +284,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleShowAllReportVisibility = async () => {
-    const allVisible = JSON.parse(JSON.stringify(DEFAULT_REPORT_VISIBILITY));
+    const allVisible = normalizeReportVisibilityConfig({
+      general: {
+        metadataAndTimestamps: true,
+        overallAlignment: true,
+        majorLiquidityChecklist: true,
+        majorLiquidityWatchlist: true,
+      },
+      timeframes: {
+        Monthly: true,
+        Weekly: true,
+        Daily: true,
+        '4H': true,
+        '1H': true,
+        '15M': true,
+        '5M': true,
+        '1M': true,
+      },
+      notesAndLevels: {
+        openingCandleLevels: true,
+        generalSupplyDemand: true,
+        overallNotes: true,
+        matchingValues: true,
+      },
+      scenariosAndTrades: {
+        plannedScenarios: true,
+        scenarioImages: true,
+        tradesTaken: true,
+        tradeImages: true,
+      },
+      perTimeframeFields: createDefaultPerTimeframeFields(),
+    });
     const updatedConfig: ReportPresentationConfig = {
       ...presentationConfig,
       sectionVisibility: allVisible,
@@ -239,19 +337,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     { id: '1M', label: '1M' },
   ];
 
-  const deepSectionsList: { key: keyof WorkspaceVisibilityConfig['deepSections']; label: string }[] = [
-    { key: 'overallInterpretation', label: '1. Overall Interpretation' },
-    { key: 'priceLocation', label: '2. Equilibrium / Price Location' },
-    { key: 'swingStructure', label: '3. Swing Structure' },
-    { key: 'internalStructure', label: '4. Internal Structure' },
-    { key: 'fractalStructure', label: '5. Fractal Structure' },
-    { key: 'supplyLevels', label: '6. Supply Levels' },
-    { key: 'demandLevels', label: '7. Demand Levels' },
-    { key: 'supportLevels', label: '8. Support Levels' },
-    { key: 'resistanceLevels', label: '9. Resistance Levels' },
-    { key: 'liquidityLevels', label: '10. Liquidity Levels' },
-    { key: 'timeframeNotes', label: '11. Timeframe Notes' },
-    { key: 'chartAttachments', label: '12. Chart Attachments' },
+  const DEEP_ANALYSIS_FIELDS: { key: keyof TimeframeDeepFieldsVisibility; label: string }[] = [
+    { key: 'overallInterpretation', label: 'Overall interpretation' },
+    { key: 'priceLocation', label: 'Price location / equilibrium' },
+    { key: 'swingStructure', label: 'Swing structure' },
+    { key: 'internalStructure', label: 'Internal structure' },
+    { key: 'fractalStructure', label: 'Fractal structure' },
+    { key: 'deepAlignment', label: 'Deep alignment' },
+    { key: 'supplyLevels', label: 'Supply levels' },
+    { key: 'demandLevels', label: 'Demand levels' },
+    { key: 'supportLevels', label: 'Support levels' },
+    { key: 'resistanceLevels', label: 'Resistance levels' },
+    { key: 'liquidityLevels', label: 'Liquidity levels' },
+    { key: 'timeframeNotes', label: 'Timeframe notes' },
+    { key: 'chartAttachments', label: 'Chart images' },
   ];
 
   const otherSectionsList: { key: keyof WorkspaceVisibilityConfig['otherSections']; label: string }[] = [
@@ -520,71 +619,92 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </p>
                   </div>
 
-                  {/* Group 1: TIMEFRAMES */}
-                  <section className="space-y-2">
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                      Timeframes (Enabled in Editor & Alignment)
+                  {/* Timeframe Dropdown and Per-Timeframe Visibility in Editor */}
+                  <section className="space-y-4">
+                    <div>
+                      <label htmlFor="editor-timeframe-select" className="block text-xs font-semibold uppercase tracking-wider text-app-secondary mb-1.5">
+                        Timeframe
+                      </label>
+                      <div className="relative inline-block w-full sm:w-64">
+                        <select
+                          id="editor-timeframe-select"
+                          value={selectedEditorTf}
+                          onChange={(e) => setSelectedEditorTf(e.target.value as TimeframeId)}
+                          className="w-full bg-app-field border border-app rounded-lg px-3 py-2 text-sm font-semibold text-app-main focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer appearance-none pr-8"
+                        >
+                          {timeframesList.map(({ id, label }) => (
+                            <option key={id} value={id}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="w-4 h-4 text-app-secondary absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {timeframesList.map(({ id, label }) => {
-                        const isEnabled = visibilityConfig.timeframes[id] !== false;
-                        return (
-                          <button
-                            key={id}
-                            type="button"
-                            onClick={() => toggleTimeframeVis(id)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                              isEnabled
-                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary line-through opacity-70 hover:opacity-100'
-                            }`}
-                          >
-                            <span>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] ${
-                                isEnabled
-                                  ? 'bg-emerald-600 text-white'
-                                  : 'border border-slate-400 dark:border-slate-600 text-transparent'
-                              }`}
-                            >
-                              ✓
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
 
-                  {/* Group 2: DEEP ANALYSIS SECTIONS */}
-                  <section className="space-y-2">
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                      Deep Analysis Sections
+                    {/* Show this timeframe switch */}
+                    <div className="flex items-center justify-between p-3 rounded-lg border border-app bg-app-secondary/50">
+                      <div>
+                        <div className="text-xs font-bold text-app-main">Show this timeframe</div>
+                        <div className="text-[11px] text-app-secondary">
+                          Control overall visibility of {selectedEditorTf} in the Analysis editor
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleTimeframeVis(selectedEditorTf)}
+                        className={`px-3.5 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer border ${
+                          visibilityConfig.timeframes[selectedEditorTf] !== false
+                            ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                            : 'bg-app-field text-app-secondary border-app hover:text-app-main'
+                        }`}
+                        aria-pressed={visibilityConfig.timeframes[selectedEditorTf] !== false}
+                        aria-label={`${visibilityConfig.timeframes[selectedEditorTf] !== false ? 'Hide' : 'Show'} ${selectedEditorTf} timeframe`}
+                      >
+                        {visibilityConfig.timeframes[selectedEditorTf] !== false ? 'Hide' : 'Show'}
+                      </button>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {deepSectionsList.map(({ key, label }) => {
-                        const isEnabled = visibilityConfig.deepSections[key] !== false;
-                        return (
-                          <button
-                            key={key}
-                            type="button"
-                            onClick={() => toggleDeepSectionVis(key)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                              isEnabled
-                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
-                            }`}
-                          >
-                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                            <span
-                              className={`w-3 h-3 rounded-full flex items-center justify-center text-[9px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
-                              }`}
+
+                    {/* Deep Analysis */}
+                    <div className="space-y-2 pt-1">
+                      <div className="text-xs font-bold uppercase tracking-wider text-app-secondary flex items-center justify-between">
+                        <span>Deep Analysis</span>
+                        <span className="text-[11px] font-semibold text-emerald-theme lowercase">
+                          ({selectedEditorTf})
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-app border border-app rounded-lg bg-app-field/30 overflow-hidden">
+                        {DEEP_ANALYSIS_FIELDS.map(({ key, label }) => {
+                          const currentPerTf = visibilityConfig.perTimeframeFields || createDefaultPerTimeframeFields();
+                          const tfFields = currentPerTf[selectedEditorTf] || { ...DEFAULT_DEEP_FIELDS_VISIBILITY };
+                          const isShown = (tfFields as any)[key] !== false;
+
+                          return (
+                            <div
+                              key={key}
+                              className="flex items-center justify-between p-2.5 sm:px-3 hover:bg-app-field/50 transition-colors"
                             >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
-                        );
-                      })}
+                              <span className={`text-xs font-medium ${isShown ? 'text-app-main' : 'text-app-secondary'}`}>
+                                {label}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleEditorTimeframeField(selectedEditorTf, key)}
+                                className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer border ${
+                                  isShown
+                                    ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                                    : 'bg-app-field text-app-secondary border-app hover:text-app-main'
+                                }`}
+                                aria-pressed={isShown}
+                                aria-label={`${isShown ? 'Hide' : 'Show'} ${label}`}
+                              >
+                                {isShown ? 'Hide' : 'Show'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </section>
 
@@ -597,25 +717,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {otherSectionsList.map(({ key, label }) => {
                         const isEnabled = visibilityConfig.otherSections[key] !== false;
                         return (
-                          <button
+                          <div
                             key={key}
-                            type="button"
-                            onClick={() => toggleOtherSectionVis(key)}
-                            className={`w-full flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors ${
                               isEnabled
                                 ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                                : 'bg-app-field border-app text-app-secondary opacity-75'
                             }`}
                           >
-                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                            <span className={isEnabled ? '' : 'line-through text-app-secondary'}>{label}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleOtherSectionVis(key)}
+                              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer border ${
+                                isEnabled
+                                  ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                                  : 'bg-app-field text-app-secondary border-app hover:text-app-main'
                               }`}
+                              aria-pressed={isEnabled}
+                              aria-label={`${isEnabled ? 'Hide' : 'Show'} ${label}`}
                             >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
+                              {isEnabled ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -683,109 +807,121 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
                         const isEnabled = (secVis.general as any)[key] !== false;
                         return (
-                          <button
+                          <div
                             key={key}
-                            type="button"
-                            onClick={() => toggleReportVisibility('general', key)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors ${
                               isEnabled
                                 ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                                : 'bg-app-field border-app text-app-secondary opacity-75'
                             }`}
                           >
-                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                            <span className={isEnabled ? '' : 'line-through text-app-secondary'}>{label}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleReportVisibility('general', key)}
+                              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer border ${
+                                isEnabled
+                                  ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                                  : 'bg-app-field text-app-secondary border-app hover:text-app-main'
                               }`}
+                              aria-pressed={isEnabled}
+                              aria-label={`${isEnabled ? 'Hide' : 'Show'} ${label}`}
                             >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
+                              {isEnabled ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
                   </section>
 
-                  {/* Group 2: Timeframes */}
-                  <section className="space-y-2">
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                      Timeframes (Report Display)
+                  {/* Timeframe Dropdown and Per-Timeframe Visibility in Report Presentation */}
+                  <section className="space-y-4">
+                    <div>
+                      <label htmlFor="report-timeframe-select" className="block text-xs font-semibold uppercase tracking-wider text-app-secondary mb-1.5">
+                        Timeframe
+                      </label>
+                      <div className="relative inline-block w-full sm:w-64">
+                        <select
+                          id="report-timeframe-select"
+                          value={selectedReportTf}
+                          onChange={(e) => setSelectedReportTf(e.target.value as TimeframeId)}
+                          className="w-full bg-app-field border border-app rounded-lg px-3 py-2 text-sm font-semibold text-app-main focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer appearance-none pr-8"
+                        >
+                          {timeframesList.map(({ id, label }) => (
+                            <option key={id} value={id}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="w-4 h-4 text-app-secondary absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {timeframesList.map(({ id, label }) => {
-                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
-                        const isEnabled = secVis.timeframes[id] !== false;
-                        return (
-                          <button
-                            key={id}
-                            type="button"
-                            onClick={() => toggleReportTimeframe(id)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                              isEnabled
-                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary line-through opacity-70 hover:opacity-100'
-                            }`}
-                          >
-                            <span>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
-                              }`}
-                            >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
 
-                  {/* Group 3: Timeframe Detail Fields */}
-                  <section className="space-y-2">
-                    <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
-                      Timeframe Detail Fields
+                    {/* Show this timeframe switch */}
+                    <div className="flex items-center justify-between p-3 rounded-lg border border-app bg-app-secondary/50">
+                      <div>
+                        <div className="text-xs font-bold text-app-main">Show this timeframe</div>
+                        <div className="text-[11px] text-app-secondary">
+                          Control overall visibility of {selectedReportTf} in saved reports
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleReportTimeframe(selectedReportTf)}
+                        className={`px-3.5 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer border ${
+                          (presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY).timeframes[selectedReportTf] !== false
+                            ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                            : 'bg-app-field text-app-secondary border-app hover:text-app-main'
+                        }`}
+                        aria-pressed={(presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY).timeframes[selectedReportTf] !== false}
+                        aria-label={`${(presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY).timeframes[selectedReportTf] !== false ? 'Hide' : 'Show'} ${selectedReportTf} timeframe`}
+                      >
+                        {(presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY).timeframes[selectedReportTf] !== false ? 'Hide' : 'Show'}
+                      </button>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {[
-                        { key: 'overallInterpretation', label: 'Overall Timeframe Interpretation' },
-                        { key: 'priceLocation', label: 'Price Location (Discount/Eq/Premium)' },
-                        { key: 'swingStructure', label: 'Swing Structure' },
-                        { key: 'internalStructure', label: 'Internal Structure' },
-                        { key: 'fractalStructure', label: 'Fractal Structure' },
-                        { key: 'deepAlignment', label: 'Deep Alignment Indicator' },
-                        { key: 'supplyLevels', label: 'Supply Levels' },
-                        { key: 'demandLevels', label: 'Demand Levels' },
-                        { key: 'supportLevels', label: 'Support Levels' },
-                        { key: 'resistanceLevels', label: 'Resistance Levels' },
-                        { key: 'liquidityLevels', label: 'Liquidity Levels' },
-                        { key: 'timeframeNotes', label: 'Timeframe Notes' },
-                        { key: 'timeframeImages', label: 'Timeframe Chart Images' },
-                      ].map(({ key, label }) => {
-                        const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
-                        const isEnabled = (secVis.timeframeFields as any)[key] !== false;
-                        return (
-                          <button
-                            key={key}
-                            type="button"
-                            onClick={() => toggleReportVisibility('timeframeFields', key)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
-                              isEnabled
-                                ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
-                            }`}
-                          >
-                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
-                              }`}
+
+                    {/* Deep Analysis */}
+                    <div className="space-y-2 pt-1">
+                      <div className="text-xs font-bold uppercase tracking-wider text-app-secondary flex items-center justify-between">
+                        <span>Deep Analysis</span>
+                        <span className="text-[11px] font-semibold text-emerald-theme lowercase">
+                          ({selectedReportTf})
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-app border border-app rounded-lg bg-app-field/30 overflow-hidden">
+                        {DEEP_ANALYSIS_FIELDS.map(({ key, label }) => {
+                          const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
+                          const currentPerTf = secVis.perTimeframeFields || createDefaultPerTimeframeFields();
+                          const tfFields = currentPerTf[selectedReportTf] || { ...DEFAULT_DEEP_FIELDS_VISIBILITY };
+                          const isShown = (tfFields as any)[key] !== false;
+
+                          return (
+                            <div
+                              key={key}
+                              className="flex items-center justify-between p-2.5 sm:px-3 hover:bg-app-field/50 transition-colors"
                             >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
-                        );
-                      })}
+                              <span className={`text-xs font-medium ${isShown ? 'text-app-main' : 'text-app-secondary'}`}>
+                                {label}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleReportTimeframeField(selectedReportTf, key)}
+                                className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer border ${
+                                  isShown
+                                    ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                                    : 'bg-app-field text-app-secondary border-app hover:text-app-main'
+                                }`}
+                                aria-pressed={isShown}
+                                aria-label={`${isShown ? 'Hide' : 'Show'} ${label}`}
+                              >
+                                {isShown ? 'Hide' : 'Show'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   </section>
 
@@ -804,25 +940,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
                         const isEnabled = (secVis.notesAndLevels as any)[key] !== false;
                         return (
-                          <button
+                          <div
                             key={key}
-                            type="button"
-                            onClick={() => toggleReportVisibility('notesAndLevels', key)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors ${
                               isEnabled
                                 ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                                : 'bg-app-field border-app text-app-secondary opacity-75'
                             }`}
                           >
-                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                            <span className={isEnabled ? '' : 'line-through text-app-secondary'}>{label}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleReportVisibility('notesAndLevels', key)}
+                              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer border ${
+                                isEnabled
+                                  ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                                  : 'bg-app-field text-app-secondary border-app hover:text-app-main'
                               }`}
+                              aria-pressed={isEnabled}
+                              aria-label={`${isEnabled ? 'Hide' : 'Show'} ${label}`}
                             >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
+                              {isEnabled ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -843,25 +983,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
                         const isEnabled = (secVis.scenariosAndTrades as any)[key] !== false;
                         return (
-                          <button
+                          <div
                             key={key}
-                            type="button"
-                            onClick={() => toggleReportVisibility('scenariosAndTrades', key)}
-                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                            className={`flex items-center justify-between p-2 rounded border text-xs font-medium transition-colors ${
                               isEnabled
                                 ? 'bg-app-main text-app-main border-emerald-500/60 shadow-2xs'
-                                : 'bg-app-field border-app text-app-secondary opacity-60 hover:opacity-100'
+                                : 'bg-app-field border-app text-app-secondary opacity-75'
                             }`}
                           >
-                            <span className={isEnabled ? '' : 'line-through'}>{label}</span>
-                            <span
-                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[10px] ${
-                                isEnabled ? 'bg-emerald-600 text-white' : 'border border-slate-400'
+                            <span className={isEnabled ? '' : 'line-through text-app-secondary'}>{label}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleReportVisibility('scenariosAndTrades', key)}
+                              className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer border ${
+                                isEnabled
+                                  ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                                  : 'bg-app-field text-app-secondary border-app hover:text-app-main'
                               }`}
+                              aria-pressed={isEnabled}
+                              aria-label={`${isEnabled ? 'Hide' : 'Show'} ${label}`}
                             >
-                              {isEnabled ? '✓' : ''}
-                            </span>
-                          </button>
+                              {isEnabled ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
