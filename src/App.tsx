@@ -7,6 +7,7 @@ import { ReportsView } from './components/ReportsView';
 import { AuthModal } from './components/AuthModal';
 import { MigrationModal } from './components/MigrationModal';
 import { SettingsModal } from './components/SettingsModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import {
   onUpdateAvailable,
@@ -665,8 +666,10 @@ function MainApp() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MainApp />
-    </AuthProvider>
+    <ErrorBoundary fallbackTitle="ABMAX Analysis encountered a display issue">
+      <AuthProvider>
+        <MainApp />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

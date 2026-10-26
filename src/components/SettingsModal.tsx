@@ -73,8 +73,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [appliedNotice, setAppliedNotice] = useState(false);
   const [selectedEditorTf, setSelectedEditorTf] = useState<TimeframeId>('Monthly');
   const [selectedReportTf, setSelectedReportTf] = useState<TimeframeId>('Monthly');
+  const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState<boolean>(() => {
+    return typeof localStorage !== 'undefined' ? localStorage.getItem('abmax_auto_sync_disabled') !== 'true' : true;
+  });
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+
+  const toggleAutoSync = () => {
+    setIsAutoSyncEnabled((prev) => {
+      const next = !prev;
+      if (typeof localStorage !== 'undefined') {
+        if (!next) {
+          localStorage.setItem('abmax_auto_sync_disabled', 'true');
+        } else {
+          localStorage.removeItem('abmax_auto_sync_disabled');
+        }
+      }
+      return next;
+    });
+  };
 
   // Load report presentation preferences on mount
   useEffect(() => {
@@ -481,6 +498,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </button>
                     </div>
                   )}
+
+                  {/* Automatic Sync Switch */}
+                  <div className="pt-2.5 border-t border-app flex items-center justify-between gap-3">
+                    <div>
+                      <span className="text-xs font-semibold text-app-main block">
+                        Automatic Cloud Sync
+                      </span>
+                      <span className="text-[10px] text-app-secondary">
+                        {isAutoSyncEnabled
+                          ? 'Continuous sync on save and network reconnect'
+                          : 'Sync paused — saving locally on this device only'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={toggleAutoSync}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer shrink-0 min-h-[32px] ${
+                        isAutoSyncEnabled
+                          ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-300'
+                          : 'bg-emerald-theme text-white hover:bg-emerald-theme-hover'
+                      }`}
+                    >
+                      {isAutoSyncEnabled ? 'Turn Off' : 'Turn On'}
+                    </button>
+                  </div>
                 </div>
               </section>
 

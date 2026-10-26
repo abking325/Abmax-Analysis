@@ -13,7 +13,7 @@ import {
 } from '../types/journal';
 
 const DB_NAME = 'abmax_analysis_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Version 2 guarantees onupgradeneeded runs for all existing installed app instances
 
 interface DBStores {
   reports: SavedReport;
@@ -23,14 +23,50 @@ interface DBStores {
   preferences: { key: string; value: unknown };
 }
 
+let cachedDB: IDBDatabase | null = null;
+let dbOpenPromise: Promise<IDBDatabase> | null = null;
+
+export function getCachedDB(): IDBDatabase | null {
+  return cachedDB;
+}
+
+export function closeDBConnection(): void {
+  if (cachedDB) {
+    try {
+      cachedDB.close();
+    } catch {
+      // Ignore
+    }
+    cachedDB = null;
+  }
+  dbOpenPromise = null;
+}
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDB) {
+    return Promise.resolve(cachedDB);
+  }
+  if (dbOpenPromise) {
+    return dbOpenPromise;
+  }
+
+  dbOpenPromise = new Promise((resolve, reject) => {
+    // Request persistent storage on PWA and Android WebView to prevent OS eviction
+    if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+      navigator.storage.persist().catch(() => {});
+    }
+
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is not available on this platform.'));
+      return;
+    }
+
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
       
-      // Migration for version 1
+      // Ensure all 5 stores exist even if upgrading from an earlier version
       if (!db.objectStoreNames.contains('reports')) {
         const reportStore = db.createObjectStore('reports', { keyPath: 'id' });
         reportStore.createIndex('date', 'date', { unique: false });
@@ -56,9 +92,49 @@ function openDB(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('Failed to open database'));
+    request.onsuccess = () => {
+      cachedDB = request.result;
+      cachedDB.onclose = () => {
+        cachedDB = null;
+        dbOpenPromise = null;
+      };
+      cachedDB.onversionchange = () => {
+        closeDBConnection();
+      };
+      resolve(cachedDB);
+    };
+
+    request.onerror = () => {
+      cachedDB = null;
+      dbOpenPromise = null;
+      reject(request.error ?? new Error('Failed to open database'));
+    };
+
+    request.onblocked = () => {
+      console.warn('[DB] Database open blocked by another open connection.');
+    };
   });
+
+  return dbOpenPromise;
+}
+
+/**
+ * Deep clones an object safely, removing non-cloneable symbols/prototypes
+ * without throwing or losing valid JSON data.
+ */
+export function safeClone<T>(obj: T): T {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  try {
+    return JSON.parse(JSON.stringify(obj));
+  } catch (err) {
+    console.warn('[DB] Fallback clone used for non-strictly serializable payload:', err);
+    if (Array.isArray(obj)) {
+      return [...obj] as unknown as T;
+    }
+    return { ...obj };
+  }
 }
 
 function runTransaction<T>(
@@ -69,6 +145,11 @@ function runTransaction<T>(
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       try {
+        if (!db.objectStoreNames.contains(storeName)) {
+          reject(new Error(`Object store '${storeName}' does not exist in database.`));
+          return;
+        }
+
         const tx = db.transaction(storeName, mode);
         const store = tx.objectStore(storeName);
         let result: T;
@@ -143,15 +224,17 @@ export async function saveReport(report: SavedReport): Promise<SavedReport> {
   // Ensure revision is tracked and incremented
   const existing = await getReportById(report.id);
   const targetRevision = Math.max(existing?.revision || 0, report.revision || 0) + 1;
-  const sanitizedReport: SavedReport = {
-    ...report,
-    revision: targetRevision,
-    openingCandles: report.openingCandles || [],
-    updatedAt: report.updatedAt || Date.now(),
-    createdAt: report.createdAt || Date.now(),
-    pair: report.pair || 'XAUUSD',
-    date: report.date || new Date().toISOString().slice(0, 10),
-  };
+  const sanitizedReport: SavedReport = JSON.parse(
+    JSON.stringify({
+      ...report,
+      revision: targetRevision,
+      openingCandles: report.openingCandles || [],
+      updatedAt: report.updatedAt || Date.now(),
+      createdAt: report.createdAt || Date.now(),
+      pair: report.pair || 'XAUUSD',
+      date: report.date || new Date().toISOString().slice(0, 10),
+    })
+  );
 
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
@@ -175,9 +258,9 @@ export async function saveReport(report: SavedReport): Promise<SavedReport> {
     throw new Error(`Storage integrity check failed: report ${sanitizedReport.id} could not be verified with revision ${targetRevision} after save.`);
   }
 
-  // Ensure deletion tombstone is cleared if re-saving, and track pending cloud sync
-  await removeDeletedReportId(sanitizedReport.id);
-  await addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() });
+  // Ensure deletion tombstone is cleared if re-saving, and track pending cloud sync (fault-tolerant)
+  await removeDeletedReportId(sanitizedReport.id).catch(() => {});
+  await addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() }).catch(() => {});
 
   return verified;
 }
@@ -450,6 +533,10 @@ export async function saveUserReportPresentationConfig(
 
 export async function getAllTemplates(): Promise<SavedTemplate[]> {
   const db = await openDB();
+  if (!db.objectStoreNames.contains('templates')) {
+    console.warn('[DB] templates store not present in active database schema, returning empty list');
+    return [];
+  }
   return new Promise((resolve, reject) => {
     const tx = db.transaction('templates', 'readonly');
     const store = tx.objectStore('templates');
@@ -457,7 +544,7 @@ export async function getAllTemplates(): Promise<SavedTemplate[]> {
 
     req.onsuccess = () => {
       const list = (req.result as SavedTemplate[]) || [];
-      list.sort((a, b) => b.updatedAt - a.updatedAt);
+      list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       resolve(list);
     };
     req.onerror = () => reject(req.error);
@@ -465,6 +552,10 @@ export async function getAllTemplates(): Promise<SavedTemplate[]> {
 }
 
 export async function getTemplateById(id: string): Promise<SavedTemplate | null> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('templates')) {
+    return null;
+  }
   const record = await runTransaction<SavedTemplate | undefined>('templates', 'readonly', (store) =>
     store.get(id)
   );
@@ -472,7 +563,13 @@ export async function getTemplateById(id: string): Promise<SavedTemplate | null>
 }
 
 export async function saveTemplate(template: SavedTemplate): Promise<void> {
-  await runTransaction('templates', 'readwrite', (store) => store.put(template));
+  const safeTemplate: SavedTemplate = safeClone(template);
+  await runTransaction('templates', 'readwrite', (store) => store.put(safeTemplate));
+  const verified = await getTemplateById(safeTemplate.id);
+  if (!verified) {
+    throw new Error(`Storage integrity check failed: template ${safeTemplate.id} could not be verified after save.`);
+  }
+  await addPendingCloudItem({ id: safeTemplate.id, type: 'template', timestamp: Date.now() }).catch(() => {});
 }
 
 export async function renameTemplate(id: string, newName: string): Promise<void> {

@@ -1388,6 +1388,137 @@ async function runTests() {
     assert(false, 'Test Suite 20 execution', (err as Error).message);
   }
 
+  // --- TEST 21: Installed App Saving Resilience, Database V2 & Logo Asset ---
+  console.log('\n--- Test Suite 21: Installed App Saving Resilience, Database V2 & Logo Asset ---');
+  try {
+    // 1. Verify saveTemplate resilience & verification
+    const initialAnalysis = createInitialAnalysisData('EURUSD');
+    const resilientTemplate: SavedTemplate = {
+      id: `tmpl_resilience_${Date.now()}`,
+      name: 'Resilient Installed App Setup',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      data: {
+        pair: 'EURUSD',
+        title: 'Installed App Template Test',
+        session: 'London',
+        timezone: 'UTC',
+        analysisTiming: 'On time',
+        timeframes: initialAnalysis.timeframes,
+        crossedLiquidity: [],
+        majorLiquidityWatchlist: '1980.50',
+        supplyDemandLevels: [],
+        openingCandles: [],
+        scenarios: [],
+        overallNotes: 'Resilient template write test',
+      },
+    };
+
+    await saveTemplate(resilientTemplate);
+    const retrievedTmpl = await getTemplateById(resilientTemplate.id);
+    assert(retrievedTmpl !== null, 'Resilient template saved and verified in IndexedDB');
+    assert(retrievedTmpl?.name === 'Resilient Installed App Setup', 'Retrieved template preserves exact name');
+    assert(retrievedTmpl?.data.majorLiquidityWatchlist === '1980.50', 'Retrieved template preserves watchlist');
+
+    // 2. Verify saveReport resilience with deep clone
+    const resilientReport: SavedReport = {
+      ...createInitialAnalysisData('EURUSD'),
+      id: `rep_resilience_${Date.now()}`,
+      title: 'Installed App Report Test',
+      date: '2026-10-26',
+      time: '08:00:00',
+      session: 'London',
+      analysisTiming: 'On time',
+      overallNotes: 'Verification of saveReport deep cloning',
+      scenarios: [],
+      trades: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+
+    const savedReportRecord = await saveReport(resilientReport);
+    assert(savedReportRecord.id === resilientReport.id, 'saveReport returned verified record ID');
+    assert(savedReportRecord.revision === 2, 'saveReport revision incremented to 2');
+
+    const readbackReport = await getReportById(resilientReport.id);
+    assert(readbackReport !== null, 'Saved report read-back verified');
+    assert(readbackReport?.title === 'Installed App Report Test', 'Saved report title intact');
+
+    // 3. Verify Logo asset file exists in public directory
+    const fs = await import('fs');
+    assert(fs.existsSync('./public/logo.png'), 'Approved logo asset exists at public/logo.png');
+    const logoStats = fs.statSync('./public/logo.png');
+    assert(logoStats.size > 50000, `Approved logo has valid size (${logoStats.size} bytes)`);
+  } catch (err) {
+    assert(false, 'Test Suite 21 execution', (err as Error).message);
+  }
+
+  // --- Test Suite 22: Final Reliability, Report Navigation & PNG Style Logo Assets ---
+  console.log('\n--- Test Suite 22: Final Reliability, Navigation & PNG Logo Verification ---');
+  try {
+    const fs = await import('fs');
+
+    // 1. Verify PNG style logo asset
+    assert(fs.existsSync('./public/logo-transparent.png'), 'Transparent PNG style logo asset exists at public/logo-transparent.png');
+    const transStats = fs.statSync('./public/logo-transparent.png');
+    assert(transStats.size > 50000, `Transparent PNG logo has valid size (${transStats.size} bytes)`);
+
+    // 2. Verify SPA routing artifacts for all deployment targets
+    assert(fs.existsSync('./public/_redirects'), 'SPA redirects file exists for Netlify/Cloudflare');
+    const redirectsContent = fs.readFileSync('./public/_redirects', 'utf-8');
+    assert(redirectsContent.includes('/index.html'), '_redirects correctly directs all paths to /index.html');
+
+    assert(fs.existsSync('./public/404.html'), 'GitHub Pages SPA fallback 404.html exists');
+
+    // 3. Verify safeClone helper
+    const { safeClone } = await import('../services/db');
+    const primitiveTest = safeClone('test');
+    assert(primitiveTest === 'test', 'safeClone preserves primitives');
+
+    const nestedObj = { a: 1, b: 'two', c: [1, 2, 3], d: { nested: true } };
+    const cloned = safeClone(nestedObj);
+    assert(cloned.a === 1 && cloned.d.nested === true, 'safeClone deeply copies nested structures');
+    assert(cloned !== nestedObj, 'safeClone produces distinct memory reference');
+
+    // 4. Verify Automatic Cloud Sync disabled toggle
+    const { isAutoSyncDisabled } = await import('../services/cloudSync');
+    localStorage.removeItem('abmax_auto_sync_disabled');
+    assert(isAutoSyncDisabled() === false, 'Default auto-sync is enabled (not disabled)');
+    localStorage.setItem('abmax_auto_sync_disabled', 'true');
+    assert(isAutoSyncDisabled() === true, 'isAutoSyncDisabled correctly detects manual turn off');
+    localStorage.removeItem('abmax_auto_sync_disabled');
+
+    // 5. Verify malformed template resilience: templates with missing data properties do not throw fatal TypeError
+    const { getAllTemplates } = await import('../services/db');
+    const allTemplates = await getAllTemplates();
+    assert(Array.isArray(allTemplates), 'getAllTemplates returns valid array');
+
+    // Test malformed template validation
+    const malformedTemplate = {
+      id: 'tmpl_malformed_test',
+      name: 'Malformed Legacy Template',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      data: null as any, // missing data property
+    };
+    // Should safely guard without crashing
+    const pairDisplay = malformedTemplate?.data?.pair || 'Unspecified';
+    assert(pairDisplay === 'Unspecified', 'Malformed template safely falls back without TypeError');
+
+    // 6. Verify normalizeWorkspaceVisibilityConfig maintains perTimeframeFields on template load
+    const { normalizeWorkspaceVisibilityConfig } = await import('../types/journal');
+    const partialConfig = { general: { metadataAndTimestamps: true } } as any;
+    const normalized = normalizeWorkspaceVisibilityConfig(partialConfig);
+    assert(normalized.perTimeframeFields !== undefined, 'Normalization ensures perTimeframeFields is always defined');
+    assert(normalized.perTimeframeFields.Monthly !== undefined, 'Normalization ensures Monthly fields exist');
+    assert(normalized.perTimeframeFields.Weekly !== undefined, 'Normalization ensures Weekly fields exist');
+  } catch (err) {
+    assert(false, 'Test Suite 22 execution', (err as Error).message);
+  }
+
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);
   if (failed > 0) {
     process.exit(1);

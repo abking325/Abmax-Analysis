@@ -489,12 +489,21 @@ async function executeSyncOperation(userId: string): Promise<{
   return { downloaded, uploaded, conflicts };
 }
 
+export function isAutoSyncDisabled(): boolean {
+  return typeof localStorage !== 'undefined' && localStorage.getItem('abmax_auto_sync_disabled') === 'true';
+}
+
 export async function syncBidirectionalWithCloud(userId: string): Promise<{
   downloaded: number;
   uploaded: number;
   conflicts: number;
 }> {
   if (!supabase || !userId) return { downloaded: 0, uploaded: 0, conflicts: 0 };
+
+  // Respect Automatic Sync Off preference
+  if (isAutoSyncDisabled()) {
+    return { downloaded: 0, uploaded: 0, conflicts: 0 };
+  }
 
   // 1. In-tab deduplication: If a sync is already running in this tab, return it
   if (activeSyncPromise) {
@@ -504,6 +513,12 @@ export async function syncBidirectionalWithCloud(userId: string): Promise<{
   // 2. Create the promise for in-tab callers
   activeSyncPromise = (async () => {
     try {
+      // Verify account session hasn't switched before running
+      const currentSession = await supabase.auth.getSession();
+      if (currentSession?.data.session?.user.id !== userId) {
+        return { downloaded: 0, uploaded: 0, conflicts: 0 };
+      }
+
       // 3. Cross-tab coordination via standard Web Locks API (navigator.locks)
       if (typeof navigator !== 'undefined' && 'locks' in navigator && typeof navigator.locks?.request === 'function') {
         try {
@@ -527,6 +542,25 @@ export async function syncBidirectionalWithCloud(userId: string): Promise<{
   })();
 
   return activeSyncPromise;
+}
+
+// Bounded reconnect handler: retry pending sync on network reconnect without infinite loops
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    setTimeout(async () => {
+      try {
+        if (!isAutoSyncDisabled() && supabase) {
+          const session = await supabase.auth.getSession();
+          const uid = session?.data.session?.user.id;
+          if (uid) {
+            syncBidirectionalWithCloud(uid);
+          }
+        }
+      } catch {
+        // Best effort
+      }
+    }, 2000);
+  });
 }
 
 /* ================= LOCAL DATA MIGRATION ENGINE ================= */

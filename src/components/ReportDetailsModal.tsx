@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import {
   X,
   Edit,
@@ -16,7 +16,10 @@ import {
   Plus,
   Send,
   Share2,
+  MoreVertical,
+  FileText,
 } from 'lucide-react';
+import { ErrorBoundary } from './ErrorBoundary';
 import {
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
@@ -92,6 +95,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [deleteTradeConfirmId, setDeleteTradeConfirmId] = useState<string | null>(null);
   const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -196,13 +200,43 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     };
   }, [report, isOpen, user]);
 
-  // Lock background scroll and manage keyboard focus
+  // Lock background scroll, preserve scroll position, and integrate browser / Android Back navigation
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !report) return;
+
+    const savedScrollY = window.scrollY;
+
+    // Push synthetic state so hardware / browser back button closes report modal
+    window.history.pushState({ abmaxModal: 'report_details', reportId: report.id }, '');
+
+    const handlePopState = () => {
+      onClose();
+    };
+    window.addEventListener('popstate', handlePopState);
+
+    // Listen to Capacitor Android hardware back button if available
+    let capHandle: any = null;
+    if (typeof window !== 'undefined' && (window as any).Capacitor?.isPluginAvailable?.('App')) {
+      import('@capacitor/app').then(({ App }) => {
+        App.addListener('backButton', () => {
+          if (window.history.state?.abmaxModal === 'report_details') {
+            window.history.back();
+          } else {
+            onClose();
+          }
+        }).then((h) => {
+          capHandle = h;
+        }).catch(() => {});
+      }).catch(() => {});
+    }
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !activeViewerImage) {
-        onClose();
+        if (window.history.state?.abmaxModal === 'report_details') {
+          window.history.back();
+        } else {
+          onClose();
+        }
       }
     };
 
@@ -218,8 +252,22 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     return () => {
       document.body.style.overflow = originalOverflow;
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('popstate', handlePopState);
+      if (capHandle?.remove) {
+        capHandle.remove();
+      }
+      // Restore scroll position so user returns to exact place in reports list
+      window.scrollTo(0, savedScrollY);
     };
-  }, [isOpen, activeViewerImage, onClose]);
+  }, [isOpen, report?.id, activeViewerImage, onClose]);
+
+  const handleCloseSafely = useCallback(() => {
+    if (window.history.state?.abmaxModal === 'report_details') {
+      window.history.back();
+    } else {
+      onClose();
+    }
+  }, [onClose]);
 
   if (!isOpen || !report) return null;
 
@@ -243,55 +291,168 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   };
 
   return (
-    <>
+    <ErrorBoundary fallbackTitle="Document Report View encountered an issue" onReset={onClose}>
+      <>
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`${report.pair} Analysis Report`}
-        className="print-modal-backdrop fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-0 sm:p-4 backdrop-blur-xs overflow-y-auto"
-        onClick={onClose}
+        className="print-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-0 sm:p-4 backdrop-blur-xs overflow-hidden"
+        onClick={handleCloseSafely}
       >
         <div
           ref={modalContainerRef}
-          className="print-modal-container relative w-full h-full sm:h-auto sm:max-h-[92vh] sm:max-w-4xl bg-app-main border border-app sm:rounded-lg shadow-2xl flex flex-col overflow-hidden text-app-main"
+          className="print-modal-container relative w-full h-full sm:h-auto sm:max-h-[94vh] sm:max-w-4xl bg-app-main border border-app sm:rounded-xl shadow-2xl flex flex-col overflow-hidden text-app-main"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Interactive Modal Top Bar with Actions */}
-          <div className="no-print flex items-center justify-between px-4 sm:px-6 py-2.5 sm:py-3 border-b border-app bg-app-secondary shrink-0">
-            <span className="text-xs font-semibold text-emerald-theme uppercase tracking-wider">
-              {viewMode === 'organized' ? 'Organized Analysis Sheet' : 'Document Report View'}
-            </span>
-            <div className="flex items-center gap-2">
-              {viewMode === 'standard' ? (
+          {/* Pinned Visible Navigation & Actions Toolbar (Sticky, 44px touch targets, mobile safe area) */}
+          <div className="no-print shrink-0 sticky top-0 z-30 bg-app-main border-b border-app shadow-xs pt-[env(safe-area-inset-top,0px)]">
+            <div className="flex items-center justify-between px-3 sm:px-5 py-2 sm:py-2.5 gap-2">
+              {/* Obvious Back / Close control */}
+              <div className="flex items-center gap-2 shrink-0">
                 <button
+                  ref={closeButtonRef}
                   type="button"
-                  onClick={() => setViewMode('organized')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-theme text-white hover:bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer"
-                  title="View Organized report presentation"
+                  onClick={handleCloseSafely}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[44px] min-w-[44px] text-xs font-bold text-app-main hover:bg-app-field rounded-lg transition-colors cursor-pointer border border-app bg-app-secondary"
+                  title="Close report and return to list (Esc)"
+                  aria-label="Close report and return to list"
                 >
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                  View Organized
+                  <ArrowLeft className="w-4 h-4 text-emerald-theme shrink-0" />
+                  <span className="font-semibold text-xs">Close</span>
                 </button>
-              ) : (
+
+                <div className="hidden sm:flex flex-col">
+                  <span className="text-xs font-bold text-app-main leading-tight">
+                    {report.pair} <span className="text-app-secondary font-normal">· {report.date}</span>
+                  </span>
+                  <span className="text-[10px] text-app-secondary">
+                    {report.session || 'Session'} {report.time ? `· ${report.time}` : ''}
+                  </span>
+                </div>
+              </div>
+
+              {/* View Switch: Standard vs Organized */}
+              <div className="flex items-center bg-app-field p-0.5 rounded-lg border border-app shrink-0">
                 <button
                   type="button"
                   onClick={() => setViewMode('standard')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-app-main border border-app hover:bg-app-field rounded transition-colors text-app-main cursor-pointer"
-                  title="Back to Details view"
+                  className={`inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 min-h-[38px] text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                    viewMode === 'standard'
+                      ? 'bg-app-main text-emerald-theme shadow-2xs font-bold'
+                      : 'text-app-secondary hover:text-app-main'
+                  }`}
+                  title="View standard document format"
                 >
-                  <ArrowLeft className="w-3.5 h-3.5 text-app-secondary" />
-                  Back to Details
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Standard</span>
                 </button>
-              )}
-              <button
-                ref={closeButtonRef}
-                type="button"
-                onClick={onClose}
-                className="p-1.5 text-app-secondary hover:text-app-main hover:bg-app-field rounded transition-colors cursor-pointer"
-                title="Close (Esc)"
-              >
-                <X className="w-4 h-4" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('organized')}
+                  className={`inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 min-h-[38px] text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                    viewMode === 'organized'
+                      ? 'bg-app-main text-emerald-theme shadow-2xs font-bold'
+                      : 'text-app-secondary hover:text-app-main'
+                  }`}
+                  title="View organized sheet format"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>Organized</span>
+                </button>
+              </div>
+
+              {/* Action Buttons Toolbar: Share, Download PDF, Take Trade, More */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsShareModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[44px] text-xs font-semibold text-white bg-emerald-theme hover:bg-emerald-theme-hover rounded-md shadow-2xs transition-colors cursor-pointer"
+                  title="Share report PDF via Android Share Sheet or Web Share"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span className="hidden xs:inline">Share</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={exportingPdf}
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 min-h-[44px] text-xs font-semibold bg-app-field text-app-main border border-app hover:bg-slate-200 dark:hover:bg-slate-800 rounded-md transition-colors cursor-pointer disabled:opacity-50"
+                  title="Download selectable PDF"
+                >
+                  {exportingPdf ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5 text-app-secondary" />
+                  )}
+                  <span className="hidden md:inline">PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsTakeTradeOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-2 min-h-[44px] text-xs font-semibold bg-emerald-theme text-white hover:bg-emerald-theme-hover rounded-md shadow-2xs transition-colors cursor-pointer"
+                  title="Record an executed trade linked to this report"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span className="hidden lg:inline">Take Trade</span>
+                </button>
+
+                {/* More actions dropdown (Modify, Copy, Delete, Print) */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowActionsMenu((prev) => !prev)}
+                    className="p-2 min-h-[44px] min-w-[40px] flex items-center justify-center text-app-secondary hover:text-app-main hover:bg-app-field border border-app rounded-md transition-colors cursor-pointer"
+                    title="More actions"
+                    aria-label="More report actions"
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </button>
+
+                  {showActionsMenu && (
+                    <div
+                      className="absolute right-0 mt-1 w-44 bg-app-main border border-app rounded-lg shadow-xl py-1 z-40 text-xs"
+                      onClick={() => setShowActionsMenu(false)}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onModify(report)}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2 text-app-main hover:bg-app-field transition-colors cursor-pointer"
+                      >
+                        <Edit className="w-3.5 h-3.5 text-app-secondary" />
+                        <span>Modify Report</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onCopy(report)}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2 text-app-main hover:bg-app-field transition-colors cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-app-secondary" />
+                        <span>Copy Report</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePrint}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2 text-app-main hover:bg-app-field transition-colors cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5 text-app-secondary" />
+                        <span>Browser Print</span>
+                      </button>
+                      <div className="border-t border-app my-1" />
+                      <button
+                        type="button"
+                        onClick={() => setShowDeleteConfirm(true)}
+                        className="w-full text-left px-3 py-2 flex items-center gap-2 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer font-medium"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Report</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1379,5 +1540,6 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
         />
       )}
     </>
+    </ErrorBoundary>
   );
 };

@@ -33,6 +33,7 @@ import {
   WorkspaceVisibilityConfig,
   createEmptyTimeframeData,
   createInitialAnalysisData,
+  normalizeWorkspaceVisibilityConfig,
 } from '../types/journal';
 import {
   calculateOverallAlignment,
@@ -269,7 +270,14 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   }, [initialData]);
 
-  // Clean up pending autosave timer on unmount
+  const lastAutosaveCallRef = useRef<number>(0);
+  const activeUserIdRef = useRef<string | null>(user?.id || null);
+
+  useEffect(() => {
+    activeUserIdRef.current = user?.id || null;
+  }, [user?.id]);
+
+  // Clean up pending autosave timers on unmount
   useEffect(() => {
     return () => {
       if (autosaveTimeoutRef.current) {
@@ -278,36 +286,63 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     };
   }, []);
 
-  // Debounced draft autosave
+  // Debounced draft autosave with continuous typing bounded maxWait (3000ms)
   const triggerAutosave = useCallback((currentData: AnalysisData) => {
     if (isSavingReportRef.current) return;
 
-    if (autosaveTimeoutRef.current) {
-      clearTimeout(autosaveTimeoutRef.current);
-    }
-    setAutosaveStatus('Saving changes...');
+    const initiatingUserId = user?.id || null;
+    const now = Date.now();
+    const timeSinceFirstKeystroke = lastAutosaveCallRef.current ? now - lastAutosaveCallRef.current : 0;
+    const MAX_WAIT_MS = 3000;
 
-    autosaveTimeoutRef.current = setTimeout(async () => {
+    const executeSave = async () => {
       if (isSavingReportRef.current) return;
+      lastAutosaveCallRef.current = 0;
       try {
         await saveDraft(currentData);
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         setAutosaveStatus(`Draft autosaved at ${timeStr}`);
 
-        if (user) {
+        // Cloud synchronization only if user is still logged into the SAME account and Auto-Sync is not disabled
+        const isAutoSyncOff = typeof localStorage !== 'undefined' && localStorage.getItem('abmax_auto_sync_disabled') === 'true';
+
+        if (initiatingUserId && activeUserIdRef.current === initiatingUserId && !isAutoSyncOff) {
           setSyncStatus('syncing');
-          await uploadDraftToCloud(user.id, currentData);
-          setSyncStatus('synced');
-          setLastSyncedAt(Date.now());
+          await uploadDraftToCloud(initiatingUserId, currentData);
+          if (activeUserIdRef.current === initiatingUserId) {
+            setSyncStatus('synced');
+            setLastSyncedAt(Date.now());
+          }
         } else {
           setSyncStatus('local');
         }
       } catch (err) {
         console.error('Autosave failed', err);
         setAutosaveStatus('Autosave failed (local storage full or blocked)');
-        if (user) setSyncStatus('error');
+        if (initiatingUserId) setSyncStatus('error');
       }
-    }, 800);
+    };
+
+    setAutosaveStatus('Saving changes...');
+
+    // If typing continuously and maxWait has elapsed, flush immediately
+    if (lastAutosaveCallRef.current > 0 && timeSinceFirstKeystroke >= MAX_WAIT_MS) {
+      if (autosaveTimeoutRef.current) {
+        clearTimeout(autosaveTimeoutRef.current);
+      }
+      executeSave();
+      return;
+    }
+
+    if (!lastAutosaveCallRef.current) {
+      lastAutosaveCallRef.current = now;
+    }
+
+    if (autosaveTimeoutRef.current) {
+      clearTimeout(autosaveTimeoutRef.current);
+    }
+
+    autosaveTimeoutRef.current = setTimeout(executeSave, 800);
   }, [user]);
 
   const updateAnalysis = (updater: (prev: AnalysisData) => AnalysisData) => {
@@ -884,7 +919,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     };
     await saveTemplate(tmpl);
     if (user) {
-      await uploadTemplateToCloud(user.id, tmpl);
+      uploadTemplateToCloud(user.id, tmpl).catch((cloudErr) => {
+        console.warn('[Template Cloud Sync] Failed to upload template to cloud, saved locally:', cloudErr);
+      });
     }
   };
 
@@ -909,58 +946,81 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
 
   // Apply template: creates fresh analysis with new ID and today's date, saves draft immediately
   const applyTemplate = async (template: SavedTemplate) => {
-    const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10);
-    const templatedScenarios = (template.data.scenarios || []).map((s, idx) => ({
-      ...s,
-      id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${idx}`,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }));
+    if (!template || !template.data) {
+      setAutosaveStatus('Cannot load template: missing template data.');
+      setTemplateToConfirm(null);
+      setIsLoadTemplateOpen(false);
+      return;
+    }
 
-    // Ensure all 8 timeframes exist
-    const templatedTfs = JSON.parse(JSON.stringify(template.data.timeframes || {}));
-    for (const tf of TIMEFRAME_ORDER) {
-      if (!templatedTfs[tf]) {
-        templatedTfs[tf] = createEmptyTimeframeData(tf);
+    try {
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const templatedScenarios = (template.data.scenarios || []).map((s, idx) => ({
+        ...s,
+        id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${idx}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }));
+
+      // Ensure all 8 timeframes exist with safe defaults
+      const rawTfs = template.data.timeframes || {};
+      const templatedTfs = {} as Record<TimeframeId, any>;
+      for (const tf of TIMEFRAME_ORDER) {
+        if (rawTfs[tf]) {
+          templatedTfs[tf] = {
+            ...createEmptyTimeframeData(tf),
+            ...JSON.parse(JSON.stringify(rawTfs[tf])),
+          };
+        } else {
+          templatedTfs[tf] = createEmptyTimeframeData(tf);
+        }
       }
-    }
 
-    const newAnalysis: AnalysisData = {
-      id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      title: template.data.title || '',
-      pair: template.data.pair,
-      date: dateStr,
-      time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
-      timezone: template.data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-      session: template.data.session,
-      analysisTiming: template.data.analysisTiming,
-      timeframes: templatedTfs,
-      crossedLiquidity: [...(template.data.crossedLiquidity || [])],
-      majorLiquidityWatchlist: template.data.majorLiquidityWatchlist || '',
-      supplyDemandLevels: JSON.parse(JSON.stringify(template.data.supplyDemandLevels || [])),
-      openingCandles: template.data.openingCandles
-        ? JSON.parse(JSON.stringify(template.data.openingCandles))
-        : [],
-      scenarios: templatedScenarios,
-      trades: [], // Executed trades are always excluded from templates
-      overallNotes: template.data.overallNotes || '',
-      visibilityConfig: template.data.visibilityConfig || activeVisibility,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    dataRef.current = newAnalysis;
-    setData(newAnalysis);
-    await saveDraft(newAnalysis);
-    setAutosaveStatus(`Template loaded as fresh analysis at ${newAnalysis.time}`);
-    if (user) {
-      uploadDraftToCloud(user.id, newAnalysis).catch((err) =>
-        console.warn('Background cloud draft sync failed on template load:', err)
+      const normalizedVis = normalizeWorkspaceVisibilityConfig(
+        template.data.visibilityConfig || activeVisibility
       );
+
+      const newAnalysis: AnalysisData = {
+        id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        title: template.data.title || '',
+        pair: template.data.pair || 'XAUUSD',
+        date: dateStr,
+        time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+        timezone: template.data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        session: template.data.session || 'London',
+        analysisTiming: template.data.analysisTiming || 'On time',
+        timeframes: templatedTfs,
+        crossedLiquidity: [...(template.data.crossedLiquidity || [])],
+        majorLiquidityWatchlist: template.data.majorLiquidityWatchlist || '',
+        supplyDemandLevels: JSON.parse(JSON.stringify(template.data.supplyDemandLevels || [])),
+        openingCandles: template.data.openingCandles
+          ? JSON.parse(JSON.stringify(template.data.openingCandles))
+          : [],
+        scenarios: templatedScenarios,
+        trades: [], // Executed trades are always excluded from templates
+        overallNotes: template.data.overallNotes || '',
+        visibilityConfig: normalizedVis,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      dataRef.current = newAnalysis;
+      setData(newAnalysis);
+      await saveDraft(newAnalysis);
+      setAutosaveStatus(`Template loaded as fresh analysis at ${newAnalysis.time}`);
+      if (user) {
+        uploadDraftToCloud(user.id, newAnalysis).catch((err) =>
+          console.warn('Background cloud draft sync failed on template load:', err)
+        );
+      }
+    } catch (err) {
+      console.error('[AnalysisView] Failed to apply template:', err);
+      setAutosaveStatus('Failed to apply template: template format unsupported.');
+    } finally {
+      setTemplateToConfirm(null);
+      setIsLoadTemplateOpen(false);
     }
-    setTemplateToConfirm(null);
-    setIsLoadTemplateOpen(false);
   };
 
   // Load Template (warns if unfinished analysis exists, else loads directly)
@@ -993,48 +1053,28 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   return (
     <div className="max-w-[1100px] mx-auto px-3.5 sm:px-6 py-6 sm:py-8">
       {/* 1. Market Analysis Heading */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 mb-5 border-b border-app">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-app-main">
-              Market Analysis
-            </h2>
-            {isEditingExistingReport && (
-              <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-theme border border-amber-300 dark:bg-amber-950/40">
-                Editing Report ({data.id})
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-app-secondary mt-0.5">
-            Continuous multi-timeframe SMC journal flow from Monthly to 1-Minute.
-          </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 mb-4 border-b border-app">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-app-main">
+            Market Analysis
+          </h2>
+          {isEditingExistingReport && (
+            <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-theme border border-amber-300 dark:bg-amber-950/40">
+              Editing Report ({data.id})
+            </span>
+          )}
         </div>
 
-        {/* Autosave subtle status text & Cloud Sync Status */}
-        <div className="flex flex-wrap items-center gap-2.5 text-xs text-app-secondary">
-          <SyncStatusBadge
-            status={
-              saveStage === 'saving_local'
-                ? 'saving_local'
-                : saveStage === 'failed'
-                ? 'failed'
-                : saveStage === 'pending_cloud'
-                ? 'pending_cloud'
-                : saveStage === 'saved_local'
-                ? 'saved_local'
-                : saveStage === 'synced'
-                ? 'synced'
-                : syncStatus
-            }
-            lastSyncedAt={lastSyncedAt}
-            onRetry={() => triggerAutosave(data)}
-          />
-          <span className="text-app-secondary opacity-40">|</span>
-          <div className="flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5 text-emerald-theme" />
-            <span>{autosaveStatus}</span>
+        {/* Actionable error status only (informational "Saved on this device | Ready" status row removed) */}
+        {(saveStage === 'failed' || syncStatus === 'error') && (
+          <div className="flex items-center gap-2 text-xs">
+            <SyncStatusBadge
+              status="failed"
+              lastSyncedAt={lastSyncedAt}
+              onRetry={() => triggerAutosave(data)}
+            />
           </div>
-        </div>
+        )}
       </div>
 
       {/* Phase 2: Optional Report Title */}
