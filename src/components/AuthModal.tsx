@@ -13,6 +13,8 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronUp,
+  ShieldCheck,
+  ArrowLeft,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -30,7 +32,7 @@ interface AuthModalProps {
   onOpenMigration: () => void;
 }
 
-type AuthTab = 'signin' | 'signup' | 'forgot' | 'reset';
+export type AuthTab = 'signin' | 'signup' | 'verify_otp' | 'forgot' | 'reset';
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
@@ -41,18 +43,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     user,
     signIn,
     signUp,
+    verifySignupOtp,
+    resendSignupOtp,
     signOut,
     resetPassword,
     updatePassword,
     isConfigured,
     isPasswordRecovery,
     clearPasswordRecovery,
+    isRecoveryLinkExpired,
+    clearRecoveryLinkExpired,
   } = useAuth();
 
-  const [tab, setTab] = useState<AuthTab>(isPasswordRecovery ? 'reset' : 'signin');
+  const [tab, setTab] = useState<AuthTab>(() => {
+    if (isPasswordRecovery) return 'reset';
+    if (isRecoveryLinkExpired) return 'forgot';
+    return 'signin';
+  });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
+  const [otpCode, setOtpCode] = useState('');
+  const [registeredEmail, setRegisteredEmail] = useState('');
+
+  const [forgotCooldown, setForgotCooldown] = useState(0);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -62,6 +79,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [runningDiag, setRunningDiag] = useState(false);
   const [serviceLatencyMs, setServiceLatencyMs] = useState<number | undefined>(undefined);
   const [showDiagDetails, setShowDiagDetails] = useState(false);
+
+  // Sync recovery and expired link states
+  useEffect(() => {
+    if (isPasswordRecovery) {
+      setTab('reset');
+      setErrorMsg(null);
+      setSuccessMsg(null);
+    } else if (isRecoveryLinkExpired) {
+      setTab('forgot');
+      setErrorMsg('The password recovery link has expired or has already been used. Please request a new password reset.');
+      setSuccessMsg(null);
+    }
+  }, [isPasswordRecovery, isRecoveryLinkExpired]);
+
+  // Timers for resend cooldowns
+  useEffect(() => {
+    if (forgotCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setForgotCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [forgotCooldown]);
+
+  useEffect(() => {
+    if (otpCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setOtpCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [otpCooldown]);
 
   const executeVerification = async () => {
     if (!user) return;
@@ -89,6 +136,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleClose = () => {
+    if (isRecoveryLinkExpired) clearRecoveryLinkExpired();
+    if (isPasswordRecovery) clearPasswordRecovery();
+    onClose();
+  };
+
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -96,13 +149,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setLoading(true);
 
     try {
-      const { error } = await signIn(email.trim(), password);
+      const { error } = await signIn(email.trim(), password, rememberMe);
       if (error) {
         setErrorMsg(error.message);
       } else {
         setSuccessMsg('Signed in successfully!');
         setTimeout(() => {
-          onClose();
+          handleClose();
           onOpenMigration();
         }, 500);
       }
@@ -123,19 +176,71 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setLoading(true);
     try {
-      const { error, needsEmailConfirmation } = await signUp(email.trim(), password);
+      const targetEmail = email.trim();
+      const { error, needsEmailConfirmation } = await signUp(targetEmail, password);
       if (error) {
         setErrorMsg(error.message);
       } else if (needsEmailConfirmation) {
-        setSuccessMsg(
-          'Confirmation link sent! Please check your email to verify your account.'
-        );
+        setRegisteredEmail(targetEmail);
+        setOtpCode('');
+        setOtpCooldown(60);
+        setTab('verify_otp');
+        setSuccessMsg(`We've sent a 6-digit verification code to ${targetEmail}.`);
       } else {
         setSuccessMsg('Account created and signed in!');
         setTimeout(() => {
-          onClose();
+          handleClose();
           onOpenMigration();
         }, 600);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    const cleanCode = otpCode.trim();
+    if (!cleanCode || cleanCode.length < 6) {
+      setErrorMsg('Please enter the full 6-digit verification code.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const targetEmail = registeredEmail || email.trim();
+      const { error } = await verifySignupOtp(targetEmail, cleanCode);
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        setSuccessMsg('Email verified and signed in successfully!');
+        setTimeout(() => {
+          handleClose();
+          onOpenMigration();
+        }, 600);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (otpCooldown > 0 || loading) return;
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setLoading(true);
+
+    try {
+      const targetEmail = registeredEmail || email.trim();
+      const { error } = await resendSignupOtp(targetEmail);
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        setSuccessMsg(`A fresh verification code has been sent to ${targetEmail}.`);
+        setOtpCooldown(60);
       }
     } finally {
       setLoading(false);
@@ -150,10 +255,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     try {
       const { error } = await resetPassword(email.trim());
-      if (error) {
+      if (error && error.message.toLowerCase().includes('rate limit')) {
         setErrorMsg(error.message);
       } else {
-        setSuccessMsg('Password reset link sent to your email.');
+        // Neutral response to avoid user enumeration / account disclosure
+        setSuccessMsg(
+          'If an account exists for this email, you will receive password reset instructions shortly.'
+        );
+        setForgotCooldown(60);
       }
     } finally {
       setLoading(false);
@@ -183,7 +292,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setSuccessMsg('Password successfully updated!');
         clearPasswordRecovery();
         setTimeout(() => {
-          onClose();
+          handleClose();
         }, 800);
       }
     } finally {
@@ -195,7 +304,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setLoading(true);
     await signOut();
     setLoading(false);
-    onClose();
+    handleClose();
   };
 
   return (
@@ -204,7 +313,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       aria-modal="true"
       aria-label={user ? 'Account' : 'Sign In'}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         className="w-full max-w-sm bg-app-main border border-app rounded-lg shadow-xl overflow-hidden text-app-main"
@@ -213,11 +322,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* Modal Top Bar */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-app bg-app-secondary">
           <span className="font-semibold text-xs tracking-tight text-app-main">
-            {user ? 'Account' : 'Account'}
+            {user ? 'Account' : tab === 'verify_otp' ? 'Verify Email' : 'Account'}
           </span>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="Close"
             className="p-1 text-app-secondary hover:text-app-main rounded transition-colors"
           >
@@ -383,7 +492,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    onClose();
+                    handleClose();
                     onOpenMigration();
                   }}
                   className="w-full py-2 px-3 text-xs font-semibold text-app-main bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 border border-app rounded transition-colors text-left flex items-center justify-between"
@@ -406,8 +515,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           ) : (
             /* ================= SIGN IN / CREATE ACCOUNT VIEW ================= */
             <div className="space-y-3.5">
-              {/* Tab Selector: Only Sign In & Create Account */}
-              {tab !== 'reset' && (
+              {/* Tab Selector: Only Sign In & Create Account (hidden on OTP and Reset screens) */}
+              {tab !== 'reset' && tab !== 'verify_otp' && (
                 <div className="flex items-center p-1 bg-app-field rounded-md border border-app text-xs font-medium">
                   <button
                     type="button"
@@ -478,6 +587,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="email"
                         required
+                        autoComplete="username"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="trader@example.com"
@@ -508,12 +618,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="password"
                         required
+                        autoComplete="current-password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
                         className="w-full pl-8 pr-3 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
                       />
                     </div>
+                  </div>
+
+                  {/* Keep me signed in option */}
+                  <div className="pt-0.5">
+                    <label className="flex items-center gap-2 text-xs text-app-secondary cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={rememberMe}
+                        onChange={(e) => setRememberMe(e.target.checked)}
+                        className="rounded border-app text-emerald-600 focus:ring-emerald-500 focus:ring-offset-0 bg-app-field w-3.5 h-3.5"
+                      />
+                      <span>Keep me signed in on this device</span>
+                    </label>
                   </div>
 
                   <button
@@ -542,6 +666,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="email"
                         required
+                        autoComplete="username"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="trader@example.com"
@@ -559,6 +684,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="password"
                         required
+                        autoComplete="new-password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
@@ -581,11 +707,74 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </form>
               )}
 
-              {/* 3. Forgot Password */}
+              {/* 3. Verification Code Input (verify_otp) */}
+              {tab === 'verify_otp' && (
+                <form onSubmit={handleVerifyOtp} className="space-y-3.5">
+                  <div className="flex items-center gap-2 text-xs font-bold text-emerald-theme">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>Enter 6-Digit Verification Code</span>
+                  </div>
+                  <p className="text-xs text-app-secondary leading-normal">
+                    Enter the code sent to <strong className="text-app-main">{registeredEmail || email}</strong>.
+                  </p>
+
+                  <div>
+                    <label className="block text-xs font-medium text-app-secondary mb-1">
+                      Verification Code
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      pattern="[0-9]*"
+                      required
+                      autoFocus
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="123456"
+                      className="w-full py-2.5 text-center text-lg font-mono tracking-widest bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 font-bold"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTab('signup');
+                        setErrorMsg(null);
+                        setSuccessMsg(null);
+                      }}
+                      className="text-app-secondary hover:text-app-main underline inline-flex items-center gap-1"
+                    >
+                      <ArrowLeft className="w-3 h-3" />
+                      <span>Change Email</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={otpCooldown > 0 || loading}
+                      onClick={handleResendOtp}
+                      className="text-emerald-theme hover:underline disabled:opacity-50 disabled:no-underline font-medium"
+                    >
+                      {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend code'}
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || otpCode.trim().length < 6}
+                    className="w-full py-2 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs disabled:opacity-40"
+                  >
+                    {loading ? 'Verifying...' : 'Verify & Continue'}
+                  </button>
+                </form>
+              )}
+
+              {/* 4. Forgot Password */}
               {tab === 'forgot' && (
                 <form onSubmit={handleForgotPassword} className="space-y-3">
                   <p className="text-xs text-app-secondary leading-normal">
-                    Enter your email address and we&apos;ll send you a password reset link.
+                    Enter your email address and we&apos;ll send you password reset instructions.
                   </p>
                   <div>
                     <label className="block text-xs font-medium text-app-secondary mb-1">
@@ -596,6 +785,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="email"
                         required
+                        autoComplete="username"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="trader@example.com"
@@ -607,27 +797,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setTab('signin')}
+                      onClick={() => {
+                        setTab('signin');
+                        setErrorMsg(null);
+                        setSuccessMsg(null);
+                      }}
                       className="px-3 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded border border-app"
                     >
                       Back
                     </button>
                     <button
                       type="submit"
-                      disabled={loading || !isConfigured}
+                      disabled={loading || !isConfigured || forgotCooldown > 0}
                       className="flex-1 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs disabled:opacity-40"
                     >
                       {!isConfigured
                         ? 'Unavailable Offline'
                         : loading
                         ? 'Sending link...'
+                        : forgotCooldown > 0
+                        ? `Resend in ${forgotCooldown}s`
                         : 'Send Reset Link'}
                     </button>
                   </div>
                 </form>
               )}
 
-              {/* 4. Reset Password */}
+              {/* 5. Reset Password */}
               {tab === 'reset' && (
                 <form onSubmit={handleResetPassword} className="space-y-3">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-theme">
@@ -641,6 +837,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <input
                       type="password"
                       required
+                      autoComplete="new-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
@@ -654,6 +851,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <input
                       type="password"
                       required
+                      autoComplete="new-password"
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
                       placeholder="••••••••"

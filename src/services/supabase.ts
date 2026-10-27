@@ -19,6 +19,47 @@ export const isSupabaseConfigured = Boolean(
   supabaseUrl.includes('.supabase.co')
 );
 
+export const REMEMBER_ME_STORAGE_KEY = 'abmax_remember_login';
+
+export const authStorage = {
+  getItem: (key: string): string | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const remember = window.localStorage.getItem(REMEMBER_ME_STORAGE_KEY);
+      if (remember === 'false') {
+        return window.sessionStorage.getItem(key);
+      }
+      return window.localStorage.getItem(key) || window.sessionStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (key: string, value: string): void => {
+    if (typeof window === 'undefined') return;
+    try {
+      const remember = window.localStorage.getItem(REMEMBER_ME_STORAGE_KEY);
+      if (remember === 'false') {
+        window.sessionStorage.setItem(key, value);
+        window.localStorage.removeItem(key);
+      } else {
+        window.localStorage.setItem(key, value);
+        window.sessionStorage.removeItem(key);
+      }
+    } catch {
+      // safe fallback if storage is restricted
+    }
+  },
+  removeItem: (key: string): void => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.removeItem(key);
+      window.sessionStorage.removeItem(key);
+    } catch {
+      // safe fallback
+    }
+  },
+};
+
 // Singleton Supabase Client
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseKey, {
@@ -27,14 +68,21 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
         autoRefreshToken: true,
         detectSessionInUrl: true,
         storageKey: 'abmax_supabase_auth',
+        storage: authStorage,
       },
     })
   : null;
 
 /**
  * Returns the active standalone website redirect URL for confirmation and password resets.
+ * On native mobile or localhost development, routes to the production web app to prevent broken https://localhost links.
  */
 export function getAppRedirectUrl(): string {
   if (typeof window === 'undefined') return '';
-  return `${window.location.origin}`;
+  const siteUrl = (env.VITE_SITE_URL || '').trim() || 'https://abmax-analysis.pages.dev';
+  const origin = window.location.origin;
+  if (!origin || origin.includes('localhost') || origin.startsWith('capacitor://') || origin.startsWith('ionic://')) {
+    return siteUrl;
+  }
+  return origin;
 }

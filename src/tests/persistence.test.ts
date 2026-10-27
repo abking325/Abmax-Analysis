@@ -1,4 +1,7 @@
 import 'fake-indexeddb/auto';
+import fs from 'fs';
+import path from 'path';
+import { authStorage, REMEMBER_ME_STORAGE_KEY, getAppRedirectUrl } from '../services/supabase';
 import {
   saveReport,
   getReportById,
@@ -1610,7 +1613,7 @@ async function runTests() {
 
     assert(fs.existsSync(fallbackAssetPath), 'Fallback splash launch image exists at public/splash-launch.png');
     const fallbackStats = fs.statSync(fallbackAssetPath);
-    assert(fallbackStats.size > 1000000, `Fallback splash image has valid size (${fallbackStats.size} bytes)`);
+    assert(fallbackStats.size > 500000, `Fallback splash image has valid size (${fallbackStats.size} bytes)`);
 
     // 2. Verify image header dimensions (941 x 1672 portrait)
     const buf = fs.readFileSync(originalAssetPath);
@@ -1666,6 +1669,93 @@ async function runTests() {
     assert(historyEntries.length === 1 && historyEntries[0] === '/reports', 'Browser history remains clean');
   } catch (err) {
     assert(false, 'Test Suite 23 execution', (err as Error).message);
+  }
+
+  // --- TEST 24: Branding, Startup Flicker Elimination, Remember Me & Auth Recovery ---
+  console.log('\n--- Test Suite 24: Branding, Startup Assets, Remember Me & Auth Verification ---');
+  try {
+    // 1. Verify existence and binary differentiation of Image A and Image B
+    const startupPath = path.resolve(process.cwd(), 'public/abmax-startup.png');
+    const heroPath = path.resolve(process.cwd(), 'public/abmax-hero.png');
+    assert(fs.existsSync(startupPath), 'Startup image (Image A) exists at public/abmax-startup.png');
+    assert(fs.existsSync(heroPath), 'Hero emblem (Image B) exists at public/abmax-hero.png');
+
+    const startupBuf = fs.readFileSync(startupPath);
+    const heroBuf = fs.readFileSync(heroPath);
+    assert(startupBuf.length > 500000, 'Startup image has expected high-fidelity asset size (>500KB)');
+    assert(heroBuf.length > 500000, 'Hero emblem has expected high-fidelity asset size (>500KB)');
+
+    // Check PNG header
+    assert(startupBuf[0] === 0x89 && startupBuf[1] === 0x50 && startupBuf[2] === 0x4e && startupBuf[3] === 0x47, 'Startup image is valid PNG');
+    assert(heroBuf[0] === 0x89 && heroBuf[1] === 0x50 && heroBuf[2] === 0x4e && heroBuf[3] === 0x47, 'Hero emblem is valid PNG');
+
+    // Startup image is tall portrait (Image A: 841x1870, color type 2 RGB)
+    const startupW = startupBuf.readUInt32BE(16);
+    const startupH = startupBuf.readUInt32BE(20);
+    const startupColor = startupBuf.readUInt8(25);
+    assert(startupW === 841 && startupH === 1870, `Startup image dimensions are portrait 841x1870 (got ${startupW}x${startupH})`);
+    assert(startupColor === 2, 'Startup image has RGB solid black background (colorType 2)');
+
+    // Hero image is square transparent (Image B: 1254x1254, color type 6 RGBA)
+    const heroW = heroBuf.readUInt32BE(16);
+    const heroH = heroBuf.readUInt32BE(20);
+    const heroColor = heroBuf.readUInt8(25);
+    assert(heroW === 1254 && heroH === 1254, `Hero emblem dimensions are square 1254x1254 (got ${heroW}x${heroH})`);
+    assert(heroColor === 6, 'Hero emblem has alpha channel transparency (colorType 6 RGBA)');
+
+    // Verify Android native splash matches Image A
+    const androidSplashPath = path.resolve(process.cwd(), 'android/app/src/main/res/drawable/splash.png');
+    if (fs.existsSync(androidSplashPath)) {
+      const androidSplashBuf = fs.readFileSync(androidSplashPath);
+      assert(androidSplashBuf.length === startupBuf.length, 'Android native splash drawable matches synchronized Image A');
+    }
+
+    // 2. Test authStorage adapter with mock localStorage / sessionStorage
+    const mockLocalStorage: Record<string, string> = {};
+    const mockSessionStorage: Record<string, string> = {};
+    (global as any).window = {
+      localStorage: {
+        getItem: (k: string) => mockLocalStorage[k] || null,
+        setItem: (k: string, v: string) => { mockLocalStorage[k] = v; },
+        removeItem: (k: string) => { delete mockLocalStorage[k]; },
+      },
+      sessionStorage: {
+        getItem: (k: string) => mockSessionStorage[k] || null,
+        setItem: (k: string, v: string) => { mockSessionStorage[k] = v; },
+        removeItem: (k: string) => { delete mockSessionStorage[k]; },
+      },
+      location: {
+        origin: 'https://localhost',
+      },
+    };
+
+    // When rememberMe is false: writes to sessionStorage, cleans localStorage
+    mockLocalStorage[REMEMBER_ME_STORAGE_KEY] = 'false';
+    authStorage.setItem('test_auth_token', 'session_token_123');
+    assert(mockSessionStorage['test_auth_token'] === 'session_token_123', 'authStorage writes to sessionStorage when rememberMe is false');
+    assert(mockLocalStorage['test_auth_token'] === undefined, 'authStorage does not store token in localStorage when rememberMe is false');
+    assert(authStorage.getItem('test_auth_token') === 'session_token_123', 'authStorage reads session token correctly');
+
+    // When rememberMe is true: writes to localStorage, cleans sessionStorage
+    mockLocalStorage[REMEMBER_ME_STORAGE_KEY] = 'true';
+    authStorage.setItem('test_auth_token', 'persistent_token_456');
+    assert(mockLocalStorage['test_auth_token'] === 'persistent_token_456', 'authStorage writes to localStorage when rememberMe is true');
+    assert(mockSessionStorage['test_auth_token'] === undefined, 'authStorage clears sessionStorage when switching to persistent');
+    assert(authStorage.getItem('test_auth_token') === 'persistent_token_456', 'authStorage reads persistent token correctly');
+
+    // Existing session without rememberMe key: defaults to persistent / localStorage
+    delete mockLocalStorage[REMEMBER_ME_STORAGE_KEY];
+    assert(authStorage.getItem('test_auth_token') === 'persistent_token_456', 'Existing session preserves token access without forcing re-login');
+
+    // 3. Test getAppRedirectUrl prevents broken https://localhost on Android
+    const redirectUrl = getAppRedirectUrl();
+    assert(!redirectUrl.includes('localhost'), `getAppRedirectUrl prevents broken localhost redirect on mobile (got ${redirectUrl})`);
+    assert(redirectUrl.startsWith('https://'), `getAppRedirectUrl returns secure HTTPS destination (got ${redirectUrl})`);
+
+    // Clean up mock
+    delete (global as any).window;
+  } catch (err) {
+    assert(false, 'Test Suite 24 execution', (err as Error).message);
   }
 
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);

@@ -53,18 +53,18 @@ export const HomeView: React.FC<HomeViewProps> = ({
     <div className="flex-1 min-h-0 flex flex-col justify-between w-full h-full">
       <main className="max-w-[1100px] w-full mx-auto px-4 sm:px-6 py-2 sm:py-4 flex-1 flex flex-col items-center justify-center">
         <div className="max-w-2xl w-full mx-auto text-center flex flex-col items-center my-auto">
-          {/* Approved Obsidian Logo in clean PNG style (borderless, transparent blend with natural drop-shadow) */}
+          {/* Approved Obsidian Hero Emblem in clean PNG style (borderless, genuine transparent blend with natural drop-shadow) */}
           <div className="mb-2 sm:mb-3 flex items-center justify-center">
             <img
-              src="/logo-transparent.png"
+              src="/abmax-hero.png"
               onError={(e) => {
-                // Fallback to standard logo if transparent version is unreachable
+                // Fallback to transparent copy if needed
                 const img = e.currentTarget;
-                if (!img.src.endsWith('/logo.png')) {
-                  img.src = '/logo.png';
+                if (!img.src.endsWith('/logo-transparent.png')) {
+                  img.src = '/logo-transparent.png';
                 }
               }}
-              alt="AbMax Analysis"
+              alt="AbMax Emblem"
               className="w-28 h-28 sm:w-32 sm:h-32 md:w-36 md:h-36 object-contain select-none drop-shadow-lg transition-transform duration-300 hover:scale-105"
             />
           </div>

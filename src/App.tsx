@@ -51,7 +51,7 @@ import {
 } from './services/sessionRestoration';
 
 function MainApp() {
-  const { user, isPasswordRecovery } = useAuth();
+  const { user, isPasswordRecovery, isRecoveryLinkExpired } = useAuth();
   const accountId = user?.id || 'local';
   const initialSession = sessionManager.loadSession(accountId);
 
@@ -85,9 +85,19 @@ function MainApp() {
 
   // Cold start splash state (genuine cold launch / full restart only)
   const [isColdStarting, setIsColdStarting] = useState(true);
+  const [splashFadingOut, setSplashFadingOut] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [showSlowFeedback, setShowSlowFeedback] = useState(false);
   const coldStartStartTimeRef = useRef<number>(Date.now());
+
+  // Preload and decode startup image early
+  useEffect(() => {
+    const img = new Image();
+    img.src = '/abmax-startup.png';
+    if (img.decode) {
+      img.decode().catch(() => {});
+    }
+  }, []);
 
   // Ref tracking full working session state to avoid UI churn during serialized debounce
   const sessionStateRef = useRef<WorkingSessionState>({
@@ -178,12 +188,12 @@ function MainApp() {
     });
   };
 
-  // If URL has recovery token (password reset link), open auth modal immediately
+  // If URL has recovery token (password reset link) or expired token error, open auth modal immediately
   useEffect(() => {
-    if (isPasswordRecovery) {
+    if (isPasswordRecovery || isRecoveryLinkExpired) {
       setIsAuthModalOpen(true);
     }
-  }, [isPasswordRecovery]);
+  }, [isPasswordRecovery, isRecoveryLinkExpired]);
 
   // Sync theme to HTML class & localStorage
   useEffect(() => {
@@ -282,7 +292,12 @@ function MainApp() {
         setTimeout(() => {
           if (isMounted) {
             clearTimeout(slowTimer);
-            setIsColdStarting(false);
+            setSplashFadingOut(true);
+            setTimeout(() => {
+              if (isMounted) {
+                setIsColdStarting(false);
+              }
+            }, 300);
           }
         }, remainingTime);
       } catch (e) {
@@ -691,11 +706,13 @@ function MainApp() {
           role="dialog"
           aria-label="AbMax Analysis Launch Screen"
           aria-modal="true"
-          className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#000000] select-none pointer-events-auto transition-opacity duration-300"
+          className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#000000] select-none pointer-events-auto transition-opacity duration-300 ${
+            splashFadingOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
+          }`}
         >
           <div className="relative w-full h-full flex flex-col items-center justify-center p-4">
             <img
-              src="/assets/aistudio/file_0000000027d4821184bdabcaa6ba4728_ac6d05ea.png"
+              src="/abmax-startup.png"
               onError={(e) => {
                 const img = e.currentTarget;
                 if (!img.src.includes('/splash-launch.png')) {
