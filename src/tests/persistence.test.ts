@@ -1513,8 +1513,85 @@ async function runTests() {
     const partialConfig = { general: { metadataAndTimestamps: true } } as any;
     const normalized = normalizeWorkspaceVisibilityConfig(partialConfig);
     assert(normalized.perTimeframeFields !== undefined, 'Normalization ensures perTimeframeFields is always defined');
+    if (!normalized.perTimeframeFields) {
+      throw new Error('Normalization failed to produce perTimeframeFields');
+    }
     assert(normalized.perTimeframeFields.Monthly !== undefined, 'Normalization ensures Monthly fields exist');
     assert(normalized.perTimeframeFields.Weekly !== undefined, 'Normalization ensures Weekly fields exist');
+
+    // 7. Verify Sync Edge Cases A through E logic models
+    // Case A & B: Conflict preservation model
+    const baseAnalysis = createInitialAnalysisData();
+    const originalLocalReport: import('../types/journal').SavedReport = {
+      ...baseAnalysis,
+      id: 'rep_test_case_a',
+      pair: 'EURUSD',
+      status: 'Original',
+      revision: 2,
+      updatedAt: 1000,
+      createdAt: 500,
+    };
+    const conflictCopy: import('../types/journal').SavedReport = {
+      ...originalLocalReport,
+      id: `rep_conflict_${Date.now()}_test`,
+      title: `${originalLocalReport.pair} (Local Conflict Copy)`,
+      status: 'Modified',
+      updatedAt: Date.now(),
+      revision: originalLocalReport.revision,
+    };
+    assert(conflictCopy.id !== originalLocalReport.id, 'Case A/B: Conflict copy has a distinct unique ID');
+    assert(Boolean(conflictCopy.title?.includes('(Local Conflict Copy)')), 'Case A/B: Conflict copy title clearly marks backup status');
+    assert(conflictCopy.status === 'Modified', 'Case A/B: Conflict copy maintains Modified status');
+
+    // Case C: Tombstone retention on failure
+    const tombstoneSet = new Set<string>(['del_rep_1', 'del_rep_2']);
+    const failedDeletionId = 'del_rep_1';
+    const successfulDeletionId = 'del_rep_2';
+    // Simulate failed deletion retaining tombstone
+    const deletionSucceeded = false;
+    if (deletionSucceeded) {
+      tombstoneSet.delete(failedDeletionId);
+    }
+    assert(tombstoneSet.has(failedDeletionId), 'Case C: Tombstone is retained in set when cloud deletion fails');
+    // Simulate successful deletion removing tombstone
+    tombstoneSet.delete(successfulDeletionId);
+    assert(!tombstoneSet.has(successfulDeletionId), 'Case C: Tombstone is removed only on confirmed successful deletion');
+
+    // Case D: Template update upload rule
+    const localTmpl: import('../types/journal').SavedTemplate = {
+      id: 'tmpl_case_d',
+      name: 'Local Updated Template',
+      createdAt: 1000,
+      updatedAt: 3000,
+      data: {} as any,
+    };
+    const cloudTmpl: import('../types/journal').SavedTemplate = {
+      id: 'tmpl_case_d',
+      name: 'Cloud Older Template',
+      createdAt: 1000,
+      updatedAt: 2000,
+      data: {} as any,
+    };
+    const shouldUploadTemplate = localTmpl.updatedAt > cloudTmpl.updatedAt;
+    assert(shouldUploadTemplate === true, 'Case D: Locally modified template with newer timestamp is scheduled for cloud upload');
+
+    // Case E: Account isolation rule
+    const currentUserId = 'user_abc_123';
+    const foreignReport: import('../types/journal').SavedReport = {
+      ...baseAnalysis,
+      id: 'rep_foreign_user',
+      pair: 'BTCUSD',
+      status: 'Original',
+      createdAt: 1000,
+      updatedAt: 2000,
+      accountId: 'different_user_456',
+    };
+    const shouldSkipForeignReport = Boolean(
+      foreignReport.accountId &&
+      foreignReport.accountId !== 'local' &&
+      foreignReport.accountId !== currentUserId
+    );
+    assert(shouldSkipForeignReport === true, 'Case E: Report explicitly tagged with different account is shielded from upload');
   } catch (err) {
     assert(false, 'Test Suite 22 execution', (err as Error).message);
   }

@@ -406,11 +406,22 @@ async function executeSyncOperation(userId: string): Promise<{
   let conflicts = 0;
 
   const deletedReportIds = new Set(deletedReportIdsList);
+  const pendingReportIds = new Set(
+    pendingQueue.filter((p) => p.type === 'report').map((p) => p.id)
+  );
 
-  // 1. Process pending intentional deletions to cloud so cloud reports don't resurrect
+  // 1. Process pending intentional deletions to cloud only removing tombstone on confirmed success (Case C)
   for (const delId of deletedReportIds) {
     if (cloudData.reports.some((r) => r.id === delId)) {
-      await deleteReportFromCloud(userId, delId);
+      const delRes = await deleteReportFromCloud(userId, delId);
+      if (delRes.success) {
+        await removeDeletedReportId(delId);
+        await removePendingCloudItem(delId);
+      } else {
+        console.warn(`[CloudSync] Cloud deletion failed for ${delId}, retaining tombstone for retry:`, delRes.error);
+      }
+    } else {
+      // Already absent from cloud, clean up local tombstone safely
       await removeDeletedReportId(delId);
       await removePendingCloudItem(delId);
     }
@@ -421,7 +432,7 @@ async function executeSyncOperation(userId: string): Promise<{
     localReportsMap.set(rep.id, rep);
   }
 
-  // 2. Process cloud reports into local store (skipping intentionally deleted reports)
+  // 2. Process cloud reports into local store with conflict preservation (Cases A & B)
   for (const cloudRep of cloudData.reports) {
     if (deletedReportIds.has(cloudRep.id)) {
       continue; // Intentionally deleted on this client; do not resurrect
@@ -437,12 +448,32 @@ async function executeSyncOperation(userId: string): Promise<{
       const localRev = localRep.revision || 1;
       const cloudTime = cloudRep.updatedAt || 0;
       const localTime = localRep.updatedAt || 0;
+      const hasPendingLocalEdit = pendingReportIds.has(localRep.id);
 
-      if (cloudRev > localRev || (cloudRev === localRev && cloudTime > localTime)) {
-        // Cloud is newer -> update local
-        await saveReportDirectly(cloudRep);
-        downloaded++;
-      } else if (localRev > cloudRev || (localRev === cloudRev && localTime > cloudTime)) {
+      if (cloudRev > localRev) {
+        if (hasPendingLocalEdit) {
+          // Case A Conflict: cloud has higher revision, but local user has unmerged edits!
+          // Preserve BOTH: save local edits as an explicit backup copy so work is never silently lost
+          const conflictCopy: SavedReport = {
+            ...localRep,
+            id: `rep_conflict_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            title: `${localRep.title || localRep.pair} (Local Conflict Copy)`,
+            status: 'Modified',
+            updatedAt: Date.now(),
+            revision: localRev,
+          };
+          await saveReportDirectly(conflictCopy);
+          await saveReportDirectly(cloudRep);
+          await removePendingCloudItem(localRep.id);
+          downloaded++;
+          conflicts++;
+          console.warn(`[CloudSync] Conflict detected for report ${localRep.id}. Preserved local edits as ${conflictCopy.id}.`);
+        } else {
+          // Clean cloud update: local has no pending edits
+          await saveReportDirectly(cloudRep);
+          downloaded++;
+        }
+      } else if (localRev > cloudRev) {
         // Local is newer -> upload to cloud
         const res = await uploadReportToCloud(userId, localRep);
         if (res.success) {
@@ -451,16 +482,43 @@ async function executeSyncOperation(userId: string): Promise<{
         } else if (res.conflict) {
           conflicts++;
         }
+      } else {
+        // Case B: Equal revision numbers (cloudRev === localRev)
+        if (cloudTime !== localTime && hasPendingLocalEdit) {
+          // Divergent edits with same revision counter: preserve local edits as backup
+          const conflictCopy: SavedReport = {
+            ...localRep,
+            id: `rep_conflict_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            title: `${localRep.title || localRep.pair} (Local Conflict Copy)`,
+            status: 'Modified',
+            updatedAt: Date.now(),
+          };
+          await saveReportDirectly(conflictCopy);
+          await saveReportDirectly(cloudRep);
+          await removePendingCloudItem(localRep.id);
+          downloaded++;
+          conflicts++;
+        } else if (localTime > cloudTime) {
+          const res = await uploadReportToCloud(userId, localRep);
+          if (res.success) {
+            uploaded++;
+            await removePendingCloudItem(localRep.id);
+          }
+        }
       }
     }
   }
 
-  // 3. Upload any local reports that are completely absent from cloud
+  // 3. Upload local reports absent from cloud, respecting account isolation (Case E)
   const cloudReportIds = new Set(cloudData.reports.map((r) => r.id));
   for (const localRep of localReports) {
     if (deletedReportIds.has(localRep.id)) continue;
+    // Account isolation: do not automatically upload reports explicitly owned by a different account
+    if (localRep.accountId && localRep.accountId !== 'local' && localRep.accountId !== userId) {
+      continue;
+    }
     if (!cloudReportIds.has(localRep.id)) {
-      const res = await uploadReportToCloud(userId, localRep);
+      const res = await uploadReportToCloud(userId, { ...localRep, accountId: userId });
       if (res.success) {
         uploaded++;
         await removePendingCloudItem(localRep.id);
@@ -468,7 +526,7 @@ async function executeSyncOperation(userId: string): Promise<{
     }
   }
 
-  // 3. Process templates
+  // 4. Process templates (Case D: upload both brand new and locally updated templates)
   const localTemplatesMap = new Map<string, SavedTemplate>();
   for (const t of localTemplates) {
     localTemplatesMap.set(t.id, t);
@@ -477,12 +535,16 @@ async function executeSyncOperation(userId: string): Promise<{
     const localTmpl = localTemplatesMap.get(cloudTmpl.id);
     if (!localTmpl || (cloudTmpl.updatedAt || 0) > (localTmpl.updatedAt || 0)) {
       await saveTemplate(cloudTmpl);
+      downloaded++;
     }
   }
-  const cloudTmplIds = new Set(cloudData.templates.map((t) => t.id));
   for (const localTmpl of localTemplates) {
-    if (!cloudTmplIds.has(localTmpl.id)) {
+    const cloudTmpl = cloudData.templates.find((ct) => ct.id === localTmpl.id);
+    // Upload if absent from cloud OR if local template was updated more recently than cloud
+    if (!cloudTmpl || (localTmpl.updatedAt || 0) > (cloudTmpl.updatedAt || 0)) {
       await uploadTemplateToCloud(userId, localTmpl);
+      await removePendingCloudItem(localTmpl.id);
+      uploaded++;
     }
   }
 

@@ -277,9 +277,13 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
   },
 };
 
+export interface NormalizedWorkspaceVisibilityConfig extends WorkspaceVisibilityConfig {
+  perTimeframeFields: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
+}
+
 export function normalizeWorkspaceVisibilityConfig(
   raw?: Partial<WorkspaceVisibilityConfig> | null
-): WorkspaceVisibilityConfig {
+): NormalizedWorkspaceVisibilityConfig {
   const timeframes = { ...DEFAULT_VISIBILITY_CONFIG.timeframes };
   if (raw?.timeframes) {
     for (const tf of TIMEFRAME_ORDER) {
@@ -363,6 +367,7 @@ export function normalizeWorkspaceVisibilityConfig(
 
 export interface AnalysisData {
   id: string; // Report ID or 'draft'
+  accountId?: string; // Owning user account UUID or 'local'
   title?: string; // Optional report title (Phase 2)
   pair: TradingPair;
   date: string; // Local date (YYYY-MM-DD)
@@ -494,9 +499,13 @@ export const DEFAULT_REPORT_VISIBILITY: ReportVisibilityConfig = {
   },
 };
 
+export interface NormalizedReportVisibilityConfig extends ReportVisibilityConfig {
+  perTimeframeFields: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
+}
+
 export function normalizeReportVisibilityConfig(
   raw?: Partial<ReportVisibilityConfig> | null
-): ReportVisibilityConfig {
+): NormalizedReportVisibilityConfig {
   const timeframes = { ...DEFAULT_REPORT_VISIBILITY.timeframes };
   if (raw?.timeframes) {
     for (const tf of TIMEFRAME_ORDER) {
