@@ -83,6 +83,12 @@ function MainApp() {
   });
   const [reportsList, setReportsList] = useState<SavedReport[]>([]);
 
+  // Cold start splash state (genuine cold launch / full restart only)
+  const [isColdStarting, setIsColdStarting] = useState(true);
+  const [initError, setInitError] = useState<string | null>(null);
+  const [showSlowFeedback, setShowSlowFeedback] = useState(false);
+  const coldStartStartTimeRef = useRef<number>(Date.now());
+
   // Ref tracking full working session state to avoid UI churn during serialized debounce
   const sessionStateRef = useRef<WorkingSessionState>({
     version: 2,
@@ -239,6 +245,10 @@ function MainApp() {
   // Hydrate on mount: restores latest persisted working state before empty defaults or autosave can overwrite
   useEffect(() => {
     let isMounted = true;
+    const slowTimer = setTimeout(() => {
+      if (isMounted) setShowSlowFeedback(true);
+    }, 3200);
+
     (async () => {
       try {
         const [draft, reports] = await Promise.all([getDraft(), getAllReports()]);
@@ -265,12 +275,26 @@ function MainApp() {
         if (targetScroll && targetScroll > 0) {
           restoreScrollPosition(targetScroll);
         }
+
+        // Coordinate cold start launch screen to display for approximately 3 seconds
+        const elapsed = Date.now() - coldStartStartTimeRef.current;
+        const remainingTime = Math.max(0, 3000 - elapsed);
+        setTimeout(() => {
+          if (isMounted) {
+            clearTimeout(slowTimer);
+            setIsColdStarting(false);
+          }
+        }, remainingTime);
       } catch (e) {
         console.error('Failed to hydrate storage on initial mount', e);
+        if (isMounted) {
+          setInitError((e as Error)?.message || 'Database initialization error');
+        }
       }
     })();
     return () => {
       isMounted = false;
+      clearTimeout(slowTimer);
     };
   }, []);
 
@@ -660,6 +684,48 @@ function MainApp() {
           refreshStorageData();
         }}
       />
+
+      {/* Cold Launch / Full Restart Startup Screen (Shown ~3s on cold start only) */}
+      {isColdStarting && (
+        <div
+          role="dialog"
+          aria-label="AbMax Analysis Launch Screen"
+          aria-modal="true"
+          className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#000000] select-none pointer-events-auto transition-opacity duration-300"
+        >
+          <div className="relative w-full h-full flex flex-col items-center justify-center p-4">
+            <img
+              src="/assets/aistudio/file_0000000027d4821184bdabcaa6ba4728_ac6d05ea.png"
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.src.includes('/splash-launch.png')) {
+                  img.src = '/splash-launch.png';
+                }
+              }}
+              alt="AbMax Analysis"
+              className="w-full h-full max-h-[90vh] max-w-[480px] object-contain"
+            />
+            {showSlowFeedback && !initError && (
+              <div className="absolute bottom-8 flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 text-xs shadow-lg backdrop-blur-md">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                <span>Restoring session workspace...</span>
+              </div>
+            )}
+            {initError && (
+              <div className="absolute bottom-8 flex flex-col items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-950/90 border border-rose-800 text-rose-200 text-xs shadow-xl max-w-sm text-center">
+                <span>Failed to initialize workspace data: {initError}</span>
+                <button
+                  type="button"
+                  onClick={() => setIsColdStarting(false)}
+                  className="mt-1 px-3 py-1 bg-rose-700 hover:bg-rose-600 rounded text-white font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Continue to App
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

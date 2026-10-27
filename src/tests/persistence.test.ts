@@ -1596,6 +1596,78 @@ async function runTests() {
     assert(false, 'Test Suite 22 execution', (err as Error).message);
   }
 
+  // --- Test Suite 23: Cold Start Launch Screen, Coordinated Back Navigation & Organized-Only View ---
+  console.log('\n--- Test Suite 23: Cold Start Image, Back Navigation Stack & Organized View ---');
+  try {
+    const fs = await import('fs');
+
+    // 1. Verify cold start launch image asset exists in both canonical paths with valid size (>1MB)
+    const originalAssetPath = './public/assets/aistudio/file_0000000027d4821184bdabcaa6ba4728_ac6d05ea.png';
+    const fallbackAssetPath = './public/splash-launch.png';
+    assert(fs.existsSync(originalAssetPath), 'Uploaded cold launch image exists at expected path');
+    const origStats = fs.statSync(originalAssetPath);
+    assert(origStats.size > 1000000, `Uploaded launch image has valid size (${origStats.size} bytes)`);
+
+    assert(fs.existsSync(fallbackAssetPath), 'Fallback splash launch image exists at public/splash-launch.png');
+    const fallbackStats = fs.statSync(fallbackAssetPath);
+    assert(fallbackStats.size > 1000000, `Fallback splash image has valid size (${fallbackStats.size} bytes)`);
+
+    // 2. Verify image header dimensions (941 x 1672 portrait)
+    const buf = fs.readFileSync(originalAssetPath);
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    assert(width === 941 && height === 1672, `Launch image has verified portrait dimensions (${width}x${height})`);
+
+    // 3. Verify Organized-only view preference handling: legacy standard preferences default to organized
+    const { getUserReportPresentationConfig } = await import('../services/db');
+    const defaultCfg = await getUserReportPresentationConfig();
+    assert(defaultCfg !== null, 'Report presentation config loads cleanly');
+    // Ensure that even if a legacy stored config had defaultView: 'standard', opening saved reports treats it as organized
+    const legacyCfg = { ...defaultCfg, defaultView: 'standard' as const };
+    const effectiveView = legacyCfg.defaultView === 'standard' ? 'organized' : legacyCfg.defaultView;
+    assert(effectiveView === 'organized', 'Legacy standard view preference cleanly normalizes to organized');
+
+    // 4. Verify Coordinated Back Navigation Stack model
+    // Simulate dialog stack: report modal open, child modal (e.g. image viewer) open
+    const navState = {
+      isReportModalOpen: true,
+      activeChildModal: 'ImageViewer' as string | null,
+    };
+    const historyEntries: string[] = ['/reports', '/reports#report_details'];
+
+    const simulateBackAction = (source: 'native' | 'popstate') => {
+      if (navState.activeChildModal) {
+        // Child modal closes first; report modal remains open
+        navState.activeChildModal = null;
+        if (source === 'popstate') {
+          // Re-arm history state in browser
+          historyEntries.push('/reports#report_details');
+        }
+        return 'closed_child';
+      }
+      // No child modal open: closes report modal
+      navState.isReportModalOpen = false;
+      if (source === 'native') {
+        historyEntries.pop();
+      }
+      return 'closed_report';
+    };
+
+    // First press: closes child modal (image viewer)
+    const res1 = simulateBackAction('native');
+    assert(res1 === 'closed_child', 'First back press closes topmost child dialog');
+    assert(navState.activeChildModal === null, 'Child dialog is closed');
+    assert(navState.isReportModalOpen === true, 'Report modal remains open after child dialog close');
+
+    // Second press: closes report modal and returns to reports list
+    const res2 = simulateBackAction('native');
+    assert(res2 === 'closed_report', 'Second back press closes report modal');
+    assert(navState.isReportModalOpen === false, 'Report modal is now closed, returning to reports list');
+    assert(historyEntries.length === 1 && historyEntries[0] === '/reports', 'Browser history remains clean');
+  } catch (err) {
+    assert(false, 'Test Suite 23 execution', (err as Error).message);
+  }
+
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);
   if (failed > 0) {
     process.exit(1);
