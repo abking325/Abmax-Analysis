@@ -48,6 +48,47 @@ function dataUrlToBlob(dataUrl: string): Blob {
 const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
 
 /**
+ * Normalizes a report payload for strict content equality comparison.
+ * Extracts all persisted analytical fields (scenarios, images, trades, time, session, liquidity, notes, timeframes),
+ * while cleanly excluding synchronization-only metadata (updatedAt, revision, baseCloudRevision, lastCloudRevision, sourceRevision, pendingSaveId, accountId).
+ */
+export function normalizeReportForContentComparison(report: Partial<SavedReport> | null | undefined): string {
+  if (!report) return '';
+  const cleanTitle = (report.title || '').replace(/\s*\(Local Conflict Copy\)$/i, '').trim();
+  const content = {
+    title: cleanTitle,
+    pair: report.pair || 'XAUUSD',
+    date: report.date || '',
+    time: report.time || '',
+    timezone: report.timezone || '',
+    session: report.session || '',
+    analysisTiming: report.analysisTiming || '',
+    timeframes: report.timeframes || {},
+    crossedLiquidity: (report.crossedLiquidity || []).slice().sort(),
+    majorLiquidityWatchlist: (report.majorLiquidityWatchlist || '').trim(),
+    supplyDemandLevels: report.supplyDemandLevels || [],
+    openingCandles: report.openingCandles || [],
+    scenarios: report.scenarios || [],
+    trades: report.trades || [],
+    overallNotes: (report.overallNotes || '').trim(),
+    visibilityConfig: report.visibilityConfig || null,
+  };
+  return JSON.stringify(content);
+}
+
+/**
+ * Deterministic hash of normalized content for stable collision-free conflict copy IDs.
+ */
+export function computeContentFingerprint(contentStr: string): string {
+  let hash = 5381;
+  for (let i = 0; i < contentStr.length; i++) {
+    hash = ((hash << 5) + hash) + contentStr.charCodeAt(i);
+    hash |= 0;
+  }
+  return (hash >>> 0).toString(16);
+}
+
+/**
  * Gets a signed URL for a private chart image stored in Supabase chart-images bucket.
  * Falls back to local IndexedDB image if cloud fetch fails or user is offline.
  */
@@ -168,15 +209,12 @@ export async function uploadReportToCloud(
       const cloudUpdatedAt = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
       const localUpdatedAt = report.updatedAt || 0;
 
-      // 1. Acknowledged Retry Check: if the cloud already recorded this exact update, acknowledge without conflict ONLY if payload matches
+      // 1. Acknowledged Retry Check: if the cloud already recorded this exact update, acknowledge without conflict ONLY if complete persisted content matches
       if (cloudRevision === report.revision && (cloudUpdatedAt === localUpdatedAt || Math.abs(cloudUpdatedAt - localUpdatedAt) < 1000)) {
         const cloudPayload = existing.payload as SavedReport | undefined;
         const isSameContent = !cloudPayload || (
-          cloudPayload.title === report.title &&
-          cloudPayload.pair === report.pair &&
-          cloudPayload.date === report.date &&
-          cloudPayload.overallNotes === report.overallNotes &&
-          JSON.stringify(cloudPayload.timeframes) === JSON.stringify(sanitizedTimeframes)
+          normalizeReportForContentComparison(cloudPayload) ===
+          normalizeReportForContentComparison({ ...report, timeframes: sanitizedTimeframes })
         );
         if (isSameContent) {
           return { success: true };
@@ -484,11 +522,22 @@ async function executeSyncOperation(userId: string): Promise<{
         if (hasPendingLocalEdit) {
           // Case A Conflict: cloud has higher revision, but local user has unmerged edits!
           // Preserve BOTH: save local edits as an explicit backup copy so work is never silently lost
-          const conflictCopyId = `rep_conflict_${localRep.id}_rev${localRev}`;
-          if (!localReportsMap.has(conflictCopyId)) {
+          const localNormalized = normalizeReportForContentComparison(localRep);
+          const contentFingerprint = computeContentFingerprint(localNormalized);
+          const conflictCopyId = `rep_conflict_${localRep.id}_rev${localRev}_${contentFingerprint}`;
+          const existingCopy = localReportsMap.get(conflictCopyId);
+          const isSameConflictAndContent = Boolean(
+            existingCopy &&
+            existingCopy.copiedFromId === localRep.id &&
+            (!existingCopy.accountId || existingCopy.accountId === userId) &&
+            normalizeReportForContentComparison(existingCopy) === localNormalized
+          );
+
+          if (!isSameConflictAndContent) {
             const conflictCopy: SavedReport = {
               ...localRep,
               id: conflictCopyId,
+              accountId: userId,
               copiedFromId: localRep.id,
               title: `${localRep.title || localRep.pair} (Local Conflict Copy)`,
               status: 'Modified',
@@ -498,7 +547,7 @@ async function executeSyncOperation(userId: string): Promise<{
             await saveReportDirectly(conflictCopy);
             console.warn(`[CloudSync] Conflict detected for report ${localRep.id}. Preserved local edits as ${conflictCopy.id}.`);
           } else {
-            console.info(`[CloudSync] Reusing existing conflict copy ${conflictCopyId} across retry/restart.`);
+            console.info(`[CloudSync] Reusing existing conflict copy ${conflictCopyId} for identical conflicting content across retry/restart.`);
           }
           await saveReportDirectly(cloudRep);
           await removePendingCloudItem(localRep.id);

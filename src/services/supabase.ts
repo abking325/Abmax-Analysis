@@ -78,8 +78,8 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
  * On native mobile or localhost development, routes to the production web app to prevent broken https://localhost links.
  */
 export function getAppRedirectUrl(): string {
-  if (typeof window === 'undefined') return '';
   const siteUrl = (env.VITE_SITE_URL || '').trim() || 'https://abmax-analysis.pages.dev';
+  if (typeof window === 'undefined' || !window.location) return siteUrl;
   const origin = window.location.origin;
   if (!origin || origin.includes('localhost') || origin.startsWith('capacitor://') || origin.startsWith('ionic://')) {
     return siteUrl;

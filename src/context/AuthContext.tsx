@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import { User, Session, AuthError } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
+import { Browser } from '@capacitor/browser';
+import { App } from '@capacitor/app';
 import { supabase, isSupabaseConfigured, getAppRedirectUrl, REMEMBER_ME_STORAGE_KEY } from '../services/supabase';
 
 interface AuthContextType {
@@ -11,6 +14,7 @@ interface AuthContextType {
   signUp: (email: string, password: string) => Promise<{ error: AuthError | null; needsEmailConfirmation?: boolean }>;
   verifySignupOtp: (email: string, token: string) => Promise<{ error: AuthError | null }>;
   resendSignupOtp: (email: string) => Promise<{ error: AuthError | null }>;
+  signInWithGoogle: () => Promise<{ error: AuthError | null }>;
   signOut: () => Promise<{ error: AuthError | null }>;
   resetPassword: (email: string) => Promise<{ error: AuthError | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: AuthError | null }>;
@@ -48,12 +52,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         fullUrlParams.includes('otp_expired')
       ) {
         setIsRecoveryLinkExpired(true);
-        // Strip error token from browser address bar
+        // Clean error tokens after parsing
         window.history.replaceState(null, '', window.location.pathname);
       } else if (fullUrlParams.includes('type=recovery')) {
         setIsPasswordRecovery(true);
-        // Clean tokens from address bar history to protect against shoulder surfing or token leakage
-        window.history.replaceState(null, '', window.location.pathname);
       }
     }
 
@@ -62,6 +64,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);
+      // Clean tokens from address bar only after session extraction completes
+      if (typeof window !== 'undefined' && window.location.hash && !window.location.hash.includes('type=recovery')) {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
     });
 
     // Listen for auth state changes
@@ -74,14 +80,71 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (event === 'PASSWORD_RECOVERY') {
         setIsPasswordRecovery(true);
-        if (typeof window !== 'undefined' && window.location.hash) {
-          window.history.replaceState(null, '', window.location.pathname);
-        }
+      }
+
+      // Secure address bar cleanup after Supabase handles authentication tokens
+      if (typeof window !== 'undefined' && window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname);
       }
     });
 
+    // Capacitor native URL listener for OAuth return & password recovery deep links
+    let appUrlPluginHandle: { remove: () => void } | null = null;
+    if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
+      App.addListener('appUrlOpen', async ({ url }) => {
+        try {
+          await Browser.close().catch(() => {});
+        } catch {
+          // safe ignore
+        }
+
+        if (!url) return;
+
+        // Check if password recovery deep link
+        if (url.includes('type=recovery')) {
+          setIsPasswordRecovery(true);
+        } else if (
+          url.includes('error_code=otp_expired') ||
+          url.includes('error=access_denied') ||
+          url.includes('otp_expired')
+        ) {
+          setIsRecoveryLinkExpired(true);
+        }
+
+        // Process OAuth tokens or code from deep link callback
+        if (url.includes('access_token=') || url.includes('code=')) {
+          if (!supabase) return;
+          const hashOrSearch = url.includes('#') ? url.split('#')[1] : url.split('?')[1] || '';
+          const params = new URLSearchParams(hashOrSearch);
+          const accessToken = params.get('access_token');
+          const refreshToken = params.get('refresh_token');
+          const code = params.get('code');
+
+          if (accessToken && refreshToken) {
+            const { data, error } = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken,
+            });
+            if (!error && data.session) {
+              setSession(data.session);
+              setUser(data.session.user);
+            }
+          } else if (code) {
+            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+            if (!error && data.session) {
+              setSession(data.session);
+              setUser(data.session.user);
+            }
+          }
+        }
+      }).then((handle) => {
+        appUrlPluginHandle = handle;
+      });
+    }
+
     return () => {
       subscription.unsubscribe();
+      appUrlPluginHandle?.remove();
     };
   }, []);
 
@@ -167,6 +230,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: res.error };
   };
 
+  const signInWithGoogle = async (): Promise<{ error: AuthError | null }> => {
+    if (!supabase) {
+      return {
+        error: {
+          name: 'NotConfigured',
+          message: 'Supabase credentials are not configured.',
+        } as AuthError,
+      };
+    }
+
+    try {
+      const isNative = typeof window !== 'undefined' && Capacitor.isNativePlatform();
+      const redirectUrl = isNative
+        ? 'com.abmax.analysis://auth/callback'
+        : getAppRedirectUrl();
+
+      if (isNative) {
+        const { data, error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: redirectUrl,
+            skipBrowserRedirect: true,
+          },
+        });
+        if (error) return { error };
+        if (data?.url) {
+          await Browser.open({ url: data.url, windowName: '_system' });
+        }
+        return { error: null };
+      } else {
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: redirectUrl,
+          },
+        });
+        return { error };
+      }
+    } catch (err) {
+      return {
+        error: {
+          name: 'GoogleAuthError',
+          message: (err as Error).message || 'Google sign-in could not be initiated.',
+        } as AuthError,
+      };
+    }
+  };
+
   const signOut = async () => {
     if (!supabase) return { error: null };
     const res = await supabase.auth.signOut();
@@ -234,6 +345,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signUp,
       verifySignupOtp,
       resendSignupOtp,
+      signInWithGoogle,
       signOut,
       resetPassword,
       updatePassword,
