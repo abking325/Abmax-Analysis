@@ -370,6 +370,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     { key: 'chartAttachments', label: 'Chart images' },
   ];
 
+  const getDeepAnalysisFieldsForTf = (tf: TimeframeId): { key: keyof TimeframeDeepFieldsVisibility; label: string }[] => {
+    const list = [...DEEP_ANALYSIS_FIELDS];
+    if (tf === 'Monthly') {
+      list.push(
+        { key: 'pmh', label: 'Previous Month High (PMH)' },
+        { key: 'pml', label: 'Previous Month Low (PML)' }
+      );
+    } else if (tf === 'Weekly') {
+      list.push(
+        { key: 'pwh', label: 'Previous Week High (PWH)' },
+        { key: 'pwl', label: 'Previous Week Low (PWL)' }
+      );
+    } else if (tf === 'Daily') {
+      list.push(
+        { key: 'pdh', label: 'Previous Day High (PDH)' },
+        { key: 'pdl', label: 'Previous Day Low (PDL)' }
+      );
+    }
+    return list;
+  };
+
   const otherSectionsList: { key: keyof WorkspaceVisibilityConfig['otherSections']; label: string }[] = [
     { key: 'majorLiquidityChecklist', label: 'Major Liquidity Checklist' },
     { key: 'majorLiquidityWatchlist', label: 'Major Liquidity Watchlist' },
@@ -717,7 +738,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
 
                       <div className="divide-y divide-app border border-app rounded-lg bg-app-field/30 overflow-hidden">
-                        {DEEP_ANALYSIS_FIELDS.map(({ key, label }) => {
+                        {getDeepAnalysisFieldsForTf(selectedEditorTf).map(({ key, label }) => {
                           const currentPerTf = visibilityConfig.perTimeframeFields || createDefaultPerTimeframeFields();
                           const tfFields = currentPerTf[selectedEditorTf] || { ...DEFAULT_DEEP_FIELDS_VISIBILITY };
                           const isShown = (tfFields as any)[key] !== false;
@@ -933,7 +954,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
 
                       <div className="divide-y divide-app border border-app rounded-lg bg-app-field/30 overflow-hidden">
-                        {DEEP_ANALYSIS_FIELDS.map(({ key, label }) => {
+                        {getDeepAnalysisFieldsForTf(selectedReportTf).map(({ key, label }) => {
                           const secVis = presentationConfig.sectionVisibility || DEFAULT_REPORT_VISIBILITY;
                           const currentPerTf = secVis.perTimeframeFields || createDefaultPerTimeframeFields();
                           const tfFields = currentPerTf[selectedReportTf] || { ...DEFAULT_DEEP_FIELDS_VISIBILITY };

@@ -40,6 +40,8 @@ interface ReportsViewProps {
   }) => void;
   initialTradeDraft?: any;
   onTradeDraftChange?: (draft: any) => void;
+  reportDetailsCloseTrigger?: number;
+  onReportDetailsStateChange?: (isOpen: boolean, isOrganized: boolean) => void;
 }
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
@@ -53,6 +55,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   onSessionChange,
   initialTradeDraft,
   onTradeDraftChange,
+  reportDetailsCloseTrigger,
+  onReportDetailsStateChange,
 }) => {
   const { user } = useAuth();
   const [selectedPair, setSelectedPair] = useState<string>(initialSession?.selectedPair || 'All');
@@ -62,20 +66,73 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
-  // Restore activeReportDetails on mount from initialSession
+  const consumedReportIdRef = useRef<string | null>(null);
+  const isOrganizedViewRef = useRef<boolean>(false);
+
+  const onReportDetailsStateChangeRef = useRef(onReportDetailsStateChange);
   useEffect(() => {
-    if (initialSession?.activeReportDetailsId && !activeReportDetails && reports.length > 0) {
-      const found = reports.find((r) => r.id === initialSession.activeReportDetailsId);
-      if (found) {
-        setActiveReportDetails(found);
-      }
-    }
-  }, [initialSession?.activeReportDetailsId, reports, activeReportDetails]);
+    onReportDetailsStateChangeRef.current = onReportDetailsStateChange;
+  }, [onReportDetailsStateChange]);
 
   const onSessionChangeRef = useRef(onSessionChange);
   useEffect(() => {
     onSessionChangeRef.current = onSessionChange;
   }, [onSessionChange]);
+
+  // Restore activeReportDetails on mount or when returning from modify, consuming target ID once
+  useEffect(() => {
+    const targetId = initialSession?.activeReportDetailsId;
+    if (targetId && targetId !== consumedReportIdRef.current && reports.length > 0) {
+      const found = reports.find((r) => r.id === targetId);
+      if (found) {
+        consumedReportIdRef.current = targetId;
+        setActiveReportDetails(found);
+        onReportDetailsStateChangeRef.current?.(true, isOrganizedViewRef.current);
+      }
+    }
+  }, [initialSession?.activeReportDetailsId, reports]);
+
+  // Authoritative close function: clears active details, consumed ID, and notifies parent session
+  const handleCloseReportDetails = () => {
+    consumedReportIdRef.current = null;
+    isOrganizedViewRef.current = false;
+    setActiveReportDetails(null);
+    if (initialSession) {
+      initialSession.activeReportDetailsId = null;
+    }
+    onSessionChangeRef.current?.({
+      selectedPair,
+      searchQuery,
+      activeReportDetailsId: null,
+    });
+    onReportDetailsStateChangeRef.current?.(false, false);
+  };
+
+  // Authoritative open function: marks ID as consumed, updates state and notifies parent
+  const handleOpenReportDetails = (report: SavedReport) => {
+    consumedReportIdRef.current = report.id;
+    isOrganizedViewRef.current = false;
+    setActiveReportDetails(report);
+    onSessionChangeRef.current?.({
+      selectedPair,
+      searchQuery,
+      activeReportDetailsId: report.id,
+    });
+    onReportDetailsStateChangeRef.current?.(true, false);
+  };
+
+  // Handle external close trigger from App header
+  useEffect(() => {
+    if (reportDetailsCloseTrigger && reportDetailsCloseTrigger > 0) {
+      handleCloseReportDetails();
+    }
+  }, [reportDetailsCloseTrigger]);
+
+  const handleViewModeChange = (mode: 'standard' | 'organized') => {
+    const isOrganized = mode === 'organized';
+    isOrganizedViewRef.current = isOrganized;
+    onReportDetailsStateChangeRef.current?.(Boolean(activeReportDetails), isOrganized);
+  };
 
   // Notify parent of reports UI session change
   useEffect(() => {
@@ -353,7 +410,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <button
                             type="button"
-                            onClick={() => setActiveReportDetails(r)}
+                            onClick={() => handleOpenReportDetails(r)}
                             className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded transition-colors"
                           >
                             <Eye className="w-3 h-3" /> View Details
@@ -448,18 +505,19 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       {/* Report Details Modal */}
       <ReportDetailsModal
         isOpen={Boolean(activeReportDetails)}
-        onClose={() => setActiveReportDetails(null)}
+        onClose={handleCloseReportDetails}
+        onViewModeChange={handleViewModeChange}
         report={activeReportDetails}
         onModify={(r) => {
-          setActiveReportDetails(null);
+          handleCloseReportDetails();
           onModifyReport(r);
         }}
         onCopy={(r) => {
-          setActiveReportDetails(null);
+          handleCloseReportDetails();
           onCopyReport(r);
         }}
         onDelete={(id) => {
-          setActiveReportDetails(null);
+          handleCloseReportDetails();
           onDeleteReport(id);
         }}
         onUpdateReport={async (updated) => {

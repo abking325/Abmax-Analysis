@@ -213,56 +213,151 @@ export async function getReportById(id: string): Promise<SavedReport | null> {
   }
 }
 
+export interface AtomicUpdateResult {
+  success: boolean;
+  conflict?: boolean;
+  notFound?: boolean;
+  currentRevision?: number;
+  expectedRevision?: number;
+  report?: SavedReport;
+  error?: string;
+}
+
 /**
- * Saves a report to IndexedDB, awaits transaction completion, and verifies read-back.
+ * Atomically updates an existing report within a SINGLE IndexedDB readwrite transaction.
+ * 1. Reads the existing record from the store.
+ * 2. Verifies the report exists.
+ * 3. Enforces that current disk revision matches expectedSourceRevision strictly (handling legacy/missing revisions).
+ * 4. Writes the incremented revision to the store.
+ * If another tab or concurrent write modified the report, it safely halts without writing.
+ */
+export async function updateReportAtomically(
+  report: SavedReport,
+  expectedSourceRevision: number
+): Promise<AtomicUpdateResult> {
+  if (!report.id || report.id === 'active_draft' || report.id === 'draft') {
+    throw new Error('Invalid report ID: cannot update report with draft identity.');
+  }
+
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction('reports', 'readwrite');
+      const store = tx.objectStore('reports');
+      const getReq = store.get(report.id);
+
+      getReq.onerror = () => reject(getReq.error ?? new Error('Failed to read report in transaction'));
+
+      getReq.onsuccess = () => {
+        const existing: SavedReport | undefined = getReq.result;
+        if (!existing) {
+          resolve({
+            success: false,
+            notFound: true,
+            error: `Original report ${report.id} not found in storage.`,
+          });
+          return;
+        }
+
+        // Handle missing or legacy revision values explicitly (default legacy to 1)
+        const currentRevision = typeof existing.revision === 'number' && Number.isFinite(existing.revision)
+          ? existing.revision
+          : 1;
+
+        if (currentRevision !== expectedSourceRevision) {
+          resolve({
+            success: false,
+            conflict: true,
+            currentRevision,
+            expectedRevision: expectedSourceRevision,
+            error: `Concurrency conflict on report ${report.id}: expected revision ${expectedSourceRevision}, found disk revision ${currentRevision}.`,
+          });
+          return;
+        }
+
+        const nextRevision = currentRevision + 1;
+        const sanitized: SavedReport = JSON.parse(
+          JSON.stringify({
+            ...existing,
+            ...report,
+            id: existing.id,
+            createdAt: existing.createdAt || report.createdAt || Date.now(),
+            revision: nextRevision,
+            updatedAt: Date.now(),
+            status: 'Modified',
+            isModified: true,
+          })
+        );
+
+        const putReq = store.put(sanitized);
+        putReq.onerror = () => reject(putReq.error ?? new Error('Failed to put updated report in transaction'));
+
+        tx.oncomplete = () => {
+          removeDeletedReportId(sanitized.id).catch(() => {});
+          addPendingCloudItem({ id: sanitized.id, type: 'report', timestamp: Date.now() }).catch(() => {});
+          resolve({ success: true, report: sanitized });
+        };
+      };
+
+      tx.onerror = () => reject(tx.error ?? new Error('Transaction failed'));
+      tx.onabort = () => reject(tx.error ?? new Error('Transaction aborted'));
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Saves a report to IndexedDB within a SINGLE readwrite transaction, awaiting transaction completion.
  */
 export async function saveReport(report: SavedReport): Promise<SavedReport> {
   if (!report.id || report.id === 'active_draft' || report.id === 'draft') {
     throw new Error('Invalid report ID: cannot save report with draft identity.');
   }
 
-  // Ensure revision is tracked and incremented
-  const existing = await getReportById(report.id);
-  const targetRevision = Math.max(existing?.revision || 0, report.revision || 0) + 1;
-  const sanitizedReport: SavedReport = JSON.parse(
-    JSON.stringify({
-      ...report,
-      revision: targetRevision,
-      openingCandles: report.openingCandles || [],
-      updatedAt: report.updatedAt || Date.now(),
-      createdAt: report.createdAt || Date.now(),
-      pair: report.pair || 'XAUUSD',
-      date: report.date || new Date().toISOString().slice(0, 10),
-    })
-  );
-
   const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     try {
       const tx = db.transaction('reports', 'readwrite');
       const store = tx.objectStore('reports');
-      const req = store.put(sanitizedReport);
+      const getReq = store.get(report.id);
 
-      req.onerror = () => reject(req.error ?? new Error('Failed to put report record'));
-      tx.oncomplete = () => resolve();
+      getReq.onerror = () => reject(getReq.error ?? new Error('Failed to check existing report'));
+
+      getReq.onsuccess = () => {
+        const existing: SavedReport | undefined = getReq.result;
+        const currentRev = typeof existing?.revision === 'number' ? existing.revision : 0;
+        const reportRev = typeof report.revision === 'number' ? report.revision : 0;
+        const targetRevision = Math.max(currentRev, reportRev) + 1;
+
+        const sanitizedReport: SavedReport = JSON.parse(
+          JSON.stringify({
+            ...report,
+            revision: targetRevision,
+            openingCandles: report.openingCandles || [],
+            updatedAt: report.updatedAt || Date.now(),
+            createdAt: report.createdAt || Date.now(),
+            pair: report.pair || 'XAUUSD',
+            date: report.date || new Date().toISOString().slice(0, 10),
+          })
+        );
+
+        const putReq = store.put(sanitizedReport);
+        putReq.onerror = () => reject(putReq.error ?? new Error('Failed to put report record'));
+
+        tx.oncomplete = () => {
+          removeDeletedReportId(sanitizedReport.id).catch(() => {});
+          addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() }).catch(() => {});
+          resolve(sanitizedReport);
+        };
+      };
+
       tx.onerror = () => reject(tx.error ?? new Error('Report save transaction failed on commit'));
       tx.onabort = () => reject(tx.error ?? new Error('Report save transaction aborted'));
     } catch (err) {
       reject(err);
     }
   });
-
-  // Read-back verification: verify identity, revision, and persistence before reporting success
-  const verified = await getReportById(sanitizedReport.id);
-  if (!verified || verified.id !== sanitizedReport.id || verified.revision !== targetRevision) {
-    throw new Error(`Storage integrity check failed: report ${sanitizedReport.id} could not be verified with revision ${targetRevision} after save.`);
-  }
-
-  // Ensure deletion tombstone is cleared if re-saving, and track pending cloud sync (fault-tolerant)
-  await removeDeletedReportId(sanitizedReport.id).catch(() => {});
-  await addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() }).catch(() => {});
-
-  return verified;
 }
 
 /**
@@ -435,18 +530,33 @@ export async function saveDraft(draft: AnalysisData): Promise<void> {
     ...draft,
     originalId,
     id: DRAFT_KEY, // required by keyPath in indexedDB draft store
-    updatedAt: Date.now(),
+    updatedAt: draft.updatedAt || Date.now(),
   };
 
   const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     try {
       const tx = db.transaction('draft', 'readwrite');
       const store = tx.objectStore('draft');
-      const req = store.put(payload);
+      const getReq = store.get(DRAFT_KEY);
 
-      req.onerror = () => reject(req.error ?? new Error('Failed to save draft'));
-      tx.oncomplete = () => resolve();
+      getReq.onerror = () => reject(getReq.error ?? new Error('Failed to inspect existing draft'));
+
+      getReq.onsuccess = () => {
+        const existing = getReq.result;
+        // If an existing draft on disk has a strictly newer timestamp, do not overwrite it
+        if (existing && typeof existing.updatedAt === 'number' && typeof payload.updatedAt === 'number') {
+          if (existing.updatedAt > payload.updatedAt) {
+            resolve();
+            return;
+          }
+        }
+
+        const req = store.put(payload);
+        req.onerror = () => reject(req.error ?? new Error('Failed to save draft'));
+        tx.oncomplete = () => resolve();
+      };
+
       tx.onerror = () => reject(tx.error ?? new Error('Draft transaction failed on commit'));
       tx.onabort = () => reject(tx.error ?? new Error('Draft transaction aborted'));
     } catch (err) {
@@ -455,16 +565,33 @@ export async function saveDraft(draft: AnalysisData): Promise<void> {
   });
 }
 
-export async function clearDraft(): Promise<void> {
+export async function clearDraft(maxUpdatedAtToClear?: number): Promise<void> {
   const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     try {
       const tx = db.transaction('draft', 'readwrite');
       const store = tx.objectStore('draft');
-      const req = store.delete(DRAFT_KEY);
 
-      req.onerror = () => reject(req.error ?? new Error('Failed to clear draft'));
-      tx.oncomplete = () => resolve();
+      if (typeof maxUpdatedAtToClear === 'number') {
+        const getReq = store.get(DRAFT_KEY);
+        getReq.onerror = () => reject(getReq.error ?? new Error('Failed to check draft timestamp'));
+        getReq.onsuccess = () => {
+          const existing = getReq.result;
+          // If disk has newer changes written during or after the save snapshot, do NOT delete them!
+          if (existing && typeof existing.updatedAt === 'number' && existing.updatedAt > maxUpdatedAtToClear) {
+            resolve();
+            return;
+          }
+          const delReq = store.delete(DRAFT_KEY);
+          delReq.onerror = () => reject(delReq.error ?? new Error('Failed to clear draft'));
+          tx.oncomplete = () => resolve();
+        };
+      } else {
+        const req = store.delete(DRAFT_KEY);
+        req.onerror = () => reject(req.error ?? new Error('Failed to clear draft'));
+        tx.oncomplete = () => resolve();
+      }
+
       tx.onerror = () => reject(tx.error ?? new Error('Clear draft transaction failed on commit'));
       tx.onabort = () => reject(tx.error ?? new Error('Clear draft transaction aborted'));
     } catch (err) {

@@ -49,6 +49,11 @@ android {
             }
         }
     }
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "AbmaxAnalysis.apk"
+        }
+    }
 }
 
 repositories {

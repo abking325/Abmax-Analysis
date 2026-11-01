@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.abmax.analysis',
-  appName: 'ABMAX ANALYSIS',
+  appName: 'AbmaxAnalysis',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

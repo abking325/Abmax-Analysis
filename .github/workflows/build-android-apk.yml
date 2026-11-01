@@ -183,21 +183,21 @@ jobs:
             exit 1
           fi
           echo "Discovered generated APK: $FOUND_APK"
-          cp "$FOUND_APK" apk-output/ABMAX-ANALYSIS-personal-testing.apk
+          cp "$FOUND_APK" apk-output/AbmaxAnalysis.apk
           ls -lh apk-output/
 
       - name: Upload ABMAX Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ABMAX-Android-APK
-          path: apk-output/ABMAX-ANALYSIS-personal-testing.apk
+          path: apk-output/AbmaxAnalysis.apk
           if-no-files-found: error
           retention-days: 30
 
       - name: Build Summary
         run: |
           echo "### ABMAX Android APK Build Succeeded 🚀" >> $GITHUB_STEP_SUMMARY
-          echo "- **App Name:** ABMAX ANALYSIS" >> $GITHUB_STEP_SUMMARY
+          echo "- **App Name:** AbmaxAnalysis" >> $GITHUB_STEP_SUMMARY
           echo "- **Application ID:** com.abmax.analysis" >> $GITHUB_STEP_SUMMARY
           echo "- **Version Code:** ${ANDROID_VERSION_CODE} (strictly increasing monotonic build number across workflow runs)" >> $GITHUB_STEP_SUMMARY
           echo "- **Version Name:** ${ANDROID_VERSION_NAME}" >> $GITHUB_STEP_SUMMARY
@@ -207,4 +207,4 @@ jobs:
           if [ -n "$DEBUG_SHA256" ]; then
             echo "- **Signing Certificate SHA-256:** \`$DEBUG_SHA256\`" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "- **Artifact:** Download \`ABMAX-Android-APK\` from this workflow run, extract the zip, and install \`ABMAX-ANALYSIS-personal-testing.apk\` on your Android device." >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact:** Download \`ABMAX-Android-APK\` from this workflow run, extract the zip, and install \`AbmaxAnalysis.apk\` on your Android device." >> $GITHUB_STEP_SUMMARY

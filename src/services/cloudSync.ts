@@ -152,12 +152,13 @@ export async function uploadReportToCloud(
     }
 
     const localRevision = (report as SavedReport & { revision?: number }).revision || 1;
+    const baseCloudRev = report.baseCloudRevision || (report as any).lastCloudRevision || report.sourceRevision;
     let targetRevision = localRevision;
 
     // Check existing cloud record for optimistic concurrency
     const { data: existing } = await supabase
       .from('analyses')
-      .select('revision, updated_at')
+      .select('revision, updated_at, payload')
       .eq('user_id', userId)
       .eq('id', report.id)
       .maybeSingle();
@@ -167,14 +168,40 @@ export async function uploadReportToCloud(
       const cloudUpdatedAt = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
       const localUpdatedAt = report.updatedAt || 0;
 
-      // Only reject as conflict if cloud is strictly newer in BOTH revision and timestamp
+      // 1. Acknowledged Retry Check: if the cloud already recorded this exact update, acknowledge without conflict ONLY if payload matches
+      if (cloudRevision === report.revision && (cloudUpdatedAt === localUpdatedAt || Math.abs(cloudUpdatedAt - localUpdatedAt) < 1000)) {
+        const cloudPayload = existing.payload as SavedReport | undefined;
+        const isSameContent = !cloudPayload || (
+          cloudPayload.title === report.title &&
+          cloudPayload.pair === report.pair &&
+          cloudPayload.date === report.date &&
+          cloudPayload.overallNotes === report.overallNotes &&
+          JSON.stringify(cloudPayload.timeframes) === JSON.stringify(sanitizedTimeframes)
+        );
+        if (isSameContent) {
+          return { success: true };
+        }
+        // Different content with identical revision/timestamp is a concurrency collision, NOT a retry!
+        console.warn(`[CloudSync] Concurrency collision on report ${report.id}: identical revision ${cloudRevision} and timestamp but conflicting content.`);
+        return { success: false, conflict: true };
+      }
+
+      // 2. Base-Revision Concurrency Check: if cloud has advanced past the revision the local edits were based on
+      if (baseCloudRev && cloudRevision > baseCloudRev) {
+        return { success: false, conflict: true };
+      }
+
       if (cloudRevision > localRevision && cloudUpdatedAt > localUpdatedAt) {
         return { success: false, conflict: true };
       }
 
-      // Increment above the max of cloud and local revision
-      targetRevision = Math.max(cloudRevision, localRevision) + 1;
+      // Increment target revision monotonically
+      targetRevision = Math.max(cloudRevision + 1, localRevision);
     } else {
+      // 3. Remote Deletion Check: if report previously existed in the cloud but was deleted remotely, do not silently recreate
+      if (baseCloudRev && baseCloudRev > 0) {
+        return { success: false, conflict: true, error: 'Report was deleted remotely.' };
+      }
       targetRevision = Math.max(1, localRevision);
     }
 
@@ -182,6 +209,8 @@ export async function uploadReportToCloud(
       ...report,
       timeframes: sanitizedTimeframes,
       revision: targetRevision,
+      baseCloudRevision: targetRevision,
+      lastCloudRevision: targetRevision,
     };
 
     const row = {
@@ -203,13 +232,14 @@ export async function uploadReportToCloud(
     };
 
     if (existing) {
-      // Database-level conditional revision update: only update if remote revision <= existing.revision
+      // Server-enforced conditional revision update against the expected base revision
+      const expectedCloudRev = baseCloudRev || existing.revision || 1;
       const { data: updateData, error: updateError } = await supabase
         .from('analyses')
         .update(row)
         .eq('user_id', userId)
         .eq('id', report.id)
-        .lte('revision', existing.revision || 1)
+        .eq('revision', expectedCloudRev)
         .select('id, revision');
 
       if (updateError) {
@@ -454,20 +484,26 @@ async function executeSyncOperation(userId: string): Promise<{
         if (hasPendingLocalEdit) {
           // Case A Conflict: cloud has higher revision, but local user has unmerged edits!
           // Preserve BOTH: save local edits as an explicit backup copy so work is never silently lost
-          const conflictCopy: SavedReport = {
-            ...localRep,
-            id: `rep_conflict_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            title: `${localRep.title || localRep.pair} (Local Conflict Copy)`,
-            status: 'Modified',
-            updatedAt: Date.now(),
-            revision: localRev,
-          };
-          await saveReportDirectly(conflictCopy);
+          const conflictCopyId = `rep_conflict_${localRep.id}_rev${localRev}`;
+          if (!localReportsMap.has(conflictCopyId)) {
+            const conflictCopy: SavedReport = {
+              ...localRep,
+              id: conflictCopyId,
+              copiedFromId: localRep.id,
+              title: `${localRep.title || localRep.pair} (Local Conflict Copy)`,
+              status: 'Modified',
+              updatedAt: localRep.updatedAt || Date.now(),
+              revision: localRev,
+            };
+            await saveReportDirectly(conflictCopy);
+            console.warn(`[CloudSync] Conflict detected for report ${localRep.id}. Preserved local edits as ${conflictCopy.id}.`);
+          } else {
+            console.info(`[CloudSync] Reusing existing conflict copy ${conflictCopyId} across retry/restart.`);
+          }
           await saveReportDirectly(cloudRep);
           await removePendingCloudItem(localRep.id);
           downloaded++;
           conflicts++;
-          console.warn(`[CloudSync] Conflict detected for report ${localRep.id}. Preserved local edits as ${conflictCopy.id}.`);
         } else {
           // Clean cloud update: local has no pending edits
           await saveReportDirectly(cloudRep);

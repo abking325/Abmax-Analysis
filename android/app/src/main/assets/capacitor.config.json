@@ -1,6 +1,6 @@
 {
 	"appId": "com.abmax.analysis",
-	"appName": "ABMAX ANALYSIS",
+	"appName": "AbmaxAnalysis",
 	"webDir": "dist",
 	"server": {
 		"androidScheme": "https",

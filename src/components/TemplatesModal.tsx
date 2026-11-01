@@ -8,14 +8,20 @@ interface SaveTemplateModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (name: string) => Promise<void>;
+  onReplaceExisting?: (template: SavedTemplate) => Promise<void>;
 }
 
 export const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
   isOpen,
   onClose,
   onSave,
+  onReplaceExisting,
 }) => {
+  const [mode, setMode] = useState<'new' | 'replace'>('new');
   const [name, setName] = useState('');
+  const [availableTemplates, setAvailableTemplates] = useState<SavedTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isSubmittingRef = useRef(false);
@@ -24,35 +30,79 @@ export const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
     if (isOpen) {
       setName('');
       setError(null);
+      setMode('new');
+      setSelectedTemplateId('');
       isSubmittingRef.current = false;
+      setLoadingTemplates(true);
+      getAllTemplates()
+        .then((tmpls) => {
+          setAvailableTemplates(tmpls);
+          if (tmpls.length > 0) {
+            setSelectedTemplateId(tmpls[0].id);
+          }
+        })
+        .catch((e) => {
+          console.error('[SaveTemplate] Error fetching templates:', e);
+        })
+        .finally(() => {
+          setLoadingTemplates(false);
+        });
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
+  const selectedTemplate = availableTemplates.find((t) => t.id === selectedTemplateId);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current || saving) return;
 
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setError('Please enter a template name.');
-      return;
-    }
+    if (mode === 'new') {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        setError('Please enter a template name.');
+        return;
+      }
 
-    isSubmittingRef.current = true;
-    setSaving(true);
-    setError(null);
+      isSubmittingRef.current = true;
+      setSaving(true);
+      setError(null);
 
-    try {
-      await onSave(trimmed);
-      onClose();
-    } catch (err) {
-      console.error('[SaveTemplate] Error saving template:', err);
-      setError((err as Error).message || 'Failed to save template. Please try again.');
-    } finally {
-      setSaving(false);
-      isSubmittingRef.current = false;
+      try {
+        await onSave(trimmed);
+        onClose();
+      } catch (err) {
+        console.error('[SaveTemplate] Error saving template:', err);
+        setError((err as Error).message || 'Failed to save template. Please try again.');
+      } finally {
+        setSaving(false);
+        isSubmittingRef.current = false;
+      }
+    } else {
+      if (!selectedTemplate) {
+        setError('Please select an existing template to replace.');
+        return;
+      }
+      if (!onReplaceExisting) {
+        setError('Replacing templates is not supported in this view.');
+        return;
+      }
+
+      isSubmittingRef.current = true;
+      setSaving(true);
+      setError(null);
+
+      try {
+        await onReplaceExisting(selectedTemplate);
+        onClose();
+      } catch (err) {
+        console.error('[SaveTemplate] Error replacing template:', err);
+        setError((err as Error).message || 'Failed to replace template. Please try again.');
+      } finally {
+        setSaving(false);
+        isSubmittingRef.current = false;
+      }
     }
   };
 
@@ -66,7 +116,7 @@ export const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
         onClick={onClose}
       >
         <div
-          className="w-full max-w-md bg-app-main border border-app rounded-lg shadow-xl overflow-hidden"
+          className="w-full max-w-md bg-app-main border border-app rounded-lg shadow-xl overflow-hidden text-app-main"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between px-4 py-3 border-b border-app bg-app-secondary">
@@ -85,24 +135,109 @@ export const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
           </div>
 
           <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-4">
-            <p className="text-xs text-app-secondary leading-normal">
-              This will save all current analytical fields, bias selections, liquidity marks,
-              supply/demand levels, and notes as a reusable starting setup.
-            </p>
-
-            <div>
-              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
-                Template Name
-              </label>
-              <input
-                type="text"
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. London Open SMC Baseline, XAU Trend Setup"
-                className="w-full px-3 py-2 text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
-              />
+            {/* Mode selection buttons */}
+            <div className="flex items-center p-1 bg-app-field rounded-lg border border-app text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('new');
+                  setError(null);
+                }}
+                className={`flex-1 py-1.5 text-center rounded-md transition-colors cursor-pointer ${
+                  mode === 'new'
+                    ? 'bg-app-main text-app-main font-bold shadow-2xs'
+                    : 'text-app-secondary hover:text-app-main'
+                }`}
+              >
+                Save as New Template
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('replace');
+                  setError(null);
+                }}
+                className={`flex-1 py-1.5 text-center rounded-md transition-colors cursor-pointer ${
+                  mode === 'replace'
+                    ? 'bg-app-main text-app-main font-bold shadow-2xs'
+                    : 'text-app-secondary hover:text-app-main'
+                }`}
+              >
+                Replace Existing
+              </button>
             </div>
+
+            {mode === 'new' ? (
+              <>
+                <p className="text-xs text-app-secondary leading-normal">
+                  Save all current analytical fields, bias selections, liquidity marks,
+                  supply/demand levels, and notes as a brand new starting template.
+                </p>
+
+                <div>
+                  <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                    Template Name
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. London Open SMC Baseline, XAU Trend Setup"
+                    className="w-full px-3 py-2 text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-app-secondary leading-normal">
+                  Update an existing template with your current analysis configuration. Its unique template ID will be preserved.
+                </p>
+
+                {loadingTemplates ? (
+                  <div className="py-6 text-center text-xs text-app-secondary">
+                    Loading saved templates...
+                  </div>
+                ) : availableTemplates.length === 0 ? (
+                  <div className="p-3 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+                    <p className="font-semibold">No saved templates found to replace.</p>
+                    <p>Please switch to &ldquo;Save as New Template&rdquo; to create your first template.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                        Select Template to Replace
+                      </label>
+                      <select
+                        value={selectedTemplateId}
+                        onChange={(e) => setSelectedTemplateId(e.target.value)}
+                        className="w-full px-3 py-2 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 cursor-pointer"
+                      >
+                        {availableTemplates.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} {t.data?.pair ? `(${t.data.pair})` : ''} — {new Date(t.updatedAt || t.createdAt).toLocaleDateString()}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedTemplate && (
+                      <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-800 dark:text-amber-300 space-y-1">
+                        <span className="font-bold flex items-center gap-1.5">
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                          Confirmation Notice
+                        </span>
+                        <p>
+                          Are you sure you want to replace template <strong className="font-semibold text-app-main">&ldquo;{selectedTemplate.name}&rdquo;</strong>?
+                          Its starting setup will be overwritten with your current workspace data.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
 
             {error && (
               <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
@@ -121,10 +256,14 @@ export const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={saving}
+                disabled={saving || (mode === 'replace' && (!selectedTemplate || availableTemplates.length === 0))}
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs disabled:opacity-40 cursor-pointer min-h-[36px]"
               >
-                {saving ? 'Saving...' : 'Save Template'}
+                {saving
+                  ? 'Saving...'
+                  : mode === 'new'
+                  ? 'Save Template'
+                  : 'Replace Template'}
               </button>
             </div>
           </form>

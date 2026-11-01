@@ -5,6 +5,8 @@ import {
   TIMEFRAME_ORDER,
   TimeframeData,
   TimeframeId,
+  MajorLiquidityItem,
+  OpeningCandleEntry,
 } from '../types/journal';
 
 export interface AlignmentResult {
@@ -559,4 +561,265 @@ export function getShuffledQuotes(list: DisciplineQuote[] = DISCIPLINE_QUOTES): 
   }
 
   return pool;
+}
+
+export interface TimeframeStructureStatus {
+  status: 'aligned' | 'mixed' | 'incomplete';
+  label: string;
+  direction?: 'Bullish' | 'Bearish';
+}
+
+/**
+ * Derives structure alignment from swing, internal, and fractal structures for a timeframe.
+ * Full alignment requires all applicable required components filled and agreeing (all Bullish or all Bearish).
+ * If filled but mixed: 'Mixed structure'.
+ * If any required direction missing: 'Structure incomplete'.
+ */
+export function getTimeframeStructureAlignment(tfData?: TimeframeData | null): TimeframeStructureStatus {
+  if (!tfData) {
+    return {
+      status: 'incomplete',
+      label: 'Structure incomplete',
+    };
+  }
+
+  const swing = tfData.swing?.direction;
+  const internal = tfData.internal?.direction;
+  const fractal = tfData.fractal?.direction;
+
+  // Missing or unselected required components
+  if (!swing || !internal || !fractal) {
+    return {
+      status: 'incomplete',
+      label: 'Structure incomplete',
+    };
+  }
+
+  // Neutral is non-directional, therefore cannot form full bullish/bearish alignment
+  if (swing === 'Neutral' || internal === 'Neutral') {
+    return {
+      status: 'mixed',
+      label: 'Mixed structure',
+    };
+  }
+
+  if (swing === 'Bullish' && internal === 'Bullish' && fractal === 'Bullish') {
+    return {
+      status: 'aligned',
+      label: 'Structures aligned — Bullish',
+      direction: 'Bullish',
+    };
+  }
+
+  if (swing === 'Bearish' && internal === 'Bearish' && fractal === 'Bearish') {
+    return {
+      status: 'aligned',
+      label: 'Structures aligned — Bearish',
+      direction: 'Bearish',
+    };
+  }
+
+  return {
+    status: 'mixed',
+    label: 'Mixed structure',
+  };
+}
+
+/**
+ * Returns recorded Opening Candle (OC) level for a timeframe if present.
+ */
+export function getTimeframeOcLevel(
+  timeframe: TimeframeId,
+  openingCandles?: OpeningCandleEntry[] | null
+): string | null {
+  if (!openingCandles || openingCandles.length === 0) return null;
+
+  const match = openingCandles.find((oc) => {
+    if (!oc || !oc.level || !oc.level.trim()) return false;
+    if (timeframe === 'Monthly' && oc.session === 'Monthly') return true;
+    if (timeframe === 'Weekly' && oc.session === 'Weekly') return true;
+    if (oc.session.toLowerCase() === timeframe.toLowerCase()) return true;
+    return false;
+  });
+
+  return match ? match.level.trim() : null;
+}
+
+/**
+ * Returns compact formatted string of crossed liquidity taken corresponding to a timeframe.
+ * Monthly: PMH, PML
+ * Weekly: PWH, PWL
+ * Daily: PDH, PDL
+ * 4H: 4H High, 4H Low
+ */
+export function getTimeframeLiquidityTaken(
+  timeframe: TimeframeId,
+  crossedLiquidity?: MajorLiquidityItem[] | null
+): string | null {
+  if (!crossedLiquidity || crossedLiquidity.length === 0) return null;
+
+  const taken: string[] = [];
+  if (timeframe === 'Monthly') {
+    if (crossedLiquidity.includes('PMH')) taken.push('PMH');
+    if (crossedLiquidity.includes('PML')) taken.push('PML');
+  } else if (timeframe === 'Weekly') {
+    if (crossedLiquidity.includes('PWH')) taken.push('PWH');
+    if (crossedLiquidity.includes('PWL')) taken.push('PWL');
+  } else if (timeframe === 'Daily') {
+    if (crossedLiquidity.includes('PDH')) taken.push('PDH');
+    if (crossedLiquidity.includes('PDL')) taken.push('PDL');
+  } else if (timeframe === '4H') {
+    if (crossedLiquidity.includes('4H High')) taken.push('4H High');
+    if (crossedLiquidity.includes('4H Low')) taken.push('4H Low');
+  }
+
+  if (taken.length === 0) return null;
+  return `Liquidity taken: ${taken.join(', ')}`;
+}
+
+export interface TimeframePairAlignmentInfo {
+  localTf: TimeframeId;
+  partnerTf: TimeframeId;
+  status: 'aligned' | 'differing' | 'incomplete' | 'neutral';
+  direction?: 'Bullish' | 'Bearish';
+  label: string;
+  deepAligned: boolean;
+}
+
+export const CONFIGURED_TIMEFRAME_PAIRS: Array<[TimeframeId, TimeframeId]> = [
+  ['Daily', '1H'],
+  ['4H', '15M'],
+  ['1H', '5M'],
+  ['15M', '1M'],
+];
+
+/**
+ * Returns pair alignment information for the given local timeframe.
+ * Configured pairs: Daily ↔ 1H, 4H ↔ 15M, 1H ↔ 5M, 15M ↔ 1M.
+ * 1H and 15M participate in two pairs each.
+ * Omit pairs whose counterpart timeframe is hidden by visibility settings.
+ * Checks deep structures: appends '(Deep structures also aligned)' if and only if both timeframes
+ * have complete structure alignment in the same direction.
+ */
+export function getTimeframePairAlignments(
+  localTf: TimeframeId,
+  timeframes: Record<TimeframeId, TimeframeData>,
+  visibleTimeframes?: Record<TimeframeId, boolean>
+): TimeframePairAlignmentInfo[] {
+  if (!timeframes) return [];
+
+  // Determine configured partner timeframes in standard order
+  const partners: TimeframeId[] = [];
+  if (localTf === 'Daily') {
+    partners.push('1H');
+  } else if (localTf === '4H') {
+    partners.push('15M');
+  } else if (localTf === '1H') {
+    partners.push('Daily', '5M');
+  } else if (localTf === '15M') {
+    partners.push('4H', '1M');
+  } else if (localTf === '5M') {
+    partners.push('1H');
+  } else if (localTf === '1M') {
+    partners.push('15M');
+  }
+
+  const results: TimeframePairAlignmentInfo[] = [];
+
+  for (const partnerTf of partners) {
+    // Respect counterpart timeframe visibility: if hidden, omit pair
+    if (visibleTimeframes && visibleTimeframes[partnerTf] === false) {
+      continue;
+    }
+
+    const localData = timeframes[localTf];
+    const partnerData = timeframes[partnerTf];
+
+    const localBias = localData?.overallBias;
+    const partnerBias = partnerData?.overallBias;
+
+    // Both explicitly Bullish
+    if (localBias === 'Bullish' && partnerBias === 'Bullish') {
+      const localDeep = getTimeframeStructureAlignment(localData);
+      const partnerDeep = getTimeframeStructureAlignment(partnerData);
+      const deepAligned =
+        localDeep.status === 'aligned' &&
+        partnerDeep.status === 'aligned' &&
+        localDeep.direction === 'Bullish' &&
+        partnerDeep.direction === 'Bullish';
+
+      results.push({
+        localTf,
+        partnerTf,
+        status: 'aligned',
+        direction: 'Bullish',
+        label: deepAligned
+          ? `${localTf} aligned with ${partnerTf} — Bullish (Deep structures also aligned)`
+          : `${localTf} aligned with ${partnerTf} — Bullish`,
+        deepAligned,
+      });
+      continue;
+    }
+
+    // Both explicitly Bearish
+    if (localBias === 'Bearish' && partnerBias === 'Bearish') {
+      const localDeep = getTimeframeStructureAlignment(localData);
+      const partnerDeep = getTimeframeStructureAlignment(partnerData);
+      const deepAligned =
+        localDeep.status === 'aligned' &&
+        partnerDeep.status === 'aligned' &&
+        localDeep.direction === 'Bearish' &&
+        partnerDeep.direction === 'Bearish';
+
+      results.push({
+        localTf,
+        partnerTf,
+        status: 'aligned',
+        direction: 'Bearish',
+        label: deepAligned
+          ? `${localTf} aligned with ${partnerTf} — Bearish (Deep structures also aligned)`
+          : `${localTf} aligned with ${partnerTf} — Bearish`,
+        deepAligned,
+      });
+      continue;
+    }
+
+    // Opposing directions -> "Biases differ"
+    if (
+      (localBias === 'Bullish' && partnerBias === 'Bearish') ||
+      (localBias === 'Bearish' && partnerBias === 'Bullish')
+    ) {
+      results.push({
+        localTf,
+        partnerTf,
+        status: 'differing',
+        label: `${localTf} and ${partnerTf} — Biases differ`,
+        deepAligned: false,
+      });
+      continue;
+    }
+
+    // Either Neutral -> "No directional alignment"
+    if (localBias === 'Neutral' || partnerBias === 'Neutral') {
+      results.push({
+        localTf,
+        partnerTf,
+        status: 'neutral',
+        label: `${localTf} and ${partnerTf} — No directional alignment`,
+        deepAligned: false,
+      });
+      continue;
+    }
+
+    // Either missing/unselected/Not sure -> "Pair incomplete"
+    results.push({
+      localTf,
+      partnerTf,
+      status: 'incomplete',
+      label: `${localTf} and ${partnerTf} — Pair incomplete`,
+      deepAligned: false,
+    });
+  }
+
+  return results;
 }

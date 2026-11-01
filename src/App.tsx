@@ -55,14 +55,8 @@ function MainApp() {
   const accountId = user?.id || 'local';
   const initialSession = sessionManager.loadSession(accountId);
 
-  const [activeView, setActiveView] = useState<ActiveView>(() => {
-    if (initialSession && ['home', 'analysis', 'reports'].includes(initialSession.activeView)) {
-      return initialSession.activeView;
-    }
-    const saved = localStorage.getItem('abmax_active_view') as ActiveView;
-    if (saved && ['home', 'analysis', 'reports'].includes(saved)) return saved;
-    return 'home';
-  });
+  // Fresh cold launch or full reload always lands on HOME; in-memory app switching/resuming preserves state
+  const [activeView, setActiveView] = useState<ActiveView>('home');
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('abmax_theme');
@@ -104,7 +98,7 @@ function MainApp() {
     version: 2,
     timestamp: Date.now(),
     accountId,
-    activeView: initialSession?.activeView || 'home',
+    activeView: 'home',
     isEditingExistingReport: initialSession?.isEditingExistingReport || false,
     activeReportId: initialSession?.activeReportId,
     scrollPositions: initialSession?.scrollPositions || {},
@@ -118,6 +112,11 @@ function MainApp() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
   const [showReplaceDraftDialog, setShowReplaceDraftDialog] = useState(false);
+
+  // Report details state coordination with main header
+  const [isReportDetailsOpen, setIsReportDetailsOpen] = useState(false);
+  const [isOrganizedReportViewActive, setIsOrganizedReportViewActive] = useState(false);
+  const [reportDetailsCloseTrigger, setReportDetailsCloseTrigger] = useState(0);
 
   // Animation pause state (persisted in localStorage)
   const [isAnimationPaused, setIsAnimationPaused] = useState<boolean>(() => {
@@ -206,8 +205,29 @@ function MainApp() {
     localStorage.setItem('abmax_theme', theme);
   }, [theme]);
 
+  const handleCloseReportDetails = useCallback(() => {
+    setIsReportDetailsOpen(false);
+    setIsOrganizedReportViewActive(false);
+    if (sessionStateRef.current.reportsUI) {
+      sessionStateRef.current.reportsUI.activeReportDetailsId = null;
+    }
+    setReportDetailsCloseTrigger((prev) => prev + 1);
+  }, []);
+
   // Navigate helper that scrolls window to top and switches view with session serialization
   const navigateTo = (view: ActiveView) => {
+    if (activeView === 'reports' && isReportDetailsOpen) {
+      if (view === 'reports') {
+        // User clicked "Reports" button in header while inside report details:
+        // Closes details and returns to the Reports list!
+        handleCloseReportDetails();
+        return;
+      } else {
+        // User clicked "Home" or "Analysis": dismiss details and proceed with navigation
+        handleCloseReportDetails();
+      }
+    }
+
     sessionStateRef.current.scrollPositions[activeView] = window.scrollY;
     sessionStateRef.current.activeView = view;
     setActiveView(view);
@@ -410,19 +430,28 @@ function MainApp() {
     setIsEditingExistingReport(false);
     sessionStateRef.current.isEditingExistingReport = false;
     sessionStateRef.current.activeReportId = undefined;
+    sessionStateRef.current.sourceRevision = undefined;
     sessionStateRef.current.analysisUI = undefined;
     setShowReplaceDraftDialog(false);
     navigateTo('analysis');
   };
 
-  // Continue existing analysis
+  // Continue existing analysis: preserves content and editing context (source report ID and revision)
   const handleContinueAnalysis = async () => {
     const draft = await getDraft();
     if (draft) {
       setCurrentAnalysis(draft);
-      setIsEditingExistingReport(false);
-      sessionStateRef.current.isEditingExistingReport = false;
-      sessionStateRef.current.activeReportId = undefined;
+      const isModifying = Boolean(
+        sessionStateRef.current.isEditingExistingReport ||
+        (draft as any).isEditingExistingReport ||
+        ((draft as any).originalId && (draft as any).isModified)
+      );
+      const activeId = sessionStateRef.current.activeReportId || (draft as any).originalId || (isModifying ? draft.id : undefined);
+      const sourceRev = sessionStateRef.current.sourceRevision || (draft as any).sourceRevision || (draft as any).revision || 1;
+      setIsEditingExistingReport(isModifying);
+      sessionStateRef.current.isEditingExistingReport = isModifying;
+      sessionStateRef.current.activeReportId = activeId;
+      sessionStateRef.current.sourceRevision = sourceRev;
       navigateTo('analysis');
     } else {
       handleStartAnalysisClick();
@@ -430,21 +459,38 @@ function MainApp() {
   };
 
   // When a report is saved successfully
-  const handleReportSavedSuccessfully = async () => {
+  const handleReportSavedSuccessfully = async (savedReportId?: string) => {
     await refreshStorageData();
+    const wasEditing = isEditingExistingReport;
+    const targetReportId = savedReportId || sessionStateRef.current.activeReportId;
     setIsEditingExistingReport(false);
     sessionStateRef.current.isEditingExistingReport = false;
     sessionStateRef.current.activeReportId = undefined;
+    sessionStateRef.current.sourceRevision = undefined;
     sessionStateRef.current.analysisUI = undefined;
+
+    if (wasEditing && targetReportId) {
+      sessionStateRef.current.reportsUI = {
+        selectedPair: sessionStateRef.current.reportsUI?.selectedPair || 'All',
+        searchQuery: sessionStateRef.current.reportsUI?.searchQuery || '',
+        activeReportDetailsId: targetReportId,
+      };
+    }
     navigateTo('reports');
   };
 
-  // Modify report from Reports view: loads all data into Analysis view
+  // Modify report from Reports view: loads all data into Analysis view with authoritative editing context
   const handleModifyReport = (report: SavedReport) => {
-    setCurrentAnalysis(JSON.parse(JSON.stringify(report)));
+    const reportCopy = JSON.parse(JSON.stringify(report));
+    reportCopy.originalId = report.id;
+    reportCopy.sourceRevision = report.revision || 1;
+    reportCopy.isModified = true;
+    setCurrentAnalysis(reportCopy);
     setIsEditingExistingReport(true);
     sessionStateRef.current.isEditingExistingReport = true;
     sessionStateRef.current.activeReportId = report.id;
+    sessionStateRef.current.sourceRevision = report.revision || 1;
+    saveDraft(reportCopy).catch(console.error);
     navigateTo('analysis');
   };
 
@@ -572,6 +618,8 @@ function MainApp() {
         onNavigate={navigateTo}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
         hasUnsavedDraft={Boolean(savedDraft)}
+        hidden={isOrganizedReportViewActive}
+        isReportDetailsOpen={isReportDetailsOpen}
       />
 
       {/* Main Content Area - Shows only the selected view */}
@@ -627,6 +675,11 @@ function MainApp() {
             onSessionChange={handleReportsSessionChange}
             initialTradeDraft={sessionStateRef.current.tradeModalDraft}
             onTradeDraftChange={handleTradeDraftChange}
+            reportDetailsCloseTrigger={reportDetailsCloseTrigger}
+            onReportDetailsStateChange={(isOpen, isOrganized) => {
+              setIsReportDetailsOpen(isOpen);
+              setIsOrganizedReportViewActive(isOrganized);
+            }}
           />
         )}
       </div>

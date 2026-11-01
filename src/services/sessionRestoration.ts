@@ -66,6 +66,7 @@ export interface WorkingSessionState {
   activeView: ActiveView;
   isEditingExistingReport: boolean;
   activeReportId?: string;
+  sourceRevision?: number;
   scrollPositions: {
     home?: number;
     analysis?: number;
@@ -131,6 +132,11 @@ class SerializedSessionManager {
     analysis?: AnalysisData,
     debounceMs: number = 400
   ) {
+    // Startup navigation guard: never permit unhydrated initial state to overwrite existing drafts
+    if (!this.isHydrated && analysis) {
+      return;
+    }
+
     this.pendingSession = { ...session, timestamp: Date.now() };
     if (analysis) {
       this.pendingAnalysis = analysis;

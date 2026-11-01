@@ -199,6 +199,33 @@ export async function generateReportPdfBlob({
       });
     }
 
+    // Previous-Period Levels (Monthly PMH/PML, Weekly PWH/PWL, Daily PDH/PDL)
+    if (tf === 'Monthly' && (d.pmh || d.pml)) {
+      const parts: string[] = [];
+      if (d.pmh) parts.push(`PMH ${d.pmh}`);
+      if (d.pml) parts.push(`PML ${d.pml}`);
+      items.push({
+        type: 'body',
+        text: `Previous Month: ${parts.join(' | ')}`,
+      });
+    } else if (tf === 'Weekly' && (d.pwh || d.pwl)) {
+      const parts: string[] = [];
+      if (d.pwh) parts.push(`PWH ${d.pwh}`);
+      if (d.pwl) parts.push(`PWL ${d.pwl}`);
+      items.push({
+        type: 'body',
+        text: `Previous Week: ${parts.join(' | ')}`,
+      });
+    } else if (tf === 'Daily' && (d.pdh || d.pdl)) {
+      const parts: string[] = [];
+      if (d.pdh) parts.push(`PDH ${d.pdh}`);
+      if (d.pdl) parts.push(`PDL ${d.pdl}`);
+      items.push({
+        type: 'body',
+        text: `Previous Day: ${parts.join(' | ')}`,
+      });
+    }
+
     // 3. Swing: [direction] | High [value] | Low [value] | BOS [value]
     const swingHasContent = Boolean(
       d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt

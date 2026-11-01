@@ -9,10 +9,13 @@ import {
   calculateOverallAlignment,
   findMatchingValues,
   isDeepAnalysisAligned,
+  getTimeframeStructureAlignment,
+  getTimeframePairAlignments,
 } from '../utils/analysisUtils';
 import {
   Image as ImageIcon,
   CheckCircle,
+  AlertCircle,
   ChevronDown,
   ChevronUp,
   Maximize2,
@@ -178,11 +181,16 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     const hasSd = tfSdLevels.length > 0 && secVis?.notesAndLevels?.generalSupplyDemand !== false;
     const hasNote = Boolean(tf.note && tf.note.trim()) && tfVis?.timeframeNotes !== false;
     const hasChart = Boolean(chartUrl) && ((tfVis as any)?.timeframeImages !== false && (tfVis as any)?.chartAttachments !== false);
+    const hasPrevPeriod =
+      (tfId === 'Monthly' && ((tfVis?.pmh !== false && Boolean(tf.pmh)) || (tfVis?.pml !== false && Boolean(tf.pml)))) ||
+      (tfId === 'Weekly' && ((tfVis?.pwh !== false && Boolean(tf.pwh)) || (tfVis?.pwl !== false && Boolean(tf.pwl)))) ||
+      (tfId === 'Daily' && ((tfVis?.pdh !== false && Boolean(tf.pdh)) || (tfVis?.pdl !== false && Boolean(tf.pdl))));
 
     const hasAnyDetail =
       Boolean(tf.overallBias) ||
       hasInterpretation ||
       hasPriceLoc ||
+      hasPrevPeriod ||
       hasSwing ||
       hasInternal ||
       hasFractal ||
@@ -194,6 +202,9 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     if (!showEmptySections && !hasAnyDetail) {
       return null;
     }
+
+    const structStatus = getTimeframeStructureAlignment(tf);
+    const pairAlignments = getTimeframePairAlignments(tfId, report.timeframes, secVis?.timeframes);
 
     return (
       <section
@@ -217,6 +228,40 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
               {tf.overallBias}
             </span>
           )}
+        </div>
+
+        {/* Deep Structure Alignment & Timeframe Pairs */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          <span
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+              structStatus.status === 'aligned'
+                ? structStatus.direction === 'Bullish'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-rose-50 text-rose-800 border-rose-300'
+                : structStatus.status === 'mixed'
+                ? 'bg-slate-100 text-slate-700 border-slate-300'
+                : 'bg-amber-50 text-amber-800 border-amber-300'
+            }`}
+          >
+            {structStatus.label}
+          </span>
+
+          {pairAlignments.map((pair) => (
+            <span
+              key={`${pair.localTf}-${pair.partnerTf}`}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                pair.status === 'aligned'
+                  ? pair.direction === 'Bullish'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                    : 'bg-rose-50 text-rose-800 border-rose-300'
+                  : pair.status === 'differing'
+                  ? 'bg-amber-50 text-amber-800 border-amber-300'
+                  : 'bg-gray-50 text-gray-600 border-gray-200'
+              }`}
+            >
+              {pair.label}
+            </span>
+          ))}
         </div>
 
         {!hasAnyDetail ? (
@@ -243,6 +288,47 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                   {tf.priceLocation?.location || '—'}
                   {tf.priceLocation?.levelRange ? ` (${tf.priceLocation.levelRange})` : ''}
                 </p>
+              </div>
+            )}
+
+            {/* Previous Period Levels (Monthly PMH/PML, Weekly PWH/PWL, Daily PDH/PDL) */}
+            {hasPrevPeriod && (
+              <div className="bg-gray-50/70 p-2 rounded border border-gray-200/70">
+                <span className="text-[9px] font-semibold uppercase tracking-wider text-gray-500 block mb-0.5">
+                  {tfId === 'Monthly' ? 'Previous Month Levels' : tfId === 'Weekly' ? 'Previous Week Levels' : 'Previous Day Levels'}
+                </span>
+                <div className="flex flex-wrap items-baseline gap-x-2.5 font-mono text-[10px]">
+                  {tfId === 'Monthly' && (
+                    <>
+                      {tfVis?.pmh !== false && tf.pmh && (
+                        <span><strong className="font-sans font-semibold text-gray-700">PMH:</strong> {tf.pmh}</span>
+                      )}
+                      {tfVis?.pml !== false && tf.pml && (
+                        <span><strong className="font-sans font-semibold text-gray-700">PML:</strong> {tf.pml}</span>
+                      )}
+                    </>
+                  )}
+                  {tfId === 'Weekly' && (
+                    <>
+                      {tfVis?.pwh !== false && tf.pwh && (
+                        <span><strong className="font-sans font-semibold text-gray-700">PWH:</strong> {tf.pwh}</span>
+                      )}
+                      {tfVis?.pwl !== false && tf.pwl && (
+                        <span><strong className="font-sans font-semibold text-gray-700">PWL:</strong> {tf.pwl}</span>
+                      )}
+                    </>
+                  )}
+                  {tfId === 'Daily' && (
+                    <>
+                      {tfVis?.pdh !== false && tf.pdh && (
+                        <span><strong className="font-sans font-semibold text-gray-700">PDH:</strong> {tf.pdh}</span>
+                      )}
+                      {tfVis?.pdl !== false && tf.pdl && (
+                        <span><strong className="font-sans font-semibold text-gray-700">PDL:</strong> {tf.pdl}</span>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
@@ -547,37 +633,59 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
           </div>
         )}
 
-        {/* Timeframe Alignment strip */}
+        {/* Complete Overall Alignment Card */}
         {secVis?.general?.overallAlignment !== false && (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 p-2 bg-emerald-50/70 rounded border border-emerald-200 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-900">
-                Timeframe Alignment:
-              </span>
-              <span
-                className={`font-semibold ${
+          <div className="mt-3 p-4 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 shadow-2xs flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
                   overallAlign.status === 'ALIGNED'
-                    ? overallAlign.bias === 'Bullish'
-                      ? 'text-emerald-700'
-                      : 'text-rose-700'
-                    : 'text-amber-700'
+                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
+                    : overallAlign.status === 'WAITING'
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
+                    : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
                 }`}
               >
-                {overallAlign.label}
-              </span>
+                {overallAlign.status === 'ALIGNED' ? (
+                  <CheckCircle className="w-5 h-5" />
+                ) : (
+                  <AlertCircle className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                  Overall Alignment
+                </div>
+                <div className="text-base sm:text-lg font-extrabold text-gray-900 flex items-center gap-2">
+                  <span>{overallAlign.label}</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">{overallAlign.detail}</p>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[11px]">
-              {isAllDeepAligned ? (
-                <span className="inline-flex items-center gap-1 text-emerald-800 font-medium">
-                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                  Deep Analysis Aligned
-                </span>
-              ) : (
-                <span className="text-gray-500">
-                  Deep: {deepAlignedCount > 0 ? `${deepAlignedCount}/7 Aligned` : 'Mixed / Transition'}
-                </span>
-              )}
+            {/* Individual timeframe boxes in exact order with readable direction labels */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {TIMEFRAME_ORDER.map((tf) => {
+                if (secVis?.timeframes && secVis.timeframes[tf] === false) return null;
+                const b = report.timeframes[tf]?.overallBias;
+                return (
+                  <div
+                    key={tf}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border font-medium transition-colors ${
+                      b === 'Bullish'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        : b === 'Bearish'
+                        ? 'bg-rose-50 text-rose-800 border-rose-300'
+                        : b === 'Neutral'
+                        ? 'bg-slate-100 text-slate-700 border-slate-300'
+                        : 'bg-gray-50 text-gray-500 border-gray-200'
+                    }`}
+                  >
+                    <span className="font-bold text-gray-800">{tf}:</span>
+                    <span>{b || 'Not selected'}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

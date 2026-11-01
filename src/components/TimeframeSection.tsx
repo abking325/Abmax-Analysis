@@ -25,12 +25,22 @@ import {
   TimeframeData,
   TimeframeId,
   WorkspaceVisibilityConfig,
+  MajorLiquidityItem,
+  OpeningCandleEntry,
 } from '../types/journal';
-import { isDeepAnalysisAligned, compressImageFile } from '../utils/analysisUtils';
+import {
+  isDeepAnalysisAligned,
+  compressImageFile,
+  getTimeframeStructureAlignment,
+  getTimeframeOcLevel,
+  getTimeframeLiquidityTaken,
+  getTimeframePairAlignments,
+} from '../utils/analysisUtils';
 
 interface TimeframeSectionProps {
   timeframe: TimeframeId;
   data: TimeframeData;
+  allTimeframes?: Record<TimeframeId, TimeframeData>;
   isExpanded: boolean;
   onToggleExpand: () => void;
   onChangeOverallBias: (bias: OverallBias) => void;
@@ -59,11 +69,14 @@ interface TimeframeSectionProps {
     editLevelPrice: string;
     editLevelNote: string;
   }) => void;
+  openingCandles?: OpeningCandleEntry[];
+  crossedLiquidity?: MajorLiquidityItem[];
 }
 
 export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   timeframe,
   data,
+  allTimeframes,
   isExpanded,
   onToggleExpand,
   onChangeOverallBias,
@@ -78,6 +91,8 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   visibilityConfig,
   initialLevelDraft,
   onLevelDraftChange,
+  openingCandles,
+  crossedLiquidity,
 }) => {
   const sectionRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -503,6 +518,14 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
 
   const noteLabel = `${timeframe} Note`;
 
+  // Reactive compact timeframe information summary
+  const structureStatus = getTimeframeStructureAlignment(data);
+  const pairAlignments = allTimeframes
+    ? getTimeframePairAlignments(timeframe, allTimeframes, visibilityConfig?.timeframes)
+    : [];
+  const ocLevel = getTimeframeOcLevel(timeframe, openingCandles);
+  const liquidityTaken = getTimeframeLiquidityTaken(timeframe, crossedLiquidity);
+
   return (
     <section
       ref={sectionRef}
@@ -510,84 +533,137 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
       className="border border-app rounded-lg bg-app-main mb-3 transition-colors shadow-2xs overflow-hidden"
     >
       {/* Timeframe Header Bar (Always visible) */}
-      <div className="p-3 sm:p-4 bg-app-secondary border-b border-app/60 flex flex-col md:flex-row md:items-center justify-between gap-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-base sm:text-lg font-bold text-app-main tracking-tight">
-              {timeframe} Overall
-            </h3>
+      <div className="p-3 sm:p-4 bg-app-secondary border-b border-app/60 space-y-2.5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-base sm:text-lg font-bold text-app-main tracking-tight">
+                {timeframe} Overall
+              </h3>
 
-            {isExpanded && data.isSaved && !deepSaveSuccessMsg && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded">
-                <Check className="w-3 h-3" /> Saved
-              </span>
-            )}
-            {isExpanded && deepSaveSuccessMsg && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-500/40 px-2 py-0.5 rounded">
-                <Check className="w-3 h-3" /> Deep analysis saved
-              </span>
-            )}
+              {isExpanded && data.isSaved && !deepSaveSuccessMsg && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded">
+                  <Check className="w-3 h-3" /> Saved
+                </span>
+              )}
+              {isExpanded && deepSaveSuccessMsg && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-500/40 px-2 py-0.5 rounded">
+                  <Check className="w-3 h-3" /> Deep analysis saved
+                </span>
+              )}
 
-            {isExpanded && deepAligned && (deepVis as any)?.deepAlignment !== false && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-theme/30 px-2 py-0.5 rounded">
-                Deep Analysis Aligned ({data.swing.direction})
-              </span>
-            )}
+              {isExpanded && deepAligned && (deepVis as any)?.deepAlignment !== false && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-theme/30 px-2 py-0.5 rounded">
+                  Deep Analysis Aligned ({data.swing.direction})
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={onToggleExpand}
+              className="md:hidden inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field rounded border border-app transition-colors cursor-pointer"
+              aria-label={isExpanded ? `Collapse ${timeframe} Deep Analysis` : `Expand ${timeframe} Deep Analysis`}
+              aria-expanded={isExpanded}
+            >
+              <span>Deep</span>
+              {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={onToggleExpand}
-            className="md:hidden inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field rounded border border-app transition-colors cursor-pointer"
-            aria-label={isExpanded ? `Collapse ${timeframe} Deep Analysis` : `Expand ${timeframe} Deep Analysis`}
-            aria-expanded={isExpanded}
-          >
-            <span>Deep</span>
-            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
+          {/* Bias Buttons (Always visible even when deep analysis is collapsed) */}
+          <div className="flex items-center gap-1.5 flex-wrap justify-between md:justify-end">
+            <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap">
+              {(['Bullish', 'Neutral', 'Bearish', 'Not sure'] as const).map((b) => {
+                const isSelected = data.overallBias === b;
+                let selectedStyle = 'border-app text-app-secondary hover:bg-app-field';
+                if (isSelected) {
+                  if (b === 'Bullish') {
+                    selectedStyle = 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs';
+                  } else if (b === 'Bearish') {
+                    selectedStyle = 'bg-bearish-pale text-bearish border-rose-500 font-semibold shadow-2xs';
+                  } else if (b === 'Neutral') {
+                    selectedStyle = 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold shadow-2xs';
+                  } else {
+                    selectedStyle = 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400 font-semibold shadow-2xs';
+                  }
+                }
+
+                return (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => onChangeOverallBias(b)}
+                    className={`px-2.5 py-1 text-xs sm:text-xs rounded border transition-colors whitespace-nowrap ${selectedStyle}`}
+                  >
+                    {b}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={onToggleExpand}
+              className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field rounded border border-app transition-colors ml-1 cursor-pointer"
+              aria-label={isExpanded ? `Collapse ${timeframe} Deep Analysis` : `Expand ${timeframe} Deep Analysis`}
+              aria-expanded={isExpanded}
+            >
+              <span>Deep Analysis</span>
+              {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          </div>
         </div>
 
-        {/* Bias Buttons (Always visible even when deep analysis is collapsed) */}
-        <div className="flex items-center gap-1.5 flex-wrap justify-between md:justify-end">
-          <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap">
-            {(['Bullish', 'Neutral', 'Bearish', 'Not sure'] as const).map((b) => {
-              const isSelected = data.overallBias === b;
-              let selectedStyle = 'border-app text-app-secondary hover:bg-app-field';
-              if (isSelected) {
-                if (b === 'Bullish') {
-                  selectedStyle = 'bg-emerald-pale text-bullish border-emerald-500 font-semibold shadow-2xs';
-                } else if (b === 'Bearish') {
-                  selectedStyle = 'bg-bearish-pale text-bearish border-rose-500 font-semibold shadow-2xs';
-                } else if (b === 'Neutral') {
-                  selectedStyle = 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold shadow-2xs';
-                } else {
-                  selectedStyle = 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400 font-semibold shadow-2xs';
-                }
-              }
-
-              return (
-                <button
-                  key={b}
-                  type="button"
-                  onClick={() => onChangeOverallBias(b)}
-                  className={`px-2.5 py-1 text-xs sm:text-xs rounded border transition-colors whitespace-nowrap ${selectedStyle}`}
-                >
-                  {b}
-                </button>
-              );
-            })}
-          </div>
-
-          <button
-            type="button"
-            onClick={onToggleExpand}
-            className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-app-secondary hover:text-app-main hover:bg-app-field rounded border border-app transition-colors ml-1 cursor-pointer"
-            aria-label={isExpanded ? `Collapse ${timeframe} Deep Analysis` : `Expand ${timeframe} Deep Analysis`}
-            aria-expanded={isExpanded}
+        {/* Compact Information Summary (Structure alignment, Opening Candle, Liquidity Taken) */}
+        <div className="pt-2 border-t border-app/50 flex flex-wrap items-center gap-2 text-xs">
+          {/* Structure Alignment Status */}
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border ${
+              structureStatus.status === 'aligned'
+                ? structureStatus.direction === 'Bullish'
+                  ? 'bg-emerald-pale text-bullish border-emerald-500/40'
+                  : 'bg-bearish-pale text-bearish border-rose-500/40'
+                : structureStatus.status === 'mixed'
+                ? 'bg-slate-200 dark:bg-slate-800 text-app-secondary border-app'
+                : 'bg-amber-50 dark:bg-amber-950/30 text-amber-theme border-amber-400/40'
+            }`}
           >
-            <span>Deep Analysis</span>
-            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
+            {structureStatus.label}
+          </span>
+
+          {/* Timeframe-Pair Alignment Indicators */}
+          {pairAlignments.map((pair) => (
+            <span
+              key={`${pair.localTf}-${pair.partnerTf}`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border ${
+                pair.status === 'aligned'
+                  ? pair.direction === 'Bullish'
+                    ? 'bg-emerald-pale text-bullish border-emerald-500/40'
+                    : 'bg-bearish-pale text-bearish border-rose-500/40'
+                  : pair.status === 'differing'
+                  ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-theme border-amber-400/40'
+                  : 'bg-app-field text-app-secondary border-app'
+              }`}
+            >
+              {pair.label}
+            </span>
+          ))}
+
+          {/* Opening Candle (OC) if recorded for this timeframe */}
+          {ocLevel && (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-app-field border border-app text-app-main font-mono">
+              <span className="font-sans font-semibold text-app-secondary">OC:</span>
+              <span>{ocLevel}</span>
+            </span>
+          )}
+
+          {/* Liquidity Taken if matching this timeframe */}
+          {liquidityTaken && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-800">
+              {liquidityTaken}
+            </span>
+          )}
         </div>
       </div>
 
@@ -693,6 +769,139 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                     className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
                   />
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Previous-Period High/Low Levels (Monthly PMH/PML, Weekly PWH/PWL, Daily PDH/PDL) */}
+          {timeframe === 'Monthly' && (deepVis?.pmh !== false || deepVis?.pml !== false) && (
+            <div className="py-4">
+              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                Previous Month Levels (PMH / PML)
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {deepVis?.pmh !== false && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      PMH (Previous Month High)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={data.pmh ?? ''}
+                      onChange={(e) =>
+                        onUpdateField((prev) => ({ ...prev, pmh: e.target.value }))
+                      }
+                      placeholder="e.g. 2685.50"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                    />
+                  </div>
+                )}
+                {deepVis?.pml !== false && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      PML (Previous Month Low)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={data.pml ?? ''}
+                      onChange={(e) =>
+                        onUpdateField((prev) => ({ ...prev, pml: e.target.value }))
+                      }
+                      placeholder="e.g. 2530.00"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {timeframe === 'Weekly' && (deepVis?.pwh !== false || deepVis?.pwl !== false) && (
+            <div className="py-4">
+              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                Previous Week Levels (PWH / PWL)
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {deepVis?.pwh !== false && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      PWH (Previous Week High)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={data.pwh ?? ''}
+                      onChange={(e) =>
+                        onUpdateField((prev) => ({ ...prev, pwh: e.target.value }))
+                      }
+                      placeholder="e.g. 2650.50"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                    />
+                  </div>
+                )}
+                {deepVis?.pwl !== false && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      PWL (Previous Week Low)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={data.pwl ?? ''}
+                      onChange={(e) =>
+                        onUpdateField((prev) => ({ ...prev, pwl: e.target.value }))
+                      }
+                      placeholder="e.g. 2580.20"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {timeframe === 'Daily' && (deepVis?.pdh !== false || deepVis?.pdl !== false) && (
+            <div className="py-4">
+              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                Previous Day Levels (PDH / PDL)
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {deepVis?.pdh !== false && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      PDH (Previous Day High)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={data.pdh ?? ''}
+                      onChange={(e) =>
+                        onUpdateField((prev) => ({ ...prev, pdh: e.target.value }))
+                      }
+                      placeholder="e.g. 2635.80"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                    />
+                  </div>
+                )}
+                {deepVis?.pdl !== false && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      PDL (Previous Day Low)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={data.pdl ?? ''}
+                      onChange={(e) =>
+                        onUpdateField((prev) => ({ ...prev, pdl: e.target.value }))
+                      }
+                      placeholder="e.g. 2605.10"
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

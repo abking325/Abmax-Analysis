@@ -8,12 +8,16 @@ interface HeaderProps {
   onNavigate: (view: ActiveView) => void;
   onOpenSettings: () => void;
   hasUnsavedDraft?: boolean;
+  hidden?: boolean;
+  isReportDetailsOpen?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   activeView,
   onNavigate,
   onOpenSettings,
+  hidden = false,
+  isReportDetailsOpen = false,
 }) => {
   // Local state tracking whether header is visible (only when on top of page <= 80px)
   const [isVisible, setIsVisible] = useState(true);
@@ -37,18 +41,18 @@ export const Header: React.FC<HeaderProps> = ({
     return () => ro.disconnect();
   }, []);
 
-  // Reset to visible whenever navigating to a view
+  // Reset to visible whenever navigating to a view or when report details are open
   useEffect(() => {
     setIsVisible(true);
-  }, [activeView]);
+  }, [activeView, isReportDetailsOpen]);
 
   // Scroll event listener tracking window.scrollY:
   // Nav bar is visible only when at the top of the page (scrollY <= 80px) on Analysis & Reports.
-  // Home view always keeps the header visible.
+  // Home view and Normal report details always keep the header visible.
   useEffect(() => {
     const handleScroll = () => {
-      // Home page header remains stationary and visible
-      if (activeView === 'home') {
+      // Home page and Normal report details header remains stationary and visible
+      if (activeView === 'home' || isReportDetailsOpen) {
         setIsVisible(true);
         return;
       }
@@ -81,6 +85,10 @@ export const Header: React.FC<HeaderProps> = ({
   // Tab index for interactive elements: -1 when hidden so hidden elements cannot be focused
   const buttonTabIndex = isVisible ? 0 : -1;
 
+  if (hidden) {
+    return null;
+  }
+
   return (
     <>
       {/* Layout Spacer to guarantee zero content jumps */}
@@ -95,7 +103,7 @@ export const Header: React.FC<HeaderProps> = ({
         ref={headerRef}
         inert={!isVisible ? true : undefined}
         aria-hidden={!isVisible ? 'true' : undefined}
-        className={`fixed top-0 left-0 right-0 z-30 w-full border-b border-app bg-app-main/95 backdrop-blur-xs header-transition no-print ${
+        className={`fixed top-0 left-0 right-0 z-40 w-full border-b border-app bg-app-main/95 backdrop-blur-xs header-transition no-print ${
           isVisible ? 'header-visible shadow-2xs' : 'header-hidden pointer-events-none'
         }`}
       >

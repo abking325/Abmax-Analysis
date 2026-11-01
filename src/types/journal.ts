@@ -64,6 +64,13 @@ export interface TimeframeData {
   note: string;
   chartImageId?: string;
   isSaved: boolean; // Locked in editor until 'Edit' is clicked
+  // Previous-period high/low numeric levels (Monthly: PMH/PML, Weekly: PWH/PWL, Daily: PDH/PDL)
+  pmh?: string;
+  pml?: string;
+  pwh?: string;
+  pwl?: string;
+  pdh?: string;
+  pdl?: string;
 }
 
 export type TradingPair = 'XAUUSD' | 'BTCUSD' | 'EURUSD';
@@ -115,6 +122,8 @@ export interface PlannedScenario {
   invalidationConditions: string; // Invalidation Conditions
   images?: ImageAttachment[]; // Attached setup charts / execution zone screenshots
   isSaved?: boolean; // Individual scenario locked / collapsed state
+  isInvalid?: boolean; // Mark invalid action flag
+  status?: 'Active' | 'Invalid'; // Scenario operational status
   createdAt: number;
   updatedAt: number;
 }
@@ -182,6 +191,12 @@ export interface TimeframeDeepFieldsVisibility {
   timeframeNotes: boolean;
   chartAttachments: boolean;
   timeframeImages: boolean;
+  pmh?: boolean;
+  pml?: boolean;
+  pwh?: boolean;
+  pwl?: boolean;
+  pdh?: boolean;
+  pdl?: boolean;
 }
 
 export const DEFAULT_DEEP_FIELDS_VISIBILITY: TimeframeDeepFieldsVisibility = {
@@ -199,6 +214,12 @@ export const DEFAULT_DEEP_FIELDS_VISIBILITY: TimeframeDeepFieldsVisibility = {
   timeframeNotes: true,
   chartAttachments: true,
   timeframeImages: true,
+  pmh: true,
+  pml: true,
+  pwh: true,
+  pwl: true,
+  pdh: true,
+  pdl: true,
 };
 
 export function createDefaultPerTimeframeFields(): Record<TimeframeId, TimeframeDeepFieldsVisibility> {
@@ -229,6 +250,12 @@ export interface WorkspaceVisibilityConfig {
     liquidityLevels: boolean;
     timeframeNotes: boolean;
     chartAttachments: boolean;
+    pmh?: boolean;
+    pml?: boolean;
+    pwh?: boolean;
+    pwl?: boolean;
+    pdh?: boolean;
+    pdl?: boolean;
   };
   perTimeframeFields?: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
   otherSections: {
@@ -345,6 +372,12 @@ export function normalizeWorkspaceVisibilityConfig(
         : (existing?.chartAttachments !== undefined
             ? Boolean(existing.chartAttachments)
             : (legacyDeep?.chartAttachments !== false)),
+      pmh: existing?.pmh !== undefined ? Boolean(existing.pmh) : true,
+      pml: existing?.pml !== undefined ? Boolean(existing.pml) : true,
+      pwh: existing?.pwh !== undefined ? Boolean(existing.pwh) : true,
+      pwl: existing?.pwl !== undefined ? Boolean(existing.pwl) : true,
+      pdh: existing?.pdh !== undefined ? Boolean(existing.pdh) : true,
+      pdl: existing?.pdl !== undefined ? Boolean(existing.pdl) : true,
     };
   }
 
@@ -389,7 +422,11 @@ export interface AnalysisData {
   isModified?: boolean;
   copiedFromId?: string;
   originalId?: string;
+  sourceRevision?: number;
   revision?: number;
+  baseCloudRevision?: number;
+  lastCloudRevision?: number;
+  pendingSaveId?: string;
 }
 
 export interface SavedReport extends AnalysisData {
@@ -436,6 +473,12 @@ export interface ReportVisibilityConfig {
     timeframeNotes: boolean;
     timeframeImages: boolean;
     chartAttachments?: boolean;
+    pmh?: boolean;
+    pml?: boolean;
+    pwh?: boolean;
+    pwl?: boolean;
+    pdh?: boolean;
+    pdl?: boolean;
   };
   perTimeframeFields?: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
   notesAndLevels: {
@@ -567,6 +610,12 @@ export function normalizeReportVisibilityConfig(
         : (existing?.chartAttachments !== undefined
             ? Boolean(existing.chartAttachments)
             : (legacyFields?.timeframeImages !== false)),
+      pmh: existing?.pmh !== undefined ? Boolean(existing.pmh) : true,
+      pml: existing?.pml !== undefined ? Boolean(existing.pml) : true,
+      pwh: existing?.pwh !== undefined ? Boolean(existing.pwh) : true,
+      pwl: existing?.pwl !== undefined ? Boolean(existing.pwl) : true,
+      pdh: existing?.pdh !== undefined ? Boolean(existing.pdh) : true,
+      pdl: existing?.pdl !== undefined ? Boolean(existing.pdl) : true,
     };
   }
 
@@ -682,6 +731,12 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
     note: '',
     chartImageId: undefined,
     isSaved: false,
+    pmh: '',
+    pml: '',
+    pwh: '',
+    pwl: '',
+    pdh: '',
+    pdl: '',
   };
 }
 

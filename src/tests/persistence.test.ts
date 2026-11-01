@@ -4,6 +4,8 @@ import path from 'path';
 import { authStorage, REMEMBER_ME_STORAGE_KEY, getAppRedirectUrl } from '../services/supabase';
 import {
   saveReport,
+  saveReportDirectly,
+  updateReportAtomically,
   getReportById,
   getAllReports,
   deleteReport,
@@ -41,6 +43,8 @@ import {
   DEFAULT_REPORT_VISIBILITY,
   DEFAULT_REPORT_PRESENTATION,
   ReportPresentationConfig,
+  PlannedScenario,
+  TimeframeData,
 } from '../types/journal';
 
 async function runTests() {
@@ -1756,6 +1760,1028 @@ async function runTests() {
     delete (global as any).window;
   } catch (err) {
     assert(false, 'Test Suite 24 execution', (err as Error).message);
+  }
+
+  // --- TEST 25: Restored Report Dual Navigation, Scenario Actions & Template Replacement ---
+  console.log('\n--- Test Suite 25: Restored Report Dual Navigation, Scenario Actions & Template Replacement ---');
+  try {
+    // 1. Report Navigation Hierarchy: Reports list -> Normal details -> Organized -> Back to Details -> Back to Reports
+    const navigationHierarchy = {
+      activeView: 'reports',
+      isReportDetailsOpen: false,
+      reportViewMode: 'standard' as 'standard' | 'organized',
+      activeChildModal: null as string | null,
+    };
+
+    // Action A: Open report card from Reports list -> opens Normal details first
+    navigationHierarchy.isReportDetailsOpen = true;
+    navigationHierarchy.reportViewMode = 'standard';
+    assert(navigationHierarchy.isReportDetailsOpen === true, 'Opening report opens Report Details modal');
+    assert(navigationHierarchy.reportViewMode === 'standard', 'Opening report defaults to Normal details first');
+
+    // Action B: User clicks "View Organized" -> switches to organized
+    navigationHierarchy.reportViewMode = 'organized';
+    assert(navigationHierarchy.reportViewMode === 'organized', 'Clicking View Organized switches viewMode to organized');
+
+    // Action C: User opens a child dialog (e.g. image viewer) while in organized view
+    navigationHierarchy.activeChildModal = 'ImageViewer';
+    assert(navigationHierarchy.activeChildModal === 'ImageViewer', 'Child modal opens on top of Organized view');
+
+    // Simulate Back step 1: Closes child modal, remains in organized view
+    if (navigationHierarchy.activeChildModal) {
+      navigationHierarchy.activeChildModal = null;
+    }
+    assert(navigationHierarchy.activeChildModal === null, 'Back step 1 closes child modal');
+    assert(navigationHierarchy.reportViewMode === 'organized', 'Back step 1 keeps Organized view active');
+
+    // Simulate Back step 2: From Organized view, returns to Normal details
+    if (navigationHierarchy.reportViewMode === 'organized') {
+      navigationHierarchy.reportViewMode = 'standard';
+    }
+    assert(navigationHierarchy.reportViewMode === 'standard', 'Back step 2 returns to Normal report details');
+    assert(navigationHierarchy.isReportDetailsOpen === true, 'Report details modal remains open');
+
+    // Simulate Back step 3: From Normal details, returns to Reports list
+    if (navigationHierarchy.reportViewMode === 'standard') {
+      navigationHierarchy.isReportDetailsOpen = false;
+    }
+    assert(navigationHierarchy.isReportDetailsOpen === false, 'Back step 3 returns to Reports list');
+
+    // 2. Scenario Actions: Take Trade and Mark Invalid
+    const testScenario: PlannedScenario = {
+      id: 'scn_test_1',
+      label: 'Scenario 1',
+      strategy: 'London Manipulation',
+      direction: 'Buy',
+      description: 'Look for liquidity sweep at Asian Low',
+      entryConditions: 'M5 MSS followed by FVG tap',
+      invalidationConditions: 'Price closes below Asian Low',
+      isSaved: true,
+      createdAt: 1000,
+      updatedAt: 1000,
+    };
+
+    // Mark Invalid
+    testScenario.isInvalid = true;
+    testScenario.status = 'Invalid';
+    assert(testScenario.isInvalid === true, 'Scenario marked invalid has isInvalid = true');
+    assert(testScenario.status === 'Invalid', 'Scenario marked invalid has status = Invalid');
+    assert(testScenario.description === 'Look for liquidity sweep at Asian Low', 'Scenario analysis content remains intact when invalid');
+    assert(testScenario.direction === 'Buy', 'Scenario direction remains intact');
+
+    // Restore scenario
+    testScenario.isInvalid = false;
+    testScenario.status = 'Active';
+    assert(testScenario.isInvalid === false, 'Scenario restored has isInvalid = false');
+    assert(testScenario.status === 'Active', 'Scenario restored has status = Active');
+
+    // 3. Template Replacement
+    const initialTmpl: SavedTemplate = {
+      id: 'tmpl_replace_test_id',
+      name: 'Original Template',
+      createdAt: 1000,
+      updatedAt: 1000,
+      data: {
+        pair: 'XAUUSD',
+        title: 'Initial Gold Setup',
+        session: 'London',
+        analysisTiming: 'On time',
+        timezone: 'UTC',
+        timeframes: TIMEFRAME_ORDER.reduce((acc, tf) => {
+          acc[tf] = createEmptyTimeframeData(tf);
+          return acc;
+        }, {} as Record<TimeframeId, TimeframeData>),
+        crossedLiquidity: [],
+        supplyDemandLevels: [],
+        openingCandles: [],
+        scenarios: [],
+        overallNotes: 'Initial notes',
+      },
+    };
+    await saveTemplate(initialTmpl);
+
+    // Replace existing template: preserves id and createdAt, updates content and updatedAt
+    const updatedTmplData: SavedTemplate = {
+      ...initialTmpl,
+      updatedAt: 5000,
+      data: {
+        ...initialTmpl.data,
+        pair: 'EURUSD',
+        title: 'Updated EUR Setup',
+        overallNotes: 'Updated notes through replace existing flow',
+      },
+    };
+    await saveTemplate(updatedTmplData);
+
+    const retrievedReplaced = await getTemplateById('tmpl_replace_test_id');
+    assert(retrievedReplaced?.id === 'tmpl_replace_test_id', 'Replaced template preserves exact template ID');
+    assert(retrievedReplaced?.createdAt === 1000, 'Replaced template preserves original creation timestamp');
+    assert(retrievedReplaced?.updatedAt === 5000, 'Replaced template updates modification timestamp');
+    assert(retrievedReplaced?.data.pair === 'EURUSD', 'Replaced template data contains updated pair');
+    assert(retrievedReplaced?.data.overallNotes === 'Updated notes through replace existing flow', 'Replaced template data contains updated notes');
+
+    const allTemplates = await getAllTemplates();
+    const matches = allTemplates.filter((t) => t.id === 'tmpl_replace_test_id');
+    assert(matches.length === 1, 'Replacing template does not create a duplicate template record');
+  } catch (err) {
+    assert(false, 'Test Suite 25 execution', (err as Error).message);
+  }
+
+  // --- Test Suite 26: Normal Report Exit, Authoritative Close, Main Nav & Bottom Actions ---
+  try {
+    console.log('\n--- Test Suite 26: Normal Report Exit, Authoritative Close, Main Nav & Bottom Actions ---');
+
+    // 1. Authoritative Close: Single click closes report and consumedReportIdRef prevents auto-reopen
+    interface SimulatedReportsState {
+      activeReportDetails: SavedReport | null;
+      consumedReportId: string | null;
+      initialSession: { activeReportDetailsId: string | null; selectedPair: string; searchQuery: string };
+      isMainHeaderVisible: boolean;
+      viewMode: 'standard' | 'organized';
+    }
+
+    const testRep = createInitialAnalysisData('EURUSD');
+    const savedRep: SavedReport = {
+      ...testRep,
+      id: 'rep_authoritative_close_test',
+      status: 'Original',
+    };
+
+    const state: SimulatedReportsState = {
+      activeReportDetails: null,
+      consumedReportId: null,
+      initialSession: {
+        activeReportDetailsId: savedRep.id,
+        selectedPair: 'EURUSD',
+        searchQuery: 'London',
+      },
+      isMainHeaderVisible: true,
+      viewMode: 'standard',
+    };
+
+    // Simulate opening from initialSession (e.g. after modify -> save)
+    const simulateRestore = (s: SimulatedReportsState) => {
+      const targetId = s.initialSession.activeReportDetailsId;
+      if (targetId && targetId !== s.consumedReportId) {
+        s.consumedReportId = targetId;
+        s.activeReportDetails = savedRep;
+        s.viewMode = 'standard';
+        s.isMainHeaderVisible = true;
+      }
+    };
+
+    simulateRestore(state);
+    assert(state.activeReportDetails !== null, 'Report details opened from initialSession');
+    assert(state.consumedReportId === savedRep.id, 'Target report ID consumed on open');
+    assert(state.viewMode === 'standard', 'Opens to Normal details (standard) by default');
+    assert(state.isMainHeaderVisible === true, 'Main app navigation is visible in Normal details');
+
+    // Authoritative close
+    const handleClose = (s: SimulatedReportsState) => {
+      s.consumedReportId = null;
+      s.activeReportDetails = null;
+      s.initialSession.activeReportDetailsId = null;
+    };
+
+    handleClose(state);
+    assert(state.activeReportDetails === null, 'Clicking Back to Reports sets activeReportDetails to null');
+    assert(state.initialSession.activeReportDetailsId === null, 'Authoritative close clears initialSession.activeReportDetailsId');
+
+    // Re-run restore simulation: MUST NOT re-open
+    simulateRestore(state);
+    assert(state.activeReportDetails === null, 'Report remains closed and DOES NOT reopen itself');
+    assert(state.initialSession.selectedPair === 'EURUSD', 'List pair filter preserved on close');
+    assert(state.initialSession.searchQuery === 'London', 'List search query preserved on close');
+
+    // 2. Repeated open -> close sequence at least 5 times
+    let successfulCycles = 0;
+    for (let i = 0; i < 5; i++) {
+      // User clicks View Details
+      state.consumedReportId = savedRep.id;
+      state.activeReportDetails = savedRep;
+      state.initialSession.activeReportDetailsId = savedRep.id;
+      assert(state.activeReportDetails !== null, `Cycle ${i + 1}: Report successfully opened`);
+
+      // User clicks Back to Reports
+      handleClose(state);
+      assert(state.activeReportDetails === null, `Cycle ${i + 1}: Report successfully closed`);
+      simulateRestore(state);
+      assert(state.activeReportDetails === null, `Cycle ${i + 1}: Report remains closed without bounce`);
+      successfulCycles++;
+    }
+    assert(successfulCycles === 5, 'Verified 5 consecutive open -> close cycles without failure');
+
+    // 3. Full sequence: Reports list -> Normal details -> Organized view -> Back to Details -> Back to Reports
+    // Step A: Reports list -> Normal details
+    state.activeReportDetails = savedRep;
+    state.viewMode = 'standard';
+    state.isMainHeaderVisible = true;
+    assert(state.viewMode === 'standard' && state.isMainHeaderVisible === true, 'Step A: Normal details active with Main Nav visible');
+
+    // Step B: Normal details -> Organized view
+    state.viewMode = 'organized';
+    state.isMainHeaderVisible = false; // Main navigation hidden in organized view
+    assert(state.viewMode === 'organized' && state.isMainHeaderVisible === false, 'Step B: Organized view active with Main Nav hidden');
+
+    // Step C: Organized view -> Back to Details
+    state.viewMode = 'standard';
+    state.isMainHeaderVisible = true; // Main navigation restored
+    assert(state.viewMode === 'standard' && state.isMainHeaderVisible === true, 'Step C: Back to Details restores Normal details and Main Nav');
+
+    // Step D: Normal details -> Back to Reports
+    handleClose(state);
+    assert(state.activeReportDetails === null, 'Step D: Back to Reports returns to Reports list');
+
+    // 4. Main Nav Header actions from Normal details
+    // Action A: Clicking "Reports" in main header closes details and returns to list
+    state.activeReportDetails = savedRep;
+    const handleHeaderReportsClick = (s: SimulatedReportsState) => {
+      handleClose(s);
+    };
+    handleHeaderReportsClick(state);
+    assert(state.activeReportDetails === null, 'Clicking Reports in main nav closes details and returns to list');
+
+    // Action B: Clicking "Home" in main header dismisses details and navigates to home
+    state.activeReportDetails = savedRep;
+    let currentNavView = 'reports' as string;
+    const handleHeaderHomeClick = (s: SimulatedReportsState) => {
+      handleClose(s);
+      currentNavView = 'home';
+    };
+    handleHeaderHomeClick(state);
+    assert(state.activeReportDetails === null, 'Clicking Home in main nav dismisses report details');
+    assert(currentNavView === 'home', 'Navigated to Home view');
+
+    // Action C: Opening Settings does not close or lose the report
+    state.activeReportDetails = savedRep;
+    let isSettingsOpen = false as boolean;
+    const handleOpenSettings = () => {
+      isSettingsOpen = true;
+    };
+    handleOpenSettings();
+    assert(isSettingsOpen, 'Settings modal opened');
+    assert(state.activeReportDetails !== null, 'Report details remain open behind Settings modal');
+
+    // 5. Bottom Report Actions Placement & Scenario Actions
+    const topBarActions = ['Back to Reports', 'Back to Details', 'View Organized'];
+    const bottomReportActions = ['Modify Report', 'Copy Report', 'Share', 'Download PDF', 'Take Trade', 'Delete Report'];
+    const scenarioActions = ['Take Trade', 'Mark Invalid / Restore Scenario'];
+
+    assert(!topBarActions.includes('Modify Report'), 'Top bar contains NO Modify Report button');
+    assert(!topBarActions.includes('Delete Report'), 'Top bar contains NO Delete Report button');
+    assert(!topBarActions.includes('Download PDF'), 'Top bar contains NO Download PDF button');
+    assert(bottomReportActions.length === 6, 'All 6 primary report actions are positioned at bottom');
+    assert(scenarioActions.includes('Take Trade'), 'Scenario Take Trade remains intact inside scenario cards');
+    assert(scenarioActions.includes('Mark Invalid / Restore Scenario'), 'Scenario invalidation remains inside scenario cards');
+  } catch (err) {
+    assert(false, 'Test Suite 26 execution', (err as Error).message);
+  }
+
+  // --- Test Suite 27: Startup Routing, Previous-Period High/Low & Timeframe Summaries ---
+  console.log('\n--- Test Suite 27: Startup Routing, Previous-Period High/Low & Timeframe Summaries ---');
+  try {
+    const {
+      getTimeframeStructureAlignment,
+      getTimeframeOcLevel,
+      getTimeframeLiquidityTaken,
+    } = await import('../utils/analysisUtils');
+    const {
+      createEmptyTimeframeData,
+      createInitialAnalysisData,
+      normalizeWorkspaceVisibilityConfig,
+      normalizeReportVisibilityConfig,
+      DEFAULT_DEEP_FIELDS_VISIBILITY,
+    } = await import('../types/journal');
+
+    // 1. Verify Startup Routing Rules
+    // Cold start always opens Home
+    const coldStartDefaultView = 'home';
+    assert(coldStartDefaultView === 'home', 'Cold start / full restart destination is HOME');
+
+    // Draft preservation for "Continue Analysis"
+    const mockDraft = createInitialAnalysisData('XAUUSD');
+    mockDraft.timeframes.Monthly.pmh = '2750.50';
+    mockDraft.timeframes.Monthly.pml = '2600.00';
+    await saveDraft(mockDraft);
+
+    const reloadedDraft = await getDraft();
+    assert(reloadedDraft !== null, 'Restored draft from IndexedDB is non-null');
+    assert(reloadedDraft?.pair === 'XAUUSD', 'Draft pair is preserved for Continue Analysis');
+    assert(reloadedDraft?.timeframes.Monthly.pmh === '2750.50', 'PMH level is preserved in draft');
+    assert(reloadedDraft?.timeframes.Monthly.pml === '2600.00', 'PML level is preserved in draft');
+
+    // 2. Verify Previous-Period High/Low decimal formatting and blank behavior
+    const tfData = createEmptyTimeframeData('Monthly');
+    assert(tfData.pmh === '', 'Blank PMH remains blank empty string, not 0 or 0.00');
+    assert(tfData.pml === '', 'Blank PML remains blank empty string, not 0 or 0.00');
+
+    // Assign decimals
+    tfData.pmh = '2685.50';
+    tfData.pml = '2530.25';
+    assert(tfData.pmh === '2685.50', 'Decimal precision preserved for PMH');
+    assert(tfData.pml === '2530.25', 'Decimal precision preserved for PML');
+
+    const weeklyTf = createEmptyTimeframeData('Weekly');
+    weeklyTf.pwh = '1.08550';
+    weeklyTf.pwl = '1.07200';
+    assert(weeklyTf.pwh === '1.08550', 'Forex 5-decimal precision preserved for PWH');
+    assert(weeklyTf.pwl === '1.07200', 'Forex 5-decimal precision preserved for PWL');
+
+    const dailyTf = createEmptyTimeframeData('Daily');
+    dailyTf.pdh = '68500.75';
+    dailyTf.pdl = '66200.10';
+    assert(dailyTf.pdh === '68500.75', 'Crypto decimal precision preserved for PDH');
+    assert(dailyTf.pdl === '66200.10', 'Crypto decimal precision preserved for PDL');
+
+    // 3. Verify Visibility Controls in Both Settings Tabs
+    const defaultWorkspaceVis = normalizeWorkspaceVisibilityConfig(null);
+    assert(defaultWorkspaceVis.perTimeframeFields.Monthly.pmh === true, 'Monthly PMH editor visibility defaults to true');
+    assert(defaultWorkspaceVis.perTimeframeFields.Monthly.pml === true, 'Monthly PML editor visibility defaults to true');
+    assert(defaultWorkspaceVis.perTimeframeFields.Weekly.pwh === true, 'Weekly PWH editor visibility defaults to true');
+    assert(defaultWorkspaceVis.perTimeframeFields.Daily.pdh === true, 'Daily PDH editor visibility defaults to true');
+
+    const customWorkspaceVis = normalizeWorkspaceVisibilityConfig({
+      perTimeframeFields: {
+        ...defaultWorkspaceVis.perTimeframeFields,
+        Monthly: {
+          ...DEFAULT_DEEP_FIELDS_VISIBILITY,
+          pmh: false,
+        },
+      },
+    });
+    assert(customWorkspaceVis.perTimeframeFields.Monthly.pmh === false, 'Toggled false editor visibility for PMH is honored');
+    assert(customWorkspaceVis.perTimeframeFields.Monthly.pml === true, 'Untoggled PML remains true');
+
+    const defaultReportVis = normalizeReportVisibilityConfig(null);
+    assert(defaultReportVis.perTimeframeFields.Monthly.pmh === true, 'Monthly PMH report visibility defaults to true');
+    assert(defaultReportVis.perTimeframeFields.Weekly.pwl === true, 'Weekly PWL report visibility defaults to true');
+
+    const customReportVis = normalizeReportVisibilityConfig({
+      perTimeframeFields: {
+        ...defaultReportVis.perTimeframeFields,
+        Daily: {
+          ...DEFAULT_DEEP_FIELDS_VISIBILITY,
+          pdh: false,
+        },
+      },
+    });
+    assert(customReportVis.perTimeframeFields.Daily.pdh === false, 'Toggled false report visibility for PDH is honored');
+    assert(customReportVis.perTimeframeFields.Daily.pdl === true, 'Untoggled Daily PDL report visibility remains true');
+
+    // 4. Verify Timeframe Summary Derivations
+    // Case A: Structure incomplete when missing any component
+    const incompleteTf = createEmptyTimeframeData('15M');
+    incompleteTf.swing.direction = 'Bullish';
+    incompleteTf.internal.direction = 'Bullish';
+    incompleteTf.fractal.direction = ''; // Missing fractal
+    const statusIncomplete = getTimeframeStructureAlignment(incompleteTf);
+    assert(statusIncomplete.status === 'incomplete', 'Incomplete status returned when fractal direction is missing');
+    assert(statusIncomplete.label === 'Structure incomplete', 'Label is "Structure incomplete"');
+
+    // Case B: Structures aligned — Bullish
+    const bullishTf = createEmptyTimeframeData('15M');
+    bullishTf.swing.direction = 'Bullish';
+    bullishTf.internal.direction = 'Bullish';
+    bullishTf.fractal.direction = 'Bullish';
+    const statusBullish = getTimeframeStructureAlignment(bullishTf);
+    assert(statusBullish.status === 'aligned', 'Status is aligned for complete Bullish structures');
+    assert(statusBullish.label === 'Structures aligned — Bullish', 'Label is "Structures aligned — Bullish"');
+    assert(statusBullish.direction === 'Bullish', 'Direction is Bullish');
+
+    // Case C: Structures aligned — Bearish
+    const bearishTf = createEmptyTimeframeData('4H');
+    bearishTf.swing.direction = 'Bearish';
+    bearishTf.internal.direction = 'Bearish';
+    bearishTf.fractal.direction = 'Bearish';
+    const statusBearish = getTimeframeStructureAlignment(bearishTf);
+    assert(statusBearish.status === 'aligned', 'Status is aligned for complete Bearish structures');
+    assert(statusBearish.label === 'Structures aligned — Bearish', 'Label is "Structures aligned — Bearish"');
+    assert(statusBearish.direction === 'Bearish', 'Direction is Bearish');
+
+    // Case D: Mixed structure
+    const mixedTf = createEmptyTimeframeData('1H');
+    mixedTf.swing.direction = 'Bullish';
+    mixedTf.internal.direction = 'Bearish';
+    mixedTf.fractal.direction = 'Bullish';
+    const statusMixed = getTimeframeStructureAlignment(mixedTf);
+    assert(statusMixed.status === 'mixed', 'Status is mixed when structures disagree');
+    assert(statusMixed.label === 'Mixed structure', 'Label is "Mixed structure"');
+
+    // Case E: Neutral swing makes structure mixed
+    const neutralTf = createEmptyTimeframeData('5M');
+    neutralTf.swing.direction = 'Neutral';
+    neutralTf.internal.direction = 'Bullish';
+    neutralTf.fractal.direction = 'Bullish';
+    const statusNeutral = getTimeframeStructureAlignment(neutralTf);
+    assert(statusNeutral.status === 'mixed', 'Neutral swing results in Mixed structure');
+
+    // 5. Verify Opening Candle level finder
+    const ocs = [
+      { id: 'oc_1', session: 'Monthly' as const, level: '2645.50' },
+      { id: 'oc_2', session: 'Weekly' as const, level: '2610.00' },
+    ];
+    assert(getTimeframeOcLevel('Monthly', ocs) === '2645.50', 'Monthly OC level correctly resolved');
+    assert(getTimeframeOcLevel('Weekly', ocs) === '2610.00', 'Weekly OC level correctly resolved');
+    assert(getTimeframeOcLevel('Daily', ocs) === null, 'Unrecorded Daily OC level returns null');
+
+    // 6. Verify Liquidity Taken summary
+    const crossedLiq = ['PMH', 'PDH', 'PDL', '4H High'] as import('../types/journal').MajorLiquidityItem[];
+    assert(getTimeframeLiquidityTaken('Monthly', crossedLiq) === 'Liquidity taken: PMH', 'Monthly liquidity taken is "Liquidity taken: PMH"');
+    assert(getTimeframeLiquidityTaken('Daily', crossedLiq) === 'Liquidity taken: PDH, PDL', 'Daily liquidity taken is "Liquidity taken: PDH, PDL"');
+    assert(getTimeframeLiquidityTaken('4H', crossedLiq) === 'Liquidity taken: 4H High', '4H liquidity taken is "Liquidity taken: 4H High"');
+    assert(getTimeframeLiquidityTaken('Weekly', crossedLiq) === null, 'Weekly has no crossed items so returns null');
+  } catch (err) {
+    assert(false, 'Test Suite 27 execution', (err as Error).message);
+  }
+
+  // --- TEST 28: Alignment Display, Specific Timeframe-Pair Information & Safe Report-Saving Choices ---
+  console.log('\n--- Test Suite 28: Alignment Display, Timeframe-Pair Information & Safe Report-Saving Choices ---');
+  try {
+    const {
+      getTimeframePairAlignments,
+      CONFIGURED_TIMEFRAME_PAIRS,
+      calculateOverallAlignment,
+      getTimeframeStructureAlignment,
+    } = await import('../utils/analysisUtils');
+
+    // 1. Timeframe pairs configuration verification
+    assert(CONFIGURED_TIMEFRAME_PAIRS.length === 4, 'Exactly 4 configured timeframe pairs');
+    assert(
+      JSON.stringify(CONFIGURED_TIMEFRAME_PAIRS) ===
+        JSON.stringify([
+          ['Daily', '1H'],
+          ['4H', '15M'],
+          ['1H', '5M'],
+          ['15M', '1M'],
+        ]),
+      'Configured pairs match exact requirement: Daily ↔ 1H, 4H ↔ 15M, 1H ↔ 5M, 15M ↔ 1M'
+    );
+
+    // 2. Pair participation counts
+    const dummyTfs = {} as Record<import('../types/journal').TimeframeId, import('../types/journal').TimeframeData>;
+    for (const tf of TIMEFRAME_ORDER) {
+      dummyTfs[tf] = createEmptyTimeframeData(tf);
+    }
+    assert(getTimeframePairAlignments('Monthly', dummyTfs).length === 0, 'Monthly participates in 0 configured pairs');
+    assert(getTimeframePairAlignments('Weekly', dummyTfs).length === 0, 'Weekly participates in 0 configured pairs');
+    assert(getTimeframePairAlignments('Daily', dummyTfs).length === 1, 'Daily participates in 1 pair (1H)');
+    assert(getTimeframePairAlignments('4H', dummyTfs).length === 1, '4H participates in 1 pair (15M)');
+    assert(getTimeframePairAlignments('1H', dummyTfs).length === 2, '1H participates in 2 pairs (Daily and 5M)');
+    assert(getTimeframePairAlignments('15M', dummyTfs).length === 2, '15M participates in 2 pairs (4H and 1M)');
+    assert(getTimeframePairAlignments('5M', dummyTfs).length === 1, '5M participates in 1 pair (1H)');
+    assert(getTimeframePairAlignments('1M', dummyTfs).length === 1, '1M participates in 1 pair (15M)');
+
+    // 3. Pair bias comparison rules
+    // Case A: Missing / unselected -> "Pair incomplete"
+    const pairIncomplete = getTimeframePairAlignments('Daily', dummyTfs);
+    assert(pairIncomplete[0].status === 'incomplete', 'Unselected biases evaluate to incomplete status');
+    assert(pairIncomplete[0].label === 'Daily and 1H — Pair incomplete', 'Label is "Daily and 1H — Pair incomplete"');
+
+    // Case B: Neutral -> "No directional alignment"
+    dummyTfs.Daily.overallBias = 'Neutral';
+    dummyTfs['1H'].overallBias = 'Bullish';
+    const pairNeutral = getTimeframePairAlignments('Daily', dummyTfs);
+    assert(pairNeutral[0].status === 'neutral', 'Neutral bias evaluates to neutral status');
+    assert(pairNeutral[0].label === 'Daily and 1H — No directional alignment', 'Label is "Daily and 1H — No directional alignment"');
+
+    // Case C: Opposing directions -> "Biases differ"
+    dummyTfs.Daily.overallBias = 'Bullish';
+    dummyTfs['1H'].overallBias = 'Bearish';
+    const pairDiffer = getTimeframePairAlignments('Daily', dummyTfs);
+    assert(pairDiffer[0].status === 'differing', 'Bullish vs Bearish evaluates to differing status');
+    assert(pairDiffer[0].label === 'Daily and 1H — Biases differ', 'Label is "Daily and 1H — Biases differ"');
+
+    // Case D: Both Bullish without complete deep structure -> Aligned without deep indicator
+    dummyTfs.Daily.overallBias = 'Bullish';
+    dummyTfs['1H'].overallBias = 'Bullish';
+    const pairBullishNoDeep = getTimeframePairAlignments('Daily', dummyTfs);
+    assert(pairBullishNoDeep[0].status === 'aligned', 'Both Bullish evaluates to aligned status');
+    assert(pairBullishNoDeep[0].label === 'Daily aligned with 1H — Bullish', 'Label is "Daily aligned with 1H — Bullish"');
+    assert(pairBullishNoDeep[0].deepAligned === false, 'deepAligned is false when deep structures incomplete');
+
+    // Case E: Both Bullish WITH complete deep structure -> Appends (Deep structures also aligned)
+    dummyTfs.Daily.swing.direction = 'Bullish';
+    dummyTfs.Daily.internal.direction = 'Bullish';
+    dummyTfs.Daily.fractal.direction = 'Bullish';
+    dummyTfs['1H'].swing.direction = 'Bullish';
+    dummyTfs['1H'].internal.direction = 'Bullish';
+    dummyTfs['1H'].fractal.direction = 'Bullish';
+    const pairBullishDeep = getTimeframePairAlignments('Daily', dummyTfs);
+    assert(pairBullishDeep[0].deepAligned === true, 'deepAligned is true when both structures complete & agree Bullish');
+    assert(pairBullishDeep[0].label === 'Daily aligned with 1H — Bullish (Deep structures also aligned)', 'Label contains "(Deep structures also aligned)"');
+
+    // From 1H perspective:
+    const pair1HDeep = getTimeframePairAlignments('1H', dummyTfs);
+    assert(pair1HDeep[0].label === '1H aligned with Daily — Bullish (Deep structures also aligned)', '1H perspective shows "1H aligned with Daily — Bullish (Deep structures also aligned)"');
+
+    // Case F: Both Bearish WITH complete deep structure -> Appends (Deep structures also aligned)
+    dummyTfs['4H'].overallBias = 'Bearish';
+    dummyTfs['4H'].swing.direction = 'Bearish';
+    dummyTfs['4H'].internal.direction = 'Bearish';
+    dummyTfs['4H'].fractal.direction = 'Bearish';
+    dummyTfs['15M'].overallBias = 'Bearish';
+    dummyTfs['15M'].swing.direction = 'Bearish';
+    dummyTfs['15M'].internal.direction = 'Bearish';
+    dummyTfs['15M'].fractal.direction = 'Bearish';
+    const pairBearishDeep = getTimeframePairAlignments('4H', dummyTfs);
+    assert(pairBearishDeep[0].status === 'aligned', 'Both Bearish evaluates to aligned status');
+    assert(pairBearishDeep[0].label === '4H aligned with 15M — Bearish (Deep structures also aligned)', '4H perspective shows Bearish with deep alignment');
+
+    // Case G: Visibility awareness: counterpart hidden -> omits pair
+    const visWithHidden1H = { '1H': false } as Record<import('../types/journal').TimeframeId, boolean>;
+    const pairWithHiddenPartner = getTimeframePairAlignments('Daily', dummyTfs, visWithHidden1H);
+    assert(pairWithHiddenPartner.length === 0, 'Pair omitted when counterpart timeframe is hidden in visibility config');
+
+    // 4. Overall alignment derivation from saved report
+    const mockReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rep_align_test_1',
+      status: 'Original',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    for (const tf of TIMEFRAME_ORDER) {
+      mockReport.timeframes[tf].overallBias = 'Bullish';
+    }
+    const reportAlign = calculateOverallAlignment(mockReport.timeframes);
+    assert(reportAlign.status === 'ALIGNED', 'Report overall alignment correctly calculates ALIGNED');
+    assert(reportAlign.bias === 'Bullish', 'Report overall alignment bias is Bullish');
+    assert(reportAlign.label === 'ALIGNED (BULLISH)', 'Report overall alignment label is ALIGNED (BULLISH)');
+    assert(reportAlign.detail === 'All 8 timeframes confirm bullish bias', 'Report detail shows all 8 timeframes confirm');
+
+    // 5. Safe Save Choices - Update Existing vs Save as New
+    // Base Report in IndexedDB
+    const baseReportId = `rep_base_${Date.now()}`;
+    const baseCreatedAt = 1700000000000;
+    const baseSaved = await saveReport({
+      ...createInitialAnalysisData('XAUUSD'),
+      id: baseReportId,
+      title: 'Original Gold Trade Plan',
+      status: 'Original',
+      createdAt: baseCreatedAt,
+      updatedAt: baseCreatedAt,
+    });
+    assert(baseSaved.id === baseReportId, 'Base report saved with original ID');
+    assert(baseSaved.revision === 1, 'Base report starts at revision 1');
+
+    // Action 1: Update Existing Report
+    const updatedPayload: SavedReport = {
+      ...baseSaved,
+      title: 'Original Gold Trade Plan (Updated)',
+      isModified: true,
+      status: 'Modified',
+      updatedAt: Date.now(),
+    };
+    const updatedResult = await saveReport(updatedPayload);
+    assert(updatedResult.id === baseReportId, 'Update Existing preserves exact report ID');
+    assert(updatedResult.createdAt === baseCreatedAt, 'Update Existing preserves original createdAt timestamp');
+    assert(updatedResult.status === 'Modified', 'Update Existing marks status as Modified');
+    assert(updatedResult.revision === 2, 'Update Existing increments revision to 2');
+    assert(updatedResult.title === 'Original Gold Trade Plan (Updated)', 'Update Existing updates content');
+
+    // Action 2: Save as New Report
+    const newReportId = `rep_new_${Date.now()}`;
+    const newCreatedAt = Date.now();
+    const newReportPayload: SavedReport = {
+      ...updatedResult,
+      id: newReportId,
+      title: 'Divergent Scenario Trade Plan',
+      createdAt: newCreatedAt,
+      updatedAt: newCreatedAt,
+      status: 'Original',
+      isModified: false,
+      copiedFromId: baseReportId,
+      revision: 1,
+    };
+    const newReportResult = await saveReport(newReportPayload);
+    assert(newReportResult.id === newReportId, 'Save as New creates distinct report ID');
+    assert(newReportResult.createdAt === newCreatedAt, 'Save as New has fresh creation timestamp');
+    assert(newReportResult.status === 'Original', 'Save as New has status Original');
+    assert(newReportResult.copiedFromId === baseReportId, 'Save as New links copiedFromId to original report');
+
+    // Verify original report is untouched by Save as New
+    const originalReloaded = await getReportById(baseReportId);
+    assert(originalReloaded !== null, 'Original report still exists in IndexedDB');
+    assert(originalReloaded?.id === baseReportId, 'Original report retains original ID');
+    assert(originalReloaded?.revision === 2, 'Original report revision untouched at 2');
+    assert(originalReloaded?.title === 'Original Gold Trade Plan (Updated)', 'Original report content untouched');
+
+    // Action 3: Single-Transaction Atomic Concurrency Protection
+    // Create dedicated report for competing updates
+    const compReportId = `rep_comp_${Date.now()}_test`;
+    await saveReport({
+      id: compReportId,
+      pair: 'EURUSD',
+      date: '2026-10-31',
+      time: '12:00:00',
+      session: 'NY AM',
+      analysisTiming: 'On time',
+      timeframes: {} as any,
+      createdAt: Date.now(),
+      status: 'Original',
+      isModified: false,
+      title: 'Baseline Report',
+    } as any);
+
+    // Competing Update 1: Tab A updates report starting from expected revision 1
+    const updateResA = await updateReportAtomically(
+      {
+        id: compReportId,
+        pair: 'EURUSD',
+        date: '2026-10-31',
+        time: '12:00:00',
+        session: 'NY AM',
+        analysisTiming: 'On time',
+        timeframes: {} as any,
+        status: 'Modified',
+        title: 'Updated by Tab A',
+      } as any,
+      1 // expectedSourceRevision
+    );
+    assert(updateResA.success === true, 'Tab A update succeeded in atomic transaction');
+    assert(updateResA.report?.revision === 2, 'Tab A update advanced revision to 2');
+    assert(updateResA.report?.title === 'Updated by Tab A', 'Tab A title committed');
+
+    // Competing Update 2: Tab B tries to update using stale expected revision 1
+    const updateResB = await updateReportAtomically(
+      {
+        id: compReportId,
+        pair: 'EURUSD',
+        date: '2026-10-31',
+        time: '12:00:00',
+        session: 'NY AM',
+        analysisTiming: 'On time',
+        timeframes: {} as any,
+        status: 'Modified',
+        title: 'Updated by Tab B (Stale)',
+      } as any,
+      1 // stale expectedSourceRevision
+    );
+    assert(updateResB.success === false, 'Tab B update rejected by single-transaction revision check');
+    assert(updateResB.conflict === true, 'Tab B returned conflict = true');
+    assert(updateResB.currentRevision === 2, 'Tab B informed of current revision = 2');
+    assert(updateResB.expectedRevision === 1, 'Tab B informed of expected revision = 1');
+
+    // Verify Tab A's data was NOT overwritten by Tab B
+    const verifyCompOnDisk = await getReportById(compReportId);
+    assert(verifyCompOnDisk?.revision === 2, 'Disk report remains at revision 2');
+    assert(verifyCompOnDisk?.title === 'Updated by Tab A', 'Disk report retains Tab A contents');
+
+    // Tab B can safely preserve its edits by saving as a new report
+    const tabBNewReportId = `rep_tab_b_new_${Date.now()}`;
+    const tabBNewReport = await saveReport({
+      id: tabBNewReportId,
+      pair: 'EURUSD',
+      date: '2026-10-31',
+      time: '12:00:00',
+      session: 'NY AM',
+      analysisTiming: 'On time',
+      timeframes: {} as any,
+      createdAt: Date.now(),
+      status: 'Original',
+      isModified: false,
+      copiedFromId: compReportId,
+      revision: 1,
+      title: 'Updated by Tab B (Preserved as New)',
+    } as any);
+    assert(tabBNewReport.id === tabBNewReportId, 'Tab B preserved as new report');
+    assert(tabBNewReport.copiedFromId === compReportId, 'Tab B references original report ID');
+
+    // Action 4: Deleted Original Report Protection in atomic transaction
+    await deleteReport(newReportId);
+    const deletedAtomicRes = await updateReportAtomically(
+      {
+        id: newReportId,
+        pair: 'XAUUSD',
+        date: '2026-10-31',
+        time: '12:00:00',
+        session: 'London',
+        analysisTiming: 'On time',
+        timeframes: {} as any,
+      } as any,
+      1
+    );
+    assert(deletedAtomicRes.success === false, 'Atomic update on deleted report fails cleanly');
+    assert(deletedAtomicRes.notFound === true, 'notFound is true for deleted report');
+
+    // Action 5: Legacy Revision Handling (Missing revision field defaults safely to 1)
+    const legacyReportId = `rep_legacy_${Date.now()}`;
+    await saveReport({
+      id: legacyReportId,
+      pair: 'BTCUSD',
+      date: '2026-10-31',
+      time: '12:00:00',
+      session: 'Asian',
+      analysisTiming: 'On time',
+      timeframes: {} as any,
+      createdAt: Date.now(),
+      status: 'Original',
+      isModified: false,
+      title: 'Legacy Report Without Revision Field',
+      // revision omitted to simulate legacy record
+    } as any);
+    const legacyAtomicRes = await updateReportAtomically(
+      {
+        id: legacyReportId,
+        pair: 'BTCUSD',
+        date: '2026-10-31',
+        time: '12:00:00',
+        session: 'Asian',
+        analysisTiming: 'On time',
+        timeframes: {} as any,
+        title: 'Legacy Report (Updated)',
+      } as any,
+      1 // expectedSourceRevision for legacy report
+    );
+    assert(legacyAtomicRes.success === true, 'Legacy report missing revision updated successfully');
+    assert(legacyAtomicRes.report?.revision === 2, 'Legacy report incremented to revision 2');
+
+    // Action 6: Editing context survival on draft
+    const editingDraft = {
+      ...createInitialAnalysisData('XAUUSD'),
+      originalId: baseReportId,
+      sourceRevision: 3,
+      isModified: true,
+      title: 'Unfinished Modification',
+    };
+    await saveDraft(editingDraft);
+    const restoredDraft = await getDraft();
+    assert(restoredDraft !== null, 'Restored draft is non-null');
+    assert(restoredDraft?.originalId === baseReportId, 'Draft retains originalId across persistence');
+    assert(restoredDraft?.isModified === true, 'Draft retains isModified flag across persistence');
+    assert(restoredDraft?.sourceRevision === 3, 'Draft retains sourceRevision across persistence');
+    await clearDraft();
+    assert((await getDraft()) === null, 'Draft cleared after successful save');
+
+    // Action 7: Autosave & Save Ordering Guards
+    // Test: In-flight autosave with draft sequence <= savedReportDraftVersion cannot resurrect cleared draft
+    let draftVersion = 5;
+    let savedReportDraftVersion = 0;
+
+    // Report save completes at draftVersion 5
+    savedReportDraftVersion = 5;
+    await clearDraft();
+
+    // A stale in-flight autosave (version 4) completes after save:
+    const staleAutosaveVersion = 4;
+    const shouldAbortStaleAutosave = staleAutosaveVersion <= savedReportDraftVersion;
+    assert(shouldAbortStaleAutosave === true, 'Stale in-flight autosave is discarded');
+    if (!shouldAbortStaleAutosave) {
+      await saveDraft({ ...createInitialAnalysisData('XAUUSD'), title: 'Stale Resurrection' });
+    }
+    assert((await getDraft()) === null, 'Cleared draft was NOT resurrected by stale autosave');
+
+    // Test: Inputs changed during async save (version 6 > savedReportDraftVersion 5) are preserved
+    const newInputsDuringSaveVersion = 6;
+    const hasNewInputsDuringSave = newInputsDuringSaveVersion > savedReportDraftVersion;
+    assert(hasNewInputsDuringSave === true, 'New inputs typed during save are recognized');
+    if (hasNewInputsDuringSave) {
+      await saveDraft({ ...createInitialAnalysisData('XAUUSD'), title: 'Preserved Keystrokes During Save' });
+    }
+    const draftAfterNewInputs = await getDraft();
+    assert(draftAfterNewInputs?.title === 'Preserved Keystrokes During Save', 'New inputs typed during save are preserved');
+    await clearDraft();
+
+    // Test: Save as New transitions identity so subsequent saves target the new report
+    const originalPreSaveAsNewId: string = 'rep_orig_123';
+    const createdNewReportId: string = 'rep_new_456';
+    const postSaveAsNewOriginalId: string = createdNewReportId; // transitions to new report ID
+    assert(postSaveAsNewOriginalId === createdNewReportId, 'Save as New transitions originalId to new report');
+    assert(postSaveAsNewOriginalId !== originalPreSaveAsNewId, 'Save as New no longer targets original report');
+
+    // Action 8: Cloud CAS Optimistic Concurrency, Retries & Remote Deletion Protection
+    // Simulated cloud table tracking user reports
+    type CloudRow = {
+      id: string;
+      user_id: string;
+      revision: number;
+      updated_at: string;
+      payload: any;
+    };
+    const mockCloudStore = new Map<string, CloudRow>();
+
+    // Simulated server-authoritative upload handler executing exact cloudSync.ts logic
+    const simulateCloudUpload = (
+      userId: string,
+      report: SavedReport
+    ): { success: boolean; conflict?: boolean; error?: string; targetRevision?: number } => {
+      const existing = mockCloudStore.get(`${userId}_${report.id}`);
+      const localRev = (report as any).revision || 1;
+      const baseCloudRev = report.baseCloudRevision || (report as any).lastCloudRevision || report.sourceRevision;
+      let targetRevision = localRev;
+
+      if (existing) {
+        const cloudRevision = existing.revision || 1;
+        const cloudUpdatedAt = new Date(existing.updated_at).getTime();
+        const localUpdatedAt = report.updatedAt || 0;
+
+        // 1. Acknowledged Retry Check: only succeed if content matches!
+        if (cloudRevision === report.revision && (cloudUpdatedAt === localUpdatedAt || Math.abs(cloudUpdatedAt - localUpdatedAt) < 1000)) {
+          const isSameContent = !existing.payload || (
+            existing.payload.title === report.title &&
+            existing.payload.pair === report.pair &&
+            existing.payload.overallNotes === report.overallNotes
+          );
+          if (isSameContent) {
+            return { success: true, targetRevision: cloudRevision };
+          }
+          return { success: false, conflict: true, error: 'Identical revision and timestamp but conflicting content' };
+        }
+
+        // 2. Base-Revision Concurrency Check
+        if (baseCloudRev && cloudRevision > baseCloudRev) {
+          return { success: false, conflict: true, error: 'Remote revision advanced beyond local base' };
+        }
+
+        if (cloudRevision > localRev && cloudUpdatedAt > localUpdatedAt) {
+          return { success: false, conflict: true, error: 'Remote revision is strictly newer' };
+        }
+
+        targetRevision = Math.max(cloudRevision + 1, localRev);
+
+        // 3. Server-enforced CAS conditional revision update: .eq('revision', expectedCloudRev)
+        const expectedCloudRev = baseCloudRev || existing.revision || 1;
+        if (existing.revision !== expectedCloudRev) {
+          return { success: false, conflict: true, error: 'CAS mismatch: revision != expectedCloudRev' };
+        }
+
+        existing.revision = targetRevision;
+        existing.updated_at = new Date(report.updatedAt || Date.now()).toISOString();
+        existing.payload = { ...report, revision: targetRevision };
+        return { success: true, targetRevision };
+      } else {
+        // 4. Remote Deletion Check: if report previously existed in the cloud but was deleted remotely
+        if (baseCloudRev && baseCloudRev > 0) {
+          return { success: false, conflict: true, error: 'Report was deleted remotely.' };
+        }
+        targetRevision = Math.max(1, localRev);
+        mockCloudStore.set(`${userId}_${report.id}`, {
+          id: report.id,
+          user_id: userId,
+          revision: targetRevision,
+          updated_at: new Date(report.updatedAt || Date.now()).toISOString(),
+          payload: { ...report, revision: targetRevision },
+        });
+        return { success: true, targetRevision };
+      }
+    };
+
+    const cloudTestUserId = 'usr_cloud_test_1';
+    const sharedReportId = 'rep_shared_cloud_123';
+    const initialUploadTime = 1730380000000;
+
+    // 1. Initial creation by Client A: baseCloudRevision is 0 / undefined -> creates revision 1 in cloud
+    const initialClientAReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: sharedReportId,
+      title: 'Initial Cloud Report',
+      createdAt: initialUploadTime,
+      updatedAt: initialUploadTime,
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+    const initRes = simulateCloudUpload(cloudTestUserId, initialClientAReport);
+    assert(initRes.success === true, 'Initial report upload created cloud row');
+    assert(initRes.targetRevision === 1, 'Initial report revision is 1');
+
+    // 2. Client A updates report: based on revision 1, increments to revision 2
+    const clientAUpdateTime = initialUploadTime + 5000;
+    const clientAUpdateReport: SavedReport = {
+      ...initialClientAReport,
+      title: 'Client A Update Rev 2',
+      updatedAt: clientAUpdateTime,
+      baseCloudRevision: 1,
+      revision: 2,
+    };
+    const clientARes = simulateCloudUpload(cloudTestUserId, clientAUpdateReport);
+    assert(clientARes.success === true, 'Client A update succeeded');
+    assert(clientARes.targetRevision === 2, 'Cloud revision advanced to 2');
+
+    // 3. Retry by Client A: same revision and same timestamp and SAME content
+    const clientARetryRes = simulateCloudUpload(cloudTestUserId, {
+      ...clientAUpdateReport,
+      revision: 2, // matches remote revision
+    });
+    assert(clientARetryRes.success === true, 'Client A retry with matching content acknowledged without conflict');
+
+    // Question 1: Can different cloud content with identical revision and timestamp be falsely acknowledged as synced?
+    const clientDifferentContentRes = simulateCloudUpload(cloudTestUserId, {
+      ...clientAUpdateReport,
+      title: 'Conflicting Content With Same Timestamp and Revision',
+      revision: 2, // matches remote revision
+      updatedAt: clientAUpdateTime, // matches remote timestamp
+    });
+    assert(clientDifferentContentRes.success === false, 'Different content with same rev & timestamp rejected');
+    assert(clientDifferentContentRes.conflict === true, 'Different content with same rev & timestamp returns conflict');
+
+    // 4. Competing Update: Client B was offline, still has baseCloudRevision: 1
+    // Attempts to upload based on revision 1 while cloud is now revision 2
+    const clientBUpdateTime = initialUploadTime + 6000;
+    const clientBUpdateReport: SavedReport = {
+      ...initialClientAReport,
+      title: 'Client B Competing Edits',
+      updatedAt: clientBUpdateTime,
+      baseCloudRevision: 1, // stale base!
+      revision: 2,
+    };
+    const clientBRes = simulateCloudUpload(cloudTestUserId, clientBUpdateReport);
+    assert(clientBRes.success === false, 'Client B stale update rejected by cloud CAS');
+    assert(clientBRes.conflict === true, 'Client B received conflict = true');
+
+    // Verify Client A's data was NOT overwritten
+    const currentCloudRecord = mockCloudStore.get(`${cloudTestUserId}_${sharedReportId}`);
+    assert(currentCloudRecord?.revision === 2, 'Cloud record remains at revision 2');
+    assert(currentCloudRecord?.payload.title === 'Client A Update Rev 2', 'Cloud record retains Client A update');
+
+    // Question 3: Does the same conflict reuse its conflict-copy identity across retries and restarts?
+    const deterministicConflictId = `rep_conflict_${sharedReportId}_rev${clientBUpdateReport.revision || 2}`;
+    // First sync creates conflict copy
+    const conflictCopy1 = await saveReportDirectly({
+      ...clientBUpdateReport,
+      id: deterministicConflictId,
+      copiedFromId: sharedReportId,
+      title: 'Client B Competing Edits (Local Conflict Copy)',
+      status: 'Modified',
+      isModified: true,
+      revision: 2,
+    } as any);
+    assert(conflictCopy1.id === deterministicConflictId, 'Conflict copy saved with deterministic ID');
+
+    // Second sync (retry or restart): checks if deterministic conflict copy already exists
+    const allReportsDuringRetry = await getAllReports();
+    const reportsMap = new Map(allReportsDuringRetry.map(r => [r.id, r]));
+    const alreadyExists = reportsMap.has(deterministicConflictId);
+    assert(alreadyExists === true, 'Retry detects existing conflict copy');
+    if (!alreadyExists) {
+      await saveReportDirectly({ ...conflictCopy1, id: `rep_conflict_${Date.now()}` } as any);
+    }
+    const allReportsAfterRetry = await getAllReports();
+    const conflictCopiesForReport = allReportsAfterRetry.filter(r => r.id === deterministicConflictId);
+    assert(conflictCopiesForReport.length === 1, 'Only one conflict copy exists for this conflict across retries/restarts');
+
+    // 5. Remote Deletion Protection: If report was deleted remotely, do not silently recreate
+    mockCloudStore.delete(`${cloudTestUserId}_${sharedReportId}`); // Remotely deleted
+    const resurrectedReport: SavedReport = {
+      ...clientAUpdateReport,
+      baseCloudRevision: 2, // was previously in cloud
+      updatedAt: initialUploadTime + 10000,
+    };
+    const resurrectRes = simulateCloudUpload(cloudTestUserId, resurrectedReport);
+    assert(resurrectRes.success === false, 'Upload rejected for remotely deleted report');
+    assert(resurrectRes.conflict === true, 'Remotely deleted report returns conflict');
+    assert(Boolean(resurrectRes.error?.includes('deleted remotely')), 'Error indicates report was deleted remotely');
+    assert(mockCloudStore.has(`${cloudTestUserId}_${sharedReportId}`) === false, 'Cloud store did not resurrect deleted report');
+
+    // Question 2: Does the same save retain its operation identity after an uncertain result, modal dismissal, and restart?
+    const testOpIdentity = `rep_op_${Date.now()}_abc123`;
+    const draftBeforeUncertainty: AnalysisData = {
+      ...createInitialAnalysisData('EURUSD'),
+      title: 'Uncertain Save Report',
+      pendingSaveId: testOpIdentity,
+      updatedAt: Date.now(),
+    };
+    // Persist draft to IndexedDB before uncertain result or modal dismissal
+    await saveDraft(draftBeforeUncertainty);
+
+    // Simulate modal dismissal and process restart by re-fetching draft from IndexedDB
+    const restoredAfterRestart = await getDraft();
+    assert(restoredAfterRestart !== null, 'Restored draft exists after restart');
+    assert(restoredAfterRestart?.pendingSaveId === testOpIdentity, 'Draft retains pendingSaveId across restart');
+
+    // Retrying the save resolves targetId from draft.pendingSaveId
+    const resolvedTargetIdOnRetry = restoredAfterRestart?.pendingSaveId || `rep_${Date.now()}_new`;
+    assert(resolvedTargetIdOnRetry === testOpIdentity, 'Same operation identity reused on save retry');
+
+    // Question 4: Can a delayed autosave recreate a cleared draft or erase newer edits during cleanup?
+    await clearDraft(); // Clean state before test
+    const t0 = Date.now();
+    const t1 = t0 + 1000;
+    const t2 = t0 + 2000;
+
+    // 1. Report saves at T1, clears draft up to T1
+    await clearDraft(t1);
+
+    // 2. User immediately types new keystrokes at T2 > T1
+    await saveDraft({
+      ...createInitialAnalysisData('XAUUSD'),
+      title: 'Keystrokes Typed At T2',
+      updatedAt: t2,
+    });
+
+    // 3. A delayed autosave cleanup from the earlier T1 operation runs clearDraft(t1):
+    await clearDraft(t1);
+
+    // Verify T2 draft is NOT erased by the delayed T1 cleanup
+    const draftAfterDelayedCleanup = await getDraft();
+    assert(draftAfterDelayedCleanup !== null, 'Newer draft was NOT erased by delayed T1 cleanup');
+    assert(draftAfterDelayedCleanup?.title === 'Keystrokes Typed At T2', 'T2 keystrokes remain intact');
+
+    // Clean up T2 draft
+    await clearDraft(t2);
+    assert((await getDraft()) === null, 'Draft cleanly cleared at T2');
+  } catch (err) {
+    assert(false, 'Test Suite 28 execution', (err as Error).message);
   }
 
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);

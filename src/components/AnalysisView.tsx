@@ -52,11 +52,15 @@ import {
   getDraft,
   clearDraft,
   saveReport,
+  updateReportAtomically,
+  getReportById,
   saveImage,
   deleteImage,
   getImage,
   saveTemplate,
+  getTemplateById,
 } from '../services/db';
+import { ReportDetailsModal } from './ReportDetailsModal';
 import { useAuth } from '../context/AuthContext';
 import {
   uploadReportToCloud,
@@ -67,6 +71,7 @@ import {
 } from '../services/cloudSync';
 import { SyncStatusBadge } from './SyncStatusBadge';
 import { BackupModal } from './BackupModal';
+import { ModifySaveChoiceModal } from './ModifySaveChoiceModal';
 
 interface AnalysisViewProps {
   initialData: AnalysisData;
@@ -277,6 +282,15 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     activeUserIdRef.current = user?.id || null;
   }, [user?.id]);
 
+  // Monotonic draft sequence counter to protect against in-flight autosave resurrection
+  const draftVersionRef = useRef<number>(1);
+  const savedReportDraftVersionRef = useRef<number>(0);
+  // Stable operation identity for retries of logical save operations
+  const pendingSaveIdRef = useRef<string | null>(null);
+
+  // Review latest report state for concurrency inspection without losing draft
+  const [reviewingReport, setReviewingReport] = useState<SavedReport | null>(null);
+
   // Clean up pending autosave timers on unmount
   useEffect(() => {
     return () => {
@@ -290,16 +304,25 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const triggerAutosave = useCallback((currentData: AnalysisData) => {
     if (isSavingReportRef.current) return;
 
+    const currentDraftVersion = draftVersionRef.current;
     const initiatingUserId = user?.id || null;
     const now = Date.now();
     const timeSinceFirstKeystroke = lastAutosaveCallRef.current ? now - lastAutosaveCallRef.current : 0;
     const MAX_WAIT_MS = 3000;
 
     const executeSave = async () => {
-      if (isSavingReportRef.current) return;
+      // Abort if a report save is running or if this draft version was already superseded by a successful save
+      if (isSavingReportRef.current || currentDraftVersion <= savedReportDraftVersionRef.current) return;
       lastAutosaveCallRef.current = 0;
       try {
         await saveDraft(currentData);
+
+        // Re-check after async write: if a report save succeeded while saveDraft was awaiting, do not resurrect
+        if (currentDraftVersion <= savedReportDraftVersionRef.current) {
+          await clearDraft(currentData.updatedAt).catch(() => {});
+          return;
+        }
+
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         setAutosaveStatus(`Draft autosaved at ${timeStr}`);
 
@@ -345,14 +368,29 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     autosaveTimeoutRef.current = setTimeout(executeSave, 800);
   }, [user]);
 
+  // Modify report save choices state (Safe save choices when modifying an existing report)
+  const [isModifySaveChoiceOpen, setIsModifySaveChoiceOpen] = useState(false);
+  const [modifyConflictState, setModifyConflictState] = useState<{
+    type: 'deleted' | 'concurrency';
+    message: string;
+    currentRevision?: number;
+    expectedRevision?: number;
+  } | null>(null);
+
+  const onAnalysisDataChangeRef = useRef(onAnalysisDataChange);
+  useEffect(() => {
+    onAnalysisDataChangeRef.current = onAnalysisDataChange;
+  }, [onAnalysisDataChange]);
+
+  // Synchronous and pure state updater: notifies autosave and parent outside of React's render/reconciliation phase
   const updateAnalysis = (updater: (prev: AnalysisData) => AnalysisData) => {
-    setData((prev) => {
-      const next = updater(prev);
-      dataRef.current = next;
-      triggerAutosave(next);
-      onAnalysisDataChange?.(next);
-      return next;
-    });
+    draftVersionRef.current++;
+    const prev = dataRef.current || data;
+    const next = updater(prev);
+    dataRef.current = next;
+    setData(next);
+    triggerAutosave(next);
+    onAnalysisDataChangeRef.current?.(next);
   };
 
   // Determine active visibility configuration
@@ -716,8 +754,11 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   };
 
-  // Execute Save Report with specified or existing title (Phase 2 & Phase 3)
-  const executeSaveReport = async (overrideTitle?: string) => {
+  // Execute Save Report with specified or existing title and explicit saveMode (Phase 2, Phase 3, Safe Save Choices)
+  const executeSaveReport = async (
+    overrideTitle?: string,
+    saveMode: 'direct' | 'update_existing' | 'save_as_new' = 'direct'
+  ) => {
     if (isSavingReportRef.current) return;
     isSavingReportRef.current = true;
     setIsSavingReport(true);
@@ -733,15 +774,30 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
 
     const now = Date.now();
     const latestData = dataRef.current || data;
+    const isSaveAsNew = saveMode === 'save_as_new';
+    const isUpdateExisting = saveMode === 'update_existing';
+    const isEditing = isSaveAsNew ? false : (isUpdateExisting || isEditingExistingReport);
 
-    // Determine genuine stable report ID: never leak active_draft, and lock to existing report ID when editing
-    const targetId = (isEditingExistingReport && initialData?.id && initialData.id !== 'active_draft' && initialData.id !== 'draft')
-      ? initialData.id
-      : (latestData.id && latestData.id !== 'active_draft' && latestData.id !== 'draft'
-          ? latestData.id
-          : (latestData.originalId && latestData.originalId !== 'active_draft' && latestData.originalId !== 'draft'
-              ? latestData.originalId
-              : `rep_${now}_${Math.random().toString(36).substring(2, 9)}`));
+    // Determine genuine stable report ID: never leak active_draft
+    let targetId: string;
+    if (isSaveAsNew) {
+      targetId = latestData.pendingSaveId || pendingSaveIdRef.current || `rep_${now}_${Math.random().toString(36).substring(2, 9)}`;
+      pendingSaveIdRef.current = targetId;
+      latestData.pendingSaveId = targetId;
+      if (dataRef.current) dataRef.current.pendingSaveId = targetId;
+    } else if (isUpdateExisting) {
+      targetId = (latestData.originalId && latestData.originalId !== 'active_draft' && latestData.originalId !== 'draft')
+        ? latestData.originalId
+        : (initialData?.id && initialData.id !== 'active_draft' ? initialData.id : latestData.id);
+    } else {
+      targetId = (isEditingExistingReport && initialData?.id && initialData.id !== 'active_draft' && initialData.id !== 'draft')
+        ? initialData.id
+        : (latestData.id && latestData.id !== 'active_draft' && latestData.id !== 'draft'
+            ? latestData.id
+            : (latestData.originalId && latestData.originalId !== 'active_draft' && latestData.originalId !== 'draft'
+                ? latestData.originalId
+                : `rep_${now}_${Math.random().toString(36).substring(2, 9)}`));
+    }
 
     // Clean title: use overrideTitle if provided, else latestData.title
     const effectiveTitle = overrideTitle !== undefined ? overrideTitle : (latestData.title || '');
@@ -769,13 +825,29 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       );
     }
 
+    const effectiveCreatedAt = isSaveAsNew
+      ? now
+      : (isEditing && (initialData.createdAt || latestData.createdAt)
+          ? (initialData.createdAt || latestData.createdAt)
+          : (latestData.createdAt || now));
+
+    // Preserve genuine entered analysis date and time; do not replace with today on Save as New
+    const effectiveDate = latestData.date || new Date().toISOString().slice(0, 10);
+    const effectiveTime = latestData.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+    const effectiveStatus: 'Original' | 'Modified' = isSaveAsNew ? 'Original' : (isEditing ? 'Modified' : 'Original');
+    const effectiveIsModified = isSaveAsNew ? false : isEditing;
+    const effectiveCopiedFrom = isSaveAsNew
+      ? (initialData?.id || latestData.originalId || latestData.id)
+      : (latestData.copiedFromId || (initialData as any)?.copiedFromId || undefined);
+
     const reportPayload: SavedReport = {
       ...latestData,
       id: targetId,
       title: cleanTitle || undefined,
       pair: latestData.pair || 'XAUUSD',
-      date: latestData.date || new Date().toISOString().slice(0, 10),
-      time: latestData.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+      date: effectiveDate,
+      time: effectiveTime,
       session: latestData.session || 'London',
       analysisTiming: latestData.analysisTiming || 'On time',
       timeframes: cleanTimeframes,
@@ -784,36 +856,98 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       supplyDemandLevels: latestData.supplyDemandLevels || [],
       openingCandles: finalOpeningCandles,
       scenarios: latestData.scenarios || [],
-      trades: latestData.trades || [],
+      // Avoid duplicating or double-counting recorded trade history in Save as New
+      trades: isSaveAsNew ? [] : (latestData.trades || []),
       overallNotes: latestData.overallNotes || '',
       visibilityConfig: activeVisibility,
       updatedAt: now,
-      createdAt: isEditingExistingReport && (initialData.createdAt || latestData.createdAt) ? (initialData.createdAt || latestData.createdAt) : (latestData.createdAt || now),
-      status: isEditingExistingReport ? 'Modified' : 'Original',
-      isModified: isEditingExistingReport,
-      copiedFromId: latestData.copiedFromId || (initialData as any)?.copiedFromId || undefined,
+      createdAt: effectiveCreatedAt,
+      status: effectiveStatus,
+      isModified: effectiveIsModified,
+      copiedFromId: effectiveCopiedFrom,
+      revision: isSaveAsNew ? 1 : latestData.revision,
     };
 
-    console.info(`[Report Lifecycle] Operation=save_report ID=${targetId} IsEditing=${isEditingExistingReport} TargetRev=${(latestData.revision || 0) + 1}`);
+    console.info(`[Report Lifecycle] Operation=save_report ID=${targetId} Mode=${saveMode} IsEditing=${isEditing} TargetRev=${(latestData.revision || 0) + 1}`);
 
     try {
-      // 1. SAVE LOCALLY FIRST via IndexedDB and verify read-back
-      const savedRecord = await saveReport(reportPayload);
+      const saveSnapshotVersion = draftVersionRef.current;
+      savedReportDraftVersionRef.current = saveSnapshotVersion;
+
+      let savedRecord: SavedReport;
+
+      if (saveMode === 'update_existing') {
+        const sourceRev = latestData.sourceRevision || (initialData as any)?.sourceRevision || initialData?.revision || 1;
+        const atomicRes = await updateReportAtomically(reportPayload, sourceRev);
+
+        if (atomicRes.notFound) {
+          setIsSavingReport(false);
+          isSavingReportRef.current = false;
+          setModifyConflictState({
+            type: 'deleted',
+            message: 'The original report was not found in storage. It may have been deleted in another window, session, or device. Would you like to save your edits as a new report instead?',
+          });
+          setIsModifySaveChoiceOpen(true);
+          return;
+        }
+
+        if (atomicRes.conflict) {
+          setIsSavingReport(false);
+          isSavingReportRef.current = false;
+          setModifyConflictState({
+            type: 'concurrency',
+            message: `The report on disk has been updated to revision ${atomicRes.currentRevision} (your editing baseline was revision ${atomicRes.expectedRevision}).`,
+            currentRevision: atomicRes.currentRevision,
+            expectedRevision: atomicRes.expectedRevision,
+          });
+          setIsModifySaveChoiceOpen(true);
+          return;
+        }
+
+        if (!atomicRes.success || !atomicRes.report) {
+          throw new Error(atomicRes.error || 'Failed to update report atomically');
+        }
+
+        savedRecord = atomicRes.report;
+      } else {
+        savedRecord = await saveReport(reportPayload);
+      }
+
       console.info(`[Report Lifecycle] Operation=save_report_success ID=${savedRecord.id} Revision=${savedRecord.revision} TxResult=COMMITTED`);
       setSaveStage('saved_local');
       setAutosaveStatus('Saved on this device');
 
-      // 2. Clear active draft locally after successful local save
-      await clearDraft();
+      // 2. Draft clearing & input preservation: only clear draft if user didn't type new inputs during async save
+      if (draftVersionRef.current === saveSnapshotVersion) {
+        await clearDraft(now);
+      } else {
+        // User typed inputs while saving: preserve their new keystrokes in draft
+        await saveDraft(dataRef.current);
+      }
+
+      // Clear pending save operation identity now that the save has successfully committed
+      if (latestData.pendingSaveId) delete latestData.pendingSaveId;
+      if (dataRef.current.pendingSaveId) delete dataRef.current.pendingSaveId;
+      pendingSaveIdRef.current = null;
 
       // Update in-memory state with finalized report ID and revision
+      // If Save as New, transition identity so future saves target the new report, never the old one
+      const nextOriginalId = isSaveAsNew ? savedRecord.id : (latestData.originalId || savedRecord.id);
+      const nextSourceRev = savedRecord.revision || 1;
+
       dataRef.current = {
-        ...latestData,
+        ...dataRef.current,
         ...savedRecord,
+        originalId: nextOriginalId,
+        sourceRevision: nextSourceRev,
+        isModified: false,
       };
       setData((prev) => ({
         ...prev,
         ...savedRecord,
+        originalId: nextOriginalId,
+        sourceRevision: nextSourceRev,
+        isModified: false,
       }));
 
       // 3. Cloud synchronization if user is signed in
@@ -848,6 +982,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       }
 
       // 4. Navigate only after successful local save
+      pendingSaveIdRef.current = null;
       onReportSavedSuccessfully(reportPayload.id);
     } catch (err) {
       console.error(`[Report Lifecycle] Operation=save_report_failed ID=${targetId}:`, err);
@@ -860,13 +995,51 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     }
   };
 
-  // Primary Save Report button click (prompts name dialog if title is blank)
+  // Handler for Option 1 in ModifySaveChoiceModal: Update Existing Report (Atomic Single-Transaction)
+  const handleConfirmUpdateExisting = async () => {
+    setModifyConflictState(null);
+    setIsModifySaveChoiceOpen(false);
+    const latestData = dataRef.current || data;
+    await executeSaveReport(latestData.title, 'update_existing');
+  };
+
+  // Handler for Review Latest Version during concurrency conflict (does NOT discard current draft)
+  const handleReviewLatest = async () => {
+    const latestData = dataRef.current || data;
+    const targetId = (latestData.originalId && latestData.originalId !== 'active_draft' && latestData.originalId !== 'draft')
+      ? latestData.originalId
+      : (initialData?.id && initialData.id !== 'active_draft' ? initialData.id : latestData.id);
+    const rep = await getReportById(targetId);
+    if (rep) {
+      setReviewingReport(rep);
+    }
+  };
+
+  // Handler for Option 2 in ModifySaveChoiceModal: Save as New Report
+  const handleConfirmSaveAsNew = async () => {
+    setModifyConflictState(null);
+    setIsModifySaveChoiceOpen(false);
+    const latestData = dataRef.current || data;
+    await executeSaveReport(latestData.title, 'save_as_new');
+  };
+
+  // Primary Save Report button click:
+  // If editing an existing report, opens clear choice dialog: Update Existing vs Save as New vs Cancel
+  // If clean analysis / fresh analysis, continues directly without choice dialog
   const handleSaveReport = () => {
     if (isSavingReportRef.current) return;
     const latestData = dataRef.current || data;
+    const isModifying = isEditingExistingReport || Boolean(latestData.originalId && latestData.isModified);
+
+    if (isModifying) {
+      setModifyConflictState(null);
+      setIsModifySaveChoiceOpen(true);
+      return;
+    }
+
     const currentTitle = (latestData.title || '').trim();
     if (currentTitle.length > 0) {
-      executeSaveReport(currentTitle);
+      executeSaveReport(currentTitle, 'direct');
     } else {
       setReportNameToSave('');
       setIsNameReportModalOpen(true);
@@ -921,6 +1094,47 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     if (user) {
       uploadTemplateToCloud(user.id, tmpl).catch((cloudErr) => {
         console.warn('[Template Cloud Sync] Failed to upload template to cloud, saved locally:', cloudErr);
+      });
+    }
+  };
+
+  // Replace Existing Template (preserves original ID, creation metadata, updates content and modification timestamp)
+  const handleReplaceTemplate = async (existingTemplate: SavedTemplate) => {
+    const latest = dataRef.current || data;
+    const current = await getTemplateById(existingTemplate.id);
+    if (!current) {
+      throw new Error('The selected template no longer exists. Please choose another or save as new.');
+    }
+
+    const updatedTmpl: SavedTemplate = {
+      ...current,
+      updatedAt: Date.now(),
+      data: {
+        pair: latest.pair,
+        title: latest.title,
+        session: latest.session,
+        timezone: latest.timezone,
+        analysisTiming: latest.analysisTiming,
+        timeframes: JSON.parse(JSON.stringify(latest.timeframes || {})),
+        crossedLiquidity: [...(latest.crossedLiquidity || [])],
+        majorLiquidityWatchlist: latest.majorLiquidityWatchlist || '',
+        supplyDemandLevels: JSON.parse(JSON.stringify(latest.supplyDemandLevels || [])),
+        openingCandles: JSON.parse(JSON.stringify(latest.openingCandles || [])),
+        scenarios: (latest.scenarios || []).map((s) => ({
+          ...s,
+          id: s.id || `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          createdAt: s.createdAt || Date.now(),
+          updatedAt: Date.now(),
+        })),
+        overallNotes: latest.overallNotes || '',
+        visibilityConfig: activeVisibility,
+      },
+    };
+
+    await saveTemplate(updatedTmpl);
+    if (user) {
+      uploadTemplateToCloud(user.id, updatedTmpl).catch((cloudErr) => {
+        console.warn('[Template Cloud Sync] Failed to upload updated template to cloud, saved locally:', cloudErr);
       });
     }
   };
@@ -981,8 +1195,21 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         template.data.visibilityConfig || activeVisibility
       );
 
+      const targetOriginalId = isEditingExistingReport
+        ? (initialData?.id || dataRef.current?.originalId || dataRef.current?.id)
+        : (dataRef.current?.originalId && dataRef.current?.isModified ? dataRef.current.originalId : undefined);
+
+      const targetId = targetOriginalId || `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const targetCreatedAt = targetOriginalId
+        ? (initialData?.createdAt || dataRef.current?.createdAt || Date.now())
+        : Date.now();
+      const targetSourceRevision = (initialData as any)?.sourceRevision || initialData?.revision || (dataRef.current as any)?.sourceRevision || 1;
+
       const newAnalysis: AnalysisData = {
-        id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        id: targetId,
+        originalId: targetOriginalId,
+        sourceRevision: targetOriginalId ? targetSourceRevision : undefined,
+        isModified: Boolean(targetOriginalId),
         title: template.data.title || '',
         pair: template.data.pair || 'XAUUSD',
         date: dateStr,
@@ -1001,7 +1228,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         trades: [], // Executed trades are always excluded from templates
         overallNotes: template.data.overallNotes || '',
         visibilityConfig: normalizedVis,
-        createdAt: Date.now(),
+        createdAt: targetCreatedAt,
         updatedAt: Date.now(),
       };
 
@@ -1210,7 +1437,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           </div>
         </div>
 
-        {/* Enabled Timeframes quick-status dots */}
+        {/* Enabled Timeframes quick-status boxes in exact order with readable direction labels */}
         <div className="flex items-center gap-1.5 flex-wrap">
           {enabledTimeframes.map((tf) => {
             const b = data.timeframes[tf]?.overallBias;
@@ -1218,17 +1445,18 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
               <span
                 key={tf}
                 title={`${tf}: ${b || 'Not selected'}`}
-                className={`px-1.5 py-0.5 rounded text-[10px] ${
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border ${
                   b === 'Bullish'
-                    ? 'bg-emerald-600 text-white'
+                    ? 'bg-emerald-pale text-bullish border-emerald-500/40'
                     : b === 'Bearish'
-                    ? 'bg-rose-600 text-white'
+                    ? 'bg-bearish-pale text-bearish border-rose-500/40'
                     : b === 'Neutral'
-                    ? 'bg-slate-500 text-white'
-                    : 'bg-slate-200 dark:bg-slate-700 text-app-secondary'
+                    ? 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-300 dark:border-slate-600'
+                    : 'bg-app-field text-app-secondary border-app'
                 }`}
               >
-                {tf}
+                <span className="font-bold">{tf}:</span>
+                <span className="font-semibold">{b || '—'}</span>
               </span>
             );
           })}
@@ -1255,6 +1483,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 key={tf}
                 timeframe={tf}
                 data={data.timeframes[tf] || createEmptyTimeframeData(tf)}
+                allTimeframes={data.timeframes}
                 isExpanded={expandedTimeframes[tf]}
                 onToggleExpand={() => toggleTimeframeExpand(tf)}
                 onChangeOverallBias={(b) => handleOverallBiasChange(tf, b)}
@@ -1269,6 +1498,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 visibilityConfig={activeVisibility}
                 initialLevelDraft={unfinishedTfLevelsRef.current[tf]}
                 onLevelDraftChange={(levelDraft) => handleLevelDraftChange(tf, levelDraft)}
+                openingCandles={data.openingCandles || []}
+                crossedLiquidity={data.crossedLiquidity || []}
               />
             </React.Fragment>
           );
@@ -1718,6 +1949,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         isOpen={isSaveTemplateOpen}
         onClose={() => setIsSaveTemplateOpen(false)}
         onSave={handleSaveTemplate}
+        onReplaceExisting={handleReplaceTemplate}
       />
 
       <LoadTemplateModal
@@ -1862,6 +2094,35 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Safe Save Choices Modal when modifying an existing report */}
+      <ModifySaveChoiceModal
+        isOpen={isModifySaveChoiceOpen}
+        onClose={() => {
+          setIsModifySaveChoiceOpen(false);
+          setModifyConflictState(null);
+        }}
+        reportTitle={data.title || initialData?.title}
+        reportPair={data.pair || initialData?.pair || 'XAUUSD'}
+        reportDate={data.date || initialData?.date || ''}
+        onUpdateExisting={handleConfirmUpdateExisting}
+        onSaveAsNew={handleConfirmSaveAsNew}
+        onReviewLatest={handleReviewLatest}
+        isSaving={isSavingReport}
+        conflictState={modifyConflictState}
+      />
+
+      {/* Review Latest Report Modal during concurrency conflict (inspects disk version without losing draft) */}
+      {reviewingReport && (
+        <ReportDetailsModal
+          isOpen={true}
+          report={reviewingReport}
+          onClose={() => setReviewingReport(null)}
+          onModify={() => {}}
+          onCopy={() => {}}
+          onDelete={() => {}}
+        />
       )}
     </div>
   );
