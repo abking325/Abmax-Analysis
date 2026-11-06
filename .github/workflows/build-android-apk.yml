@@ -132,14 +132,11 @@ jobs:
             fi
             echo "✅ Persistent debug keystore validated successfully."
           else
-            if [ "${{ github.event.inputs.allow_ephemeral_signing }}" = "true" ]; then
-              echo "::warning::allow_ephemeral_signing=true explicitly requested for local runner testing. Building with ephemeral key."
-              echo "persistent_debug_key=false" >> $GITHUB_OUTPUT
-            elif [ -n "$SECRET_RELEASE_KEYSTORE" ]; then
-              echo "DEBUG_KEYSTORE_BASE64 not set, but release keystore (KEYSTORE_BASE64) is present."
+            if [ -n "$SECRET_RELEASE_KEYSTORE" ]; then
+              echo "DEBUG_KEYSTORE_BASE64 not set, but persistent release keystore (KEYSTORE_BASE64) is present."
               echo "persistent_debug_key=false" >> $GITHUB_OUTPUT
             else
-              echo "::error::Persistent signing keystore is required for distributed APK updates! Please configure DEBUG_KEYSTORE_BASE64 or KEYSTORE_BASE64 in your GitHub repository secrets. Silently publishing with an ephemeral runner key breaks in-place app updates. Halting build."
+              echo "::error::Persistent signing key missing! Neither DEBUG_KEYSTORE_BASE64 nor KEYSTORE_BASE64 is configured in repository secrets. To protect installed user data and guarantee in-place update compatibility, automatic replacement key generation is disabled. Please configure DEBUG_KEYSTORE_BASE64 (or KEYSTORE_BASE64) in your GitHub repository secrets."
               exit 1
             fi
           fi

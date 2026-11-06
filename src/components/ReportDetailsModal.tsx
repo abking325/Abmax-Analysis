@@ -38,6 +38,7 @@ import {
 import {
   calculateOverallAlignment,
   findMatchingValues,
+  formatReadableAnalysisDate,
   getTimeframeStructureAlignment,
   getTimeframePairAlignments,
 } from '../utils/analysisUtils';
@@ -495,7 +496,10 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   if (!isOpen || !report) return null;
 
   const alignment = calculateOverallAlignment(report.timeframes);
-  const matchingValues = findMatchingValues(report.timeframes);
+  const matchingValues = findMatchingValues(report.timeframes, {
+    supplyDemandLevels: report.supplyDemandLevels,
+    openingCandles: report.openingCandles,
+  });
 
   const toggleImageExpand = (tf: TimeframeId) => {
     setExpandedImages((prev) => ({ ...prev, [tf]: !prev[tf] }));
@@ -516,7 +520,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
           Report Actions
         </div>
         <span className="text-[11px] text-app-secondary">
-          {report.pair} · {report.date}
+          {report.pair} · {formatReadableAnalysisDate(report.date).full}
         </span>
       </div>
 
@@ -751,7 +755,11 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                     report={report}
                     imagesMap={imagesMap}
                     onOpenViewer={(url, title) => setActiveViewerImage({ url, title })}
-                    onEditTrade={(trd) => setEditingTrade(trd)}
+                    onEditTrade={(trd) => {
+                      setEditingTrade(trd);
+                      setScenarioTradeDraft(null);
+                      setIsTakeTradeOpen(true);
+                    }}
                     onRemoveTrade={handleDeleteTrade}
                     presentationConfig={{ ...presentationConfig, sectionVisibility: secVis }}
                   />
@@ -801,7 +809,14 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                     {secVis.general?.metadataAndTimestamps !== false && (
                       <>
                         <div className="text-xs sm:text-sm text-app-main font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span className="font-mono">{report.date}</span>
+                          <span>
+                            <strong className="font-semibold">{formatReadableAnalysisDate(report.date).primary}</strong>
+                            {formatReadableAnalysisDate(report.date).secondary && (
+                              <span className="text-app-secondary font-normal ml-1">
+                                ({formatReadableAnalysisDate(report.date).secondary})
+                              </span>
+                            )}
+                          </span>
                           <span className="text-app-secondary">•</span>
                           <span>{report.session} Session</span>
                           <span className="text-app-secondary">•</span>
@@ -846,15 +861,60 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                           </div>
                         </div>
 
-                        {/* Individual timeframe boxes in exact order with readable direction labels */}
+                        {/* Individual timeframe boxes in exact order with readable direction labels and S / I / F deep structure badges */}
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {TIMEFRAME_ORDER.map((tf) => {
                             if (secVis.timeframes && secVis.timeframes[tf] === false) return null;
-                            const b = report.timeframes[tf]?.overallBias;
+                            const tfData = report.timeframes[tf];
+                            const b = tfData?.overallBias;
+                            const sDir = tfData?.swing?.direction;
+                            const iDir = tfData?.internal?.direction;
+                            const fDir = tfData?.fractal?.direction;
+
+                            const renderMiniBadge = (prefix: 'S' | 'I' | 'F', dir?: string) => {
+                              const norm = dir === 'Not sure' ? 'Waiting' : dir;
+                              const isBull = norm === 'Bullish';
+                              const isBear = norm === 'Bearish';
+                              const isNeut = norm === 'Neutral';
+                              const isWait = norm === 'Waiting';
+
+                              const badgeStyle = isBull
+                                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/40'
+                                : isBear
+                                ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300 border-rose-500/40'
+                                : isNeut
+                                ? 'bg-slate-300/40 text-slate-700 dark:text-slate-300 border-slate-400/40'
+                                : isWait
+                                ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40'
+                                : 'bg-app-field/60 text-app-secondary border-app/60';
+
+                              const fullLabel = prefix === 'S'
+                                ? `Swing: ${norm || 'Unset'}`
+                                : prefix === 'I'
+                                ? `Internal: ${norm || 'Unset'}`
+                                : `Fractal: ${norm || 'Unset'}`;
+
+                              return (
+                                <span
+                                  title={fullLabel}
+                                  className={`inline-flex items-center gap-0.5 px-1 py-0.2 text-[9px] font-mono font-bold rounded border ${badgeStyle}`}
+                                >
+                                  <span>{prefix}:</span>
+                                  <span>{norm ? (norm === 'Waiting' ? 'Wait' : norm.slice(0, 4)) : '—'}</span>
+                                </span>
+                              );
+                            };
+
+                            const tfFields = secVis.perTimeframeFields?.[tf] || secVis.timeframeFields;
+                            const showSwing = tfFields?.swingStructure !== false;
+                            const showInternal = tfFields?.internalStructure !== false;
+                            const showFractal = tfFields?.fractalStructure !== false;
+                            const hasAnyStructureVisible = showSwing || showInternal || showFractal;
+
                             return (
                               <div
                                 key={tf}
-                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border font-medium transition-colors ${
+                                className={`inline-flex flex-col gap-1 px-2.5 py-1.5 rounded text-xs border font-medium transition-colors ${
                                   b === 'Bullish'
                                     ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700'
                                     : b === 'Bearish'
@@ -864,8 +924,17 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                     : 'bg-app-field text-app-secondary border-app'
                                 }`}
                               >
-                                <span className="font-bold text-app-main">{tf}:</span>
-                                <span>{b || 'Not selected'}</span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-app-main">{tf}:</span>
+                                  <span>{b || 'Not selected'}</span>
+                                </div>
+                                {hasAnyStructureVisible && (
+                                  <div className="flex items-center gap-1 pt-0.5 border-t border-app/30">
+                                    {showSwing && renderMiniBadge('S', sDir)}
+                                    {showInternal && renderMiniBadge('I', iDir)}
+                                    {showFractal && renderMiniBadge('F', fDir)}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -1083,6 +1152,49 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                       })}
                     </div>
                   </div>
+
+                  {/* 3B. REPEATED ANALYSIS LEVELS (present in >= 2 distinct timeframes) */}
+                  {secVis.notesAndLevels?.matchingValues !== false && matchingValues.length > 0 && (
+                    <div className="space-y-2 border-b border-app pb-5">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold text-app-main uppercase tracking-wider flex items-center gap-1.5">
+                          <span>REPEATED LEVELS ({matchingValues.length})</span>
+                          <span className="text-[10px] font-normal text-app-secondary lowercase">
+                            (across &ge;2 timeframes)
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {matchingValues.map((group, idx) => {
+                          const distinctTfs = Array.from(new Set(group.occurrences.map((o) => o.timeframe)));
+                          return (
+                            <div
+                              key={idx}
+                              className="p-2.5 rounded border border-app bg-app-field space-y-1 text-xs"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="font-mono font-bold text-emerald-theme text-sm">
+                                  {group.displayPrice}
+                                </span>
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                                  {distinctTfs.length} timeframes
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-app-secondary leading-snug">
+                                {group.occurrences.map((o, oIdx) => (
+                                  <span key={oIdx} className="inline-block mr-1.5 font-mono">
+                                    <strong className="text-app-main">{o.timeframe}</strong>{' '}
+                                    <span className="text-[10px] text-app-secondary">({o.field})</span>
+                                    {oIdx < group.occurrences.length - 1 ? ',' : ''}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {/* 4. PLANNED SCENARIOS WITH SCENARIO ACTIONS */}
                   {secVis.scenariosAndTrades?.plannedScenarios !== false && (
@@ -1347,7 +1459,11 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                     <div className="flex items-center gap-1.5 shrink-0">
                                       <button
                                         type="button"
-                                        onClick={() => setEditingTrade(trd)}
+                                        onClick={() => {
+                                          setEditingTrade(trd);
+                                          setScenarioTradeDraft(null);
+                                          setIsTakeTradeOpen(true);
+                                        }}
                                         className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-emerald-theme hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded border border-emerald-300 dark:border-emerald-700 transition-colors cursor-pointer"
                                         title="Edit this recorded trade"
                                       >

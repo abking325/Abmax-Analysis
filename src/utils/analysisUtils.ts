@@ -184,7 +184,11 @@ export interface MatchingPriceGroup {
  * Groups equal values and lists timeframe/field locations.
  */
 export function findMatchingValues(
-  timeframes: Record<TimeframeId, TimeframeData>
+  timeframes: Record<TimeframeId, TimeframeData>,
+  additionalSources?: {
+    supplyDemandLevels?: Array<{ timeframe: TimeframeId; supply?: string; demand?: string }>;
+    openingCandles?: Array<{ session: string; level: string }>;
+  }
 ): MatchingPriceGroup[] {
   const map = new Map<
     string,
@@ -202,17 +206,46 @@ export function findMatchingValues(
     const data = timeframes[tf];
     if (!data) continue;
 
-    const fieldsToCheck: Array<{ field: string; val: string }> = [
-      { field: 'Swing High', val: data.swing.high },
-      { field: 'Swing Low', val: data.swing.low },
-      { field: 'Swing BOS', val: data.swing.bosAt },
-      { field: 'Internal High', val: data.internal.high },
-      { field: 'Internal Low', val: data.internal.low },
-      { field: 'Internal iBOS', val: data.internal.ibosAt },
-      { field: 'Fractal BOS', val: data.fractal.fractalBosAt },
+    const fieldsToCheck: Array<{ field: string; val?: string }> = [
+      { field: 'Swing High', val: data.swing?.high },
+      { field: 'Swing Low', val: data.swing?.low },
+      { field: 'Swing BOS', val: data.swing?.bosAt },
+      { field: 'Internal High', val: data.internal?.high },
+      { field: 'Internal Low', val: data.internal?.low },
+      { field: 'Internal iBOS', val: data.internal?.ibosAt },
+      { field: 'Fractal BOS', val: data.fractal?.fractalBosAt },
+      { field: 'PMH', val: data.pmh },
+      { field: 'PML', val: data.pml },
+      { field: 'PWH', val: data.pwh },
+      { field: 'PWL', val: data.pwl },
+      { field: 'PDH', val: data.pdh },
+      { field: 'PDL', val: data.pdl },
     ];
 
+    // Deep structured levels (support, resistance, supply, demand)
+    if (data.supportLevels && Array.isArray(data.supportLevels)) {
+      data.supportLevels.forEach((item, idx) => {
+        fieldsToCheck.push({ field: `Support ${idx + 1}`, val: item.level });
+      });
+    }
+    if (data.resistanceLevels && Array.isArray(data.resistanceLevels)) {
+      data.resistanceLevels.forEach((item, idx) => {
+        fieldsToCheck.push({ field: `Resistance ${idx + 1}`, val: item.level });
+      });
+    }
+    if (data.supplyLevels && Array.isArray(data.supplyLevels)) {
+      data.supplyLevels.forEach((item, idx) => {
+        fieldsToCheck.push({ field: `Supply ${idx + 1}`, val: item.level });
+      });
+    }
+    if (data.demandLevels && Array.isArray(data.demandLevels)) {
+      data.demandLevels.forEach((item, idx) => {
+        fieldsToCheck.push({ field: `Demand ${idx + 1}`, val: item.level });
+      });
+    }
+
     for (const item of fieldsToCheck) {
+      if (!item.val) continue;
       const norm = normalizePrice(item.val);
       if (!norm) continue;
 
@@ -230,10 +263,43 @@ export function findMatchingValues(
     }
   }
 
-  // Filter only those with at least 2 occurrences
+  // Check additional workspace supply & demand levels if provided
+  if (additionalSources?.supplyDemandLevels) {
+    for (const item of additionalSources.supplyDemandLevels) {
+      if (item.supply) {
+        const norm = normalizePrice(item.supply);
+        if (norm) {
+          if (!map.has(norm)) {
+            map.set(norm, { displayPrice: item.supply.trim(), occurrences: [] });
+          }
+          map.get(norm)!.occurrences.push({
+            timeframe: item.timeframe,
+            field: 'Supply Zone',
+            originalInput: item.supply.trim(),
+          });
+        }
+      }
+      if (item.demand) {
+        const norm = normalizePrice(item.demand);
+        if (norm) {
+          if (!map.has(norm)) {
+            map.set(norm, { displayPrice: item.demand.trim(), occurrences: [] });
+          }
+          map.get(norm)!.occurrences.push({
+            timeframe: item.timeframe,
+            field: 'Demand Zone',
+            originalInput: item.demand.trim(),
+          });
+        }
+      }
+    }
+  }
+
+  // Filter groups present in at least 2 distinct timeframes
   const results: MatchingPriceGroup[] = [];
   for (const [norm, info] of map.entries()) {
-    if (info.occurrences.length >= 2) {
+    const distinctTimeframes = new Set(info.occurrences.map((o) => o.timeframe));
+    if (distinctTimeframes.size >= 2) {
       results.push({
         normalizedPrice: norm,
         displayPrice: info.displayPrice,
@@ -242,8 +308,16 @@ export function findMatchingValues(
     }
   }
 
-  // Sort by price numerically if possible
-  results.sort((a, b) => parseFloat(b.normalizedPrice) - parseFloat(a.normalizedPrice));
+  // Sort by count of distinct timeframes descending, then by price numerically descending
+  results.sort((a, b) => {
+    const aTfs = new Set(a.occurrences.map((o) => o.timeframe)).size;
+    const bTfs = new Set(b.occurrences.map((o) => o.timeframe)).size;
+    if (bTfs !== aTfs) {
+      return bTfs - aTfs;
+    }
+    return parseFloat(b.normalizedPrice) - parseFloat(a.normalizedPrice);
+  });
+
   return results;
 }
 
@@ -823,3 +897,39 @@ export function getTimeframePairAlignments(
 
   return results;
 }
+
+const UTC_MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const UTC_WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/**
+ * Formats an ISO analysis date (YYYY-MM-DD) into a human-readable display string
+ * such as "Tuesday, Nov 3" with year secondary, without shifting UTC calendar days
+ * across extreme timezones (UTC+14 to UTC-12) or breaking legacy formats.
+ */
+export function formatReadableAnalysisDate(dateStr?: string | null): {
+  primary: string; // e.g. "Tuesday, Nov 3"
+  secondary: string; // e.g. "2026"
+  full: string; // e.g. "Tuesday, Nov 3, 2026"
+} {
+  if (!dateStr || !dateStr.trim()) {
+    return { primary: 'Unspecified Date', secondary: '', full: 'Unspecified Date' };
+  }
+  const str = dateStr.trim();
+  const parts = str.split('-');
+  if (parts.length === 3 && parts[0].length === 4) {
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    // Use UTC noon to guarantee zero day-shift regardless of local timezone or extreme offset (UTC+14 to UTC-12)
+    const d = new Date(Date.UTC(year, month, day, 12, 0, 0));
+    if (!isNaN(d.getTime()) && month >= 0 && month < 12 && day >= 1 && day <= 31) {
+      const weekday = UTC_WEEKDAY_NAMES[d.getUTCDay()];
+      const monthStr = UTC_MONTH_NAMES[month];
+      const primary = `${weekday}, ${monthStr} ${day}`;
+      const secondary = `${year}`;
+      return { primary, secondary, full: `${primary}, ${secondary}` };
+    }
+  }
+  return { primary: str, secondary: '', full: str };
+}
+

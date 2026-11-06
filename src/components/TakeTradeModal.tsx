@@ -134,10 +134,10 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
 
   // Prepopulate form when modal opens or tradeToEdit changes
   useEffect(() => {
-    if (!isOpen || initialTradeDraft) return;
+    if (!isOpen) return;
 
     if (tradeToEdit) {
-      // Editing existing trade
+      // Editing existing trade: load tradeToEdit directly
       setSelectedScenarioId(tradeToEdit.scenarioId || 'manual');
       setDirection((tradeToEdit.direction as 'Buy' | 'Sell') || 'Buy');
       setSession(tradeToEdit.session || report.session || 'London');
@@ -153,8 +153,11 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       setImages(tradeToEdit.images ? JSON.parse(JSON.stringify(tradeToEdit.images)) : []);
       setTradeDate(tradeToEdit.date || report.date || new Date().toISOString().slice(0, 10));
       setTradeTime(tradeToEdit.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+    } else if (initialTradeDraft) {
+      // New trade mode with active in-memory draft
+      return;
     } else {
-      // New trade mode
+      // New trade mode without initial draft
       const defaultScnId = scenarios.length > 0 ? scenarios[0].id : 'manual';
       setSelectedScenarioId(defaultScnId);
       if (scenarios.length > 0 && scenarios[0].direction) {

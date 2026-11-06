@@ -306,7 +306,7 @@ function MainApp() {
           restoreScrollPosition(targetScroll);
         }
 
-        // Coordinate cold start launch screen to display for approximately 3 seconds
+        // Coordinate cold start launch screen to display for the approved ~3s on initial startup
         const elapsed = Date.now() - coldStartStartTimeRef.current;
         const remainingTime = Math.max(0, 3000 - elapsed);
         setTimeout(() => {
@@ -323,13 +323,35 @@ function MainApp() {
       } catch (e) {
         console.error('Failed to hydrate storage on initial mount', e);
         if (isMounted) {
+          clearTimeout(slowTimer);
           setInitError((e as Error)?.message || 'Database initialization error');
+          // Allow app to still render after reporting error
+          setTimeout(() => {
+            if (isMounted) {
+              setSplashFadingOut(true);
+              setTimeout(() => {
+                if (isMounted) setIsColdStarting(false);
+              }, 200);
+            }
+          }, 600);
         }
       }
     })();
+
+    // Absolute fallback: ensure launch overlay never traps user if hydration takes unexpectedly long
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) {
+        setSplashFadingOut(true);
+        setTimeout(() => {
+          if (isMounted) setIsColdStarting(false);
+        }, 200);
+      }
+    }, 2000);
+
     return () => {
       isMounted = false;
       clearTimeout(slowTimer);
+      clearTimeout(safetyTimer);
     };
   }, []);
 
@@ -469,7 +491,7 @@ function MainApp() {
     sessionStateRef.current.sourceRevision = undefined;
     sessionStateRef.current.analysisUI = undefined;
 
-    if (wasEditing && targetReportId) {
+    if (targetReportId) {
       sessionStateRef.current.reportsUI = {
         selectedPair: sessionStateRef.current.reportsUI?.selectedPair || 'All',
         searchQuery: sessionStateRef.current.reportsUI?.searchQuery || '',
@@ -753,13 +775,13 @@ function MainApp() {
         }}
       />
 
-      {/* Cold Launch / Full Restart Startup Screen (Shown ~3s on cold start only) */}
+      {/* Cold Launch / Full Restart Startup Screen (Shown on cold start only) */}
       {isColdStarting && (
         <div
           role="dialog"
           aria-label="AbMax Analysis Launch Screen"
           aria-modal="true"
-          className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#000000] select-none pointer-events-auto transition-opacity duration-300 ${
+          className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#000000] select-none transition-opacity duration-300 ${
             splashFadingOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
           }`}
         >

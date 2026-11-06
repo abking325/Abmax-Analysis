@@ -13,6 +13,7 @@ import {
   Check,
   RefreshCw,
   Edit2,
+  Eye,
 } from 'lucide-react';
 import {
   AnalysisData,
@@ -67,6 +68,7 @@ import {
   uploadDraftToCloud,
   clearDraftFromCloud,
   uploadTemplateToCloud,
+  normalizeReportForContentComparison,
   SyncState,
 } from '../services/cloudSync';
 import { SyncStatusBadge } from './SyncStatusBadge';
@@ -153,6 +155,16 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const autosaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSavingReportRef = useRef(false);
+
+  // Save & Continue report binding state and baseline snapshot
+  const [isBoundToReport, setIsBoundToReport] = useState<boolean>(() => {
+    return isEditingExistingReport || Boolean(initialData?.id && initialData.id !== 'active_draft' && initialData.id !== 'draft');
+  });
+  const lastSavedSnapshotRef = useRef<string>(
+    isEditingExistingReport || Boolean(initialData?.id && initialData.id !== 'active_draft' && initialData.id !== 'draft')
+      ? normalizeReportForContentComparison(initialData)
+      : ''
+  );
 
   // Modals state
   const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
@@ -981,9 +993,17 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         }
       }
 
-      // 4. Navigate only after successful local save
+      // 4. Save & Continue: keep editor open, bound to the saved report
       pendingSaveIdRef.current = null;
-      onReportSavedSuccessfully(reportPayload.id);
+      setIsBoundToReport(true);
+      lastSavedSnapshotRef.current = normalizeReportForContentComparison(savedRecord);
+      setAutosaveStatus(
+        isSaveAsNew
+          ? `Saved as new report (${cleanTitle || savedRecord.pair}) — continue editing`
+          : isUpdateExisting
+          ? `Updated existing report (Rev ${nextSourceRev}) — continue editing`
+          : `Saved to journal (${cleanTitle || savedRecord.pair}) — continue editing`
+      );
     } catch (err) {
       console.error(`[Report Lifecycle] Operation=save_report_failed ID=${targetId}:`, err);
       setSaveStage('failed');
@@ -1023,15 +1043,26 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     await executeSaveReport(latestData.title, 'save_as_new');
   };
 
-  // Primary Save Report button click:
-  // If editing an existing report, opens clear choice dialog: Update Existing vs Save as New vs Cancel
-  // If clean analysis / fresh analysis, continues directly without choice dialog
+  // Primary Save & Continue button click:
+  // If editing an existing report or bound to a saved report:
+  //   Check if content is unchanged since last save:
+  //     If unchanged, provide non-intrusive feedback without duplicate reports or revision bump.
+  //   If changed, open clear choice dialog: Update Existing vs Save as New vs Cancel
+  // If fresh analysis, prompts for title if missing and executes direct save to bind report ID while keeping editor open.
   const handleSaveReport = () => {
     if (isSavingReportRef.current) return;
     const latestData = dataRef.current || data;
-    const isModifying = isEditingExistingReport || Boolean(latestData.originalId && latestData.isModified);
+    const isBound = isBoundToReport || isEditingExistingReport || Boolean(latestData.originalId && latestData.originalId !== 'active_draft' && latestData.originalId !== 'draft');
 
-    if (isModifying) {
+    if (isBound) {
+      // Check if unchanged since last save
+      const currentContent = normalizeReportForContentComparison(latestData);
+      if (lastSavedSnapshotRef.current && currentContent === lastSavedSnapshotRef.current) {
+        setAutosaveStatus('Analysis is already up to date (no changes to save)');
+        setSaveStage('saved_local');
+        return;
+      }
+
       setModifyConflictState(null);
       setIsModifySaveChoiceOpen(true);
       return;
@@ -1318,95 +1349,97 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         />
       </div>
 
-      {/* 2. General Information (Responsive wrapping grid, labels above controls) */}
-      <div className="p-4 rounded-lg bg-app-secondary border border-app mb-4 shadow-2xs">
-        <div className="text-xs font-bold text-app-main uppercase tracking-wider mb-3">
-          General Information
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
-          {/* Pair */}
-          <div>
-            <label className="block text-xs font-medium text-app-secondary mb-1">Pair</label>
-            <select
-              value={data.pair}
-              onChange={(e) =>
-                updateAnalysis((prev) => ({ ...prev, pair: e.target.value as TradingPair }))
-              }
-              className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main font-semibold focus:outline-hidden focus:border-emerald-600"
-            >
-              <option value="XAUUSD">XAUUSD</option>
-              <option value="BTCUSD">BTCUSD</option>
-              <option value="EURUSD">EURUSD</option>
-            </select>
+      {/* 2. Metadata and Timestamps */}
+      {activeVisibility.otherSections.metadataAndTimestamps !== false && (
+        <div className="p-4 rounded-lg bg-app-secondary border border-app mb-4 shadow-2xs">
+          <div className="text-xs font-bold text-app-main uppercase tracking-wider mb-3">
+            Metadata and Timestamps
           </div>
 
-          {/* Date */}
-          <div>
-            <label className="block text-xs font-medium text-app-secondary mb-1">
-              Analysis Date
-            </label>
-            <input
-              type="date"
-              value={data.date}
-              onChange={(e) =>
-                updateAnalysis((prev) => ({ ...prev, date: e.target.value }))
-              }
-              className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
-            />
-          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+            {/* Pair */}
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">Pair</label>
+              <select
+                value={data.pair}
+                onChange={(e) =>
+                  updateAnalysis((prev) => ({ ...prev, pair: e.target.value as TradingPair }))
+                }
+                className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main font-semibold focus:outline-hidden focus:border-emerald-600"
+              >
+                <option value="XAUUSD">XAUUSD</option>
+                <option value="BTCUSD">BTCUSD</option>
+                <option value="EURUSD">EURUSD</option>
+              </select>
+            </div>
 
-          {/* Time with timezone label */}
-          <div>
-            <label className="block text-xs font-medium text-app-secondary mb-1">
-              Live Time ({data.timezone || 'Local'})
-            </label>
-            <div className="px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main font-mono tabular-nums flex items-center justify-between">
-              <span>{liveClock}</span>
-              <span className="text-[10px] text-emerald-theme uppercase font-semibold">Live</span>
+            {/* Date */}
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">
+                Analysis Date
+              </label>
+              <input
+                type="date"
+                value={data.date}
+                onChange={(e) =>
+                  updateAnalysis((prev) => ({ ...prev, date: e.target.value }))
+                }
+                className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+              />
+            </div>
+
+            {/* Time with timezone label */}
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">
+                Live Time ({data.timezone || 'Local'})
+              </label>
+              <div className="px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main font-mono tabular-nums flex items-center justify-between">
+                <span>{liveClock}</span>
+                <span className="text-[10px] text-emerald-theme uppercase font-semibold">Live</span>
+              </div>
+            </div>
+
+            {/* Session */}
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">Session</label>
+              <select
+                value={data.session}
+                onChange={(e) =>
+                  updateAnalysis((prev) => ({
+                    ...prev,
+                    session: e.target.value as TradingSession,
+                  }))
+                }
+                className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+              >
+                <option value="Asian">Asian</option>
+                <option value="London">London</option>
+                <option value="NY AM">NY AM</option>
+                <option value="NY PM">NY PM</option>
+              </select>
+            </div>
+
+            {/* Timing */}
+            <div>
+              <label className="block text-xs font-medium text-app-secondary mb-1">Timing</label>
+              <select
+                value={data.analysisTiming}
+                onChange={(e) =>
+                  updateAnalysis((prev) => ({
+                    ...prev,
+                    analysisTiming: e.target.value as AnalysisTiming,
+                  }))
+                }
+                className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+              >
+                <option value="On time">On time</option>
+                <option value="Before session">Before session</option>
+                <option value="Before 1 day">Before 1 day</option>
+              </select>
             </div>
           </div>
-
-          {/* Session */}
-          <div>
-            <label className="block text-xs font-medium text-app-secondary mb-1">Session</label>
-            <select
-              value={data.session}
-              onChange={(e) =>
-                updateAnalysis((prev) => ({
-                  ...prev,
-                  session: e.target.value as TradingSession,
-                }))
-              }
-              className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
-            >
-              <option value="Asian">Asian</option>
-              <option value="London">London</option>
-              <option value="NY AM">NY AM</option>
-              <option value="NY PM">NY PM</option>
-            </select>
-          </div>
-
-          {/* Timing */}
-          <div>
-            <label className="block text-xs font-medium text-app-secondary mb-1">Timing</label>
-            <select
-              value={data.analysisTiming}
-              onChange={(e) =>
-                updateAnalysis((prev) => ({
-                  ...prev,
-                  analysisTiming: e.target.value as AnalysisTiming,
-                }))
-              }
-              className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
-            >
-              <option value="On time">On time</option>
-              <option value="Before session">Before session</option>
-              <option value="Before 1 day">Before 1 day</option>
-            </select>
-          </div>
         </div>
-      </div>
+      )}
 
       {/* 3. Overall Alignment Status Card */}
       <div className="p-4 rounded-lg bg-app-secondary border border-app mb-5 shadow-2xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -1860,7 +1893,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       {/* Action buttons in normal page flow */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-app">
         <div className="flex flex-wrap items-center gap-2">
-          {/* Primary: Save Report */}
+          {/* Primary: Save & Continue */}
           <button
             type="button"
             onClick={handleSaveReport}
@@ -1869,17 +1902,39 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           >
             <Save className="w-4 h-4" />
             {saveStage === 'saving_local'
-              ? 'Saving on this device…'
-              : saveStage === 'saved_local'
-              ? 'Saved on this device'
-              : saveStage === 'pending_cloud'
-              ? 'Pending cloud sync…'
+              ? 'Saving…'
               : isSavingReport
-              ? 'Saving Report...'
-              : isEditingExistingReport
-              ? 'Update Report'
-              : 'Save Report'}
+              ? 'Saving…'
+              : 'Save & Continue'}
           </button>
+
+          {/* View Report if bound */}
+          {Boolean(isBoundToReport || isEditingExistingReport || (data.originalId && data.originalId !== 'active_draft' && data.originalId !== 'draft')) && (
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const latest = dataRef.current || data;
+                  await saveDraft(latest);
+                  if (onAnalysisDataChange) {
+                    onAnalysisDataChange(latest);
+                  }
+                  if (user) {
+                    uploadDraftToCloud(user.id, latest).catch(console.error);
+                  }
+                  onReportSavedSuccessfully(data.originalId || data.id);
+                } catch (e) {
+                  console.error('Failed to preserve draft on View Report click:', e);
+                  setAutosaveStatus('Failed to save draft before viewing report. Please try again.');
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs sm:text-sm font-semibold bg-app-field border border-emerald-500/50 text-emerald-theme hover:bg-emerald-pale rounded transition-colors cursor-pointer"
+              title="View saved report details"
+            >
+              <Eye className="w-4 h-4 text-emerald-theme" />
+              <span>View Report</span>
+            </button>
+          )}
 
           {/* Continue Later: saves draft & returns Home */}
           <button
@@ -2077,7 +2132,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 disabled={isSavingReport}
                 className="px-3.5 py-1.5 text-xs font-medium text-app-main bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 border border-app rounded transition-colors cursor-pointer"
               >
-                Save Without Name
+                Save &amp; Continue Without Name
               </button>
               <button
                 type="button"
@@ -2089,7 +2144,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                 disabled={isSavingReport}
                 className="px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
               >
-                Save Report
+                Save &amp; Continue
               </button>
             </div>
           </div>

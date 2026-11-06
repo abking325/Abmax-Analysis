@@ -12,6 +12,7 @@ import {
 import { SavedReport } from '../types/journal';
 import {
   calculateOverallAlignment,
+  formatReadableAnalysisDate,
   generateReportsCsv,
   getReportBiasSummary,
 } from '../utils/analysisUtils';
@@ -365,7 +366,19 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <div className="space-y-2.5">
                 {/* One bold boxed date heading per day */}
                 <div className="inline-block px-3 py-1 bg-app-secondary border border-app rounded text-xs font-bold text-app-main tracking-wide">
-                  {date}
+                  {(() => {
+                    const readable = formatReadableAnalysisDate(date);
+                    return (
+                      <span>
+                        <span>{readable.primary}</span>
+                        {readable.secondary && (
+                          <span className="text-app-secondary font-normal ml-1.5 opacity-80 text-[11px]">
+                            {readable.secondary}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                 </div>
 
                 {/* Compact full-width report cards beneath each date (not repeating analysis date inside) */}

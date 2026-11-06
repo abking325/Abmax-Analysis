@@ -17,8 +17,12 @@ import {
   Eye,
   ChevronDown,
   ChevronUp,
+  Database,
+  Download,
+  Upload,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { BackupModal } from './BackupModal';
 import {
   createDefaultPerTimeframeFields,
   DEFAULT_DEEP_FIELDS_VISIBILITY,
@@ -73,6 +77,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [appliedNotice, setAppliedNotice] = useState(false);
   const [selectedEditorTf, setSelectedEditorTf] = useState<TimeframeId>('Monthly');
   const [selectedReportTf, setSelectedReportTf] = useState<TimeframeId>('Monthly');
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState<boolean>(() => {
     return typeof localStorage !== 'undefined' ? localStorage.getItem('abmax_auto_sync_disabled') !== 'true' : true;
   });
@@ -357,9 +362,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const DEEP_ANALYSIS_FIELDS: { key: keyof TimeframeDeepFieldsVisibility; label: string }[] = [
     { key: 'overallInterpretation', label: 'Overall interpretation' },
     { key: 'priceLocation', label: 'Price location / equilibrium' },
+    { key: 'timeframeInfoSection', label: 'Analysis information top section' },
     { key: 'swingStructure', label: 'Swing structure' },
     { key: 'internalStructure', label: 'Internal structure' },
     { key: 'fractalStructure', label: 'Fractal structure' },
+    { key: 'structureTrackingControls', label: 'Structure tracking controls (BOS/MSS)' },
+    { key: 'structureHistory', label: 'Structure history' },
     { key: 'deepAlignment', label: 'Deep alignment' },
     { key: 'supplyLevels', label: 'Supply levels' },
     { key: 'demandLevels', label: 'Demand levels' },
@@ -392,6 +400,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const otherSectionsList: { key: keyof WorkspaceVisibilityConfig['otherSections']; label: string }[] = [
+    { key: 'metadataAndTimestamps', label: 'Metadata and Timestamps' },
     { key: 'majorLiquidityChecklist', label: 'Major Liquidity Checklist' },
     { key: 'majorLiquidityWatchlist', label: 'Major Liquidity Watchlist' },
     { key: 'supplyDemandManager', label: 'General Supply/Demand Manager' },
@@ -635,6 +644,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </>
                     )}
                   </button>
+                </div>
+              </section>
+
+              {/* SECTION 4: REPORT BACKUP */}
+              <section className="space-y-2.5">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
+                  <Database className="w-3.5 h-3.5 text-emerald-theme" />
+                  <span>Report Backup</span>
+                </div>
+
+                <div className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-3">
+                  <p className="text-[11px] text-app-secondary leading-relaxed">
+                    Create a portable, versioned JSON backup of your reports, scenarios, recorded trades, structure histories, and chart images, or restore a backup safely without overwriting current data.
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsBackupModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-theme hover:bg-emerald-theme-hover text-white transition-colors cursor-pointer shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Export Report Backup</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsBackupModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-app-field hover:bg-app-main text-app-main border border-app transition-colors cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-emerald-theme" />
+                      <span>Restore Report Backup</span>
+                    </button>
+                  </div>
                 </div>
               </section>
             </>
@@ -1115,6 +1158,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
       </div>
+
+      <BackupModal
+        isOpen={isBackupModalOpen}
+        onClose={() => setIsBackupModalOpen(false)}
+        onDataChanged={() => {}}
+      />
     </div>
   );
 };

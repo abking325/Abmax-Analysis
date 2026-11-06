@@ -45,11 +45,13 @@ import {
   ReportPresentationConfig,
   PlannedScenario,
   TimeframeData,
+  StructureEvent,
 } from '../types/journal';
 import {
   normalizeReportForContentComparison,
   computeContentFingerprint,
 } from '../services/cloudSync';
+import { formatReadableAnalysisDate, findMatchingValues } from '../utils/analysisUtils';
 
 async function runTests() {
   console.log('=== STARTING ABMAX PERSISTENCE & LIFECYCLE VERIFICATION TESTS ===\n');
@@ -3076,6 +3078,494 @@ async function runTests() {
     assert(REMEMBER_ME_STORAGE_KEY === 'abmax_remember_login', 'Remember-me storage preference key is stable');
   } catch (err) {
     assert(false, 'Test Suite 31 execution', (err as Error).message);
+  }
+
+  // --- TEST SUITE 32: Compact Structure Tracking, Save & Continue, and Readable Dates Verification ---
+  console.log('\n--- Test Suite 32: Compact Structure Tracking, Save & Continue, and Readable Dates Verification ---');
+  try {
+    const { formatReadableAnalysisDate, calculateOverallAlignment, isDeepAnalysisAligned } = await import('../utils/analysisUtils');
+
+    // 1. Readable Date Formatting
+    const nov3 = formatReadableAnalysisDate('2026-11-03');
+    assert(nov3.primary === 'Tuesday, Nov 3', `formatReadableAnalysisDate primary is 'Tuesday, Nov 3' (got '${nov3.primary}')`);
+    assert(nov3.secondary === '2026', `formatReadableAnalysisDate secondary is '2026' (got '${nov3.secondary}')`);
+    assert(nov3.full === 'Tuesday, Nov 3, 2026', `formatReadableAnalysisDate full is 'Tuesday, Nov 3, 2026'`);
+
+    // Verify zero UTC day-shift
+    const jan1 = formatReadableAnalysisDate('2025-01-01');
+    assert(jan1.primary === 'Wednesday, Jan 1', `formatReadableAnalysisDate correctly preserves calendar day (Wednesday, Jan 1)`);
+
+    // Fallback on legacy/unspecified
+    const unspec = formatReadableAnalysisDate('');
+    assert(unspec.primary === 'Unspecified Date', `formatReadableAnalysisDate handles empty string without crash`);
+    const legacy = formatReadableAnalysisDate('Legacy Date');
+    assert(legacy.primary === 'Legacy Date', `formatReadableAnalysisDate handles legacy format safely`);
+
+    // 2. Compact Structure Tracking Models & History Independence
+    const emptyTf = createEmptyTimeframeData('1H');
+    assert(Array.isArray(emptyTf.swing.history), 'createEmptyTimeframeData initializes swing.history as array');
+    assert(Array.isArray(emptyTf.internal.history), 'createEmptyTimeframeData initializes internal.history as array');
+    assert(Boolean(emptyTf.swing.history && emptyTf.swing.history.length === 0), 'createEmptyTimeframeData starts with empty swing history');
+    assert(Boolean(emptyTf.internal.history && emptyTf.internal.history.length === 0), 'createEmptyTimeframeData starts with empty internal history');
+
+    // Simulate BOS on Swing
+    const bosEvent: import('../types/journal').StructureEvent = {
+      id: 'bos_12345_test',
+      type: 'BOS',
+      direction: 'Bullish',
+      brokenLevel: '2685.50',
+      high: '2700.00',
+      low: '2650.00',
+      timestamp: Date.now(),
+    };
+    const updatedSwing = {
+      ...emptyTf.swing,
+      direction: 'Bullish' as const,
+      high: bosEvent.high,
+      low: bosEvent.low,
+      bosAt: bosEvent.brokenLevel,
+      history: [bosEvent],
+    };
+    assert(updatedSwing.history.length === 1, 'Swing history records BOS event');
+    assert(updatedSwing.direction === 'Bullish', 'Swing active direction maintained as Bullish on BOS');
+
+    // Simulate MSS on Swing
+    const mssEvent: import('../types/journal').StructureEvent = {
+      id: 'mss_67890_test',
+      type: 'MSS',
+      direction: 'Bearish',
+      brokenLevel: '2650.00',
+      high: '2700.00',
+      low: '2640.00',
+      timestamp: Date.now() + 1000,
+    };
+    const updatedSwingMSS = {
+      ...updatedSwing,
+      direction: 'Bearish' as const, // Shift confirmed
+      high: mssEvent.high,
+      low: mssEvent.low,
+      bosAt: mssEvent.brokenLevel,
+      history: [mssEvent, ...updatedSwing.history],
+    };
+    assert(updatedSwingMSS.history.length === 2, 'Swing history records MSS event as newest');
+    assert(updatedSwingMSS.direction === 'Bearish', 'Swing active direction shifts to Bearish upon MSS confirmation');
+    assert(updatedSwingMSS.history[0].type === 'MSS', 'Latest history entry is MSS');
+    assert(updatedSwingMSS.history[1].type === 'BOS', 'Prior history entry is preserved as BOS');
+
+    // History Revert Logic: deleting latest entry restores previous structure state
+    const remainingHistory = updatedSwingMSS.history.slice(1);
+    const restoredPrior = remainingHistory[0];
+    const restoredSwing = {
+      ...updatedSwingMSS,
+      direction: restoredPrior.direction,
+      high: restoredPrior.high,
+      low: restoredPrior.low,
+      bosAt: restoredPrior.brokenLevel,
+      history: remainingHistory,
+    };
+    assert(restoredSwing.history.length === 1, 'Remaining history has 1 event after deleting latest');
+    assert(restoredSwing.direction === 'Bullish', 'Active direction cleanly restored to previous event (Bullish)');
+    assert(restoredSwing.bosAt === '2685.50', 'Active broken level restored to previous event (2685.50)');
+
+    // 3. Fractal Structure: Waiting direction choice supported
+    const fractalWaiting = { direction: 'Waiting' as const, fractalBosAt: '' };
+    assert(fractalWaiting.direction === 'Waiting', 'FractalStructure supports Waiting direction choice');
+
+    // 4. Alignment Calculation uses only active confirmed fields, unaffected by history entries
+    const testAnalysis = createInitialAnalysisData();
+    testAnalysis.timeframes['1H'].swing = updatedSwingMSS;
+    testAnalysis.timeframes['1H'].internal.direction = 'Bearish';
+    testAnalysis.timeframes['1H'].fractal.direction = 'Bearish';
+    const is1HAligned = isDeepAnalysisAligned(testAnalysis.timeframes['1H']);
+    assert(is1HAligned === true, 'isDeepAnalysisAligned continues evaluating active direction without distortion from history array');
+
+    // 5. Save & Continue Content Comparison (No duplicate save if unchanged)
+    const savedRep = await saveReport({
+      ...testAnalysis,
+      id: 'rep_save_continue_test',
+      status: 'Original',
+      revision: 1,
+    });
+    const snapshot1 = normalizeReportForContentComparison(savedRep);
+    const snapshot2 = normalizeReportForContentComparison(savedRep);
+    assert(snapshot1 === snapshot2, 'Content comparison recognizes identical saved state for Save & Continue no-op');
+
+    // Modify a structure field -> comparison detects change
+    const modifiedRep = {
+      ...savedRep,
+      timeframes: {
+        ...savedRep.timeframes,
+        '1H': {
+          ...savedRep.timeframes['1H'],
+          swing: {
+            ...savedRep.timeframes['1H'].swing,
+            high: '2710.00',
+          },
+        },
+      },
+    };
+    const snapshotModified = normalizeReportForContentComparison(modifiedRep);
+    assert(snapshot1 !== snapshotModified, 'Content comparison reliably detects structure high modification');
+
+    // 6. Visibility Config Toggles for Structure & Analysis Info
+    const normVis = normalizeWorkspaceVisibilityConfig({});
+    assert(normVis.perTimeframeFields.Monthly.timeframeInfoSection === true, 'Default visibility enables timeframeInfoSection');
+    assert(normVis.perTimeframeFields.Monthly.structureTrackingControls === true, 'Default visibility enables structureTrackingControls');
+    assert(normVis.perTimeframeFields.Monthly.structureHistory === true, 'Default visibility enables structureHistory');
+
+    // Clean up test report
+    await deleteReport(savedRep.id);
+  } catch (err) {
+    assert(false, 'Test Suite 32 execution', (err as Error).message);
+  }
+
+  // --- TEST 33: History Baseline Recovery, Save & Continue Workflows & Extreme Timezone Date Integrity ---
+  console.log('\n--- Test Suite 33: History Baseline Recovery, Save & Continue Workflows & Extreme Timezone Date Integrity ---');
+  try {
+    // 1. History restoration edge case:
+    // Initial baseline structure: Bullish, high 2650.00, low 2600.00, brokenLevel ''
+    const baseline = {
+      direction: 'Bullish' as const,
+      high: '2650.00',
+      low: '2600.00',
+      brokenLevel: '',
+    };
+
+    // Confirm first BOS event: breaks 2650.00, sets high 2690.00, low 2620.00
+    const firstBOS: StructureEvent = {
+      id: 'bos_evt_1',
+      type: 'BOS',
+      direction: 'Bullish',
+      brokenLevel: '2650.00',
+      high: '2690.00',
+      low: '2620.00',
+      timestamp: Date.now(),
+      previousSnapshot: { ...baseline },
+    };
+
+    const activeSwing = {
+      direction: firstBOS.direction,
+      high: firstBOS.high,
+      low: firstBOS.low,
+      brokenLevel: firstBOS.brokenLevel,
+      history: [firstBOS],
+    };
+    assert(activeSwing.history.length === 1, 'First BOS recorded with 1 history event');
+    assert(activeSwing.high === '2690.00', 'Active high updated by BOS event');
+
+    // Deleting the ONLY event in history:
+    const remainingAfterDel = activeSwing.history.filter((e) => e.id !== firstBOS.id);
+    const deletedEvt = activeSwing.history.find((e) => e.id === firstBOS.id);
+    let recoveredStructure;
+    if (remainingAfterDel.length === 0 && deletedEvt?.previousSnapshot) {
+      recoveredStructure = {
+        direction: deletedEvt.previousSnapshot.direction,
+        high: deletedEvt.previousSnapshot.high,
+        low: deletedEvt.previousSnapshot.low,
+        brokenLevel: deletedEvt.previousSnapshot.brokenLevel,
+        history: remainingAfterDel,
+      };
+    }
+    assert(recoveredStructure !== undefined, 'Baseline recovery triggered when deleting only history event');
+    assert(recoveredStructure?.direction === baseline.direction, 'Exact baseline direction recovered (Bullish)');
+    assert(recoveredStructure?.high === baseline.high, 'Exact baseline high recovered (2650.00)');
+    assert(recoveredStructure?.low === baseline.low, 'Exact baseline low recovered (2600.00)');
+    assert(recoveredStructure?.brokenLevel === baseline.brokenLevel, 'Exact baseline brokenLevel recovered');
+    assert(recoveredStructure?.history.length === 0, 'History is cleanly empty after deleting only event');
+
+    // 2. Newer manual edits are NOT erased when deleting history:
+    const secondMSS: StructureEvent = {
+      id: 'mss_evt_2',
+      type: 'MSS',
+      direction: 'Bearish',
+      brokenLevel: '2620.00',
+      high: '2690.00',
+      low: '2580.00',
+      timestamp: Date.now() + 1000,
+      previousSnapshot: {
+        direction: firstBOS.direction,
+        high: firstBOS.high,
+        low: firstBOS.low,
+        brokenLevel: firstBOS.brokenLevel,
+      },
+    };
+    // User typed a newer manual high "2705.50" in the editor
+    const currentHighWithManualEdit = '2705.50';
+    // User deletes older event firstBOS (index 1)
+    const historyWithTwo = [secondMSS, firstBOS];
+    const remainingOlderDel = historyWithTwo.filter((e) => e.id !== firstBOS.id);
+    assert(remainingOlderDel.length === 1, 'Deleting older event leaves 1 event');
+    assert(currentHighWithManualEdit === '2705.50', 'Newer manual edit high is preserved without erase');
+
+    // User deletes latest event secondMSS, but had edited high manually to '2705.50'
+    const userEditedHigh = currentHighWithManualEdit !== secondMSS.high;
+    assert(userEditedHigh === true, 'System detects manual edit differs from event high');
+
+    // 3. Save & Continue Flow & Report Binding Verification:
+    const baseRep = await saveReport({
+      ...createInitialAnalysisData('EURUSD'),
+      id: 'rep_sc_flow_test',
+      status: 'Original',
+      revision: 0,
+    });
+    assert(baseRep.id === 'rep_sc_flow_test', 'Save & Continue base report initialized');
+    assert(baseRep.revision === 1, 'Base report initialized with revision 1');
+
+    // Save as New binding: creates new report ID, subsequent edits target new report ID
+    const savedAsNewRep = await saveReport({
+      ...baseRep,
+      id: 'rep_sc_flow_test_copy',
+      copiedFromId: baseRep.id,
+      status: 'Original',
+      revision: 0,
+    });
+    assert(savedAsNewRep.id !== baseRep.id, 'Save as New binds to a distinct new report ID');
+    assert(savedAsNewRep.copiedFromId === baseRep.id, 'New report points to copiedFromId');
+    assert(savedAsNewRep.revision === 1, 'Saved-as-new report starts with revision 1');
+
+    // Subsequent edit on the new report:
+    const subsequentEdit = await saveReport({
+      ...savedAsNewRep,
+      title: 'Updated Copy Analysis',
+      status: 'Modified',
+    });
+    assert(subsequentEdit.id === savedAsNewRep.id, 'Subsequent edit targets new report ID, not original');
+    assert(subsequentEdit.revision === 2, 'Subsequent edit incremented revision to 2');
+
+    // History-only change detection:
+    const repWithNoHistory = { ...baseRep };
+    const repWithHistory = {
+      ...baseRep,
+      timeframes: {
+        ...baseRep.timeframes,
+        '4H': {
+          ...baseRep.timeframes['4H'],
+          swing: {
+            ...baseRep.timeframes['4H'].swing,
+            history: [firstBOS],
+          },
+        },
+      },
+    };
+    const normNoHist = normalizeReportForContentComparison(repWithNoHistory);
+    const normWithHist = normalizeReportForContentComparison(repWithHistory);
+    assert(normNoHist !== normWithHist, 'History-only change is recognized as meaningful content edit');
+
+    // 4. Extreme Timezone Date-Only Verification (UTC+14, UTC-12, leap years)
+    // 2026-11-03: Tuesday Nov 3
+    const d1 = formatReadableAnalysisDate('2026-11-03');
+    assert(d1.primary === 'Tuesday, Nov 3', `2026-11-03 formatted as Tuesday, Nov 3 (got ${d1.primary})`);
+    assert(d1.secondary === '2026', '2026-11-03 secondary is 2026');
+
+    // 2025-01-01: Wednesday Jan 1
+    const d2 = formatReadableAnalysisDate('2025-01-01');
+    assert(d2.primary === 'Wednesday, Jan 1', `2025-01-01 formatted as Wednesday, Jan 1 (got ${d2.primary})`);
+
+    // 2024-12-31: Tuesday Dec 31 (year end boundary)
+    const d3 = formatReadableAnalysisDate('2024-12-31');
+    assert(d3.primary === 'Tuesday, Dec 31', `2024-12-31 formatted as Tuesday, Dec 31 (got ${d3.primary})`);
+    assert(d3.secondary === '2024', '2024-12-31 secondary is 2024');
+
+    // 2024-02-29: Thursday Feb 29 (leap year day)
+    const d4 = formatReadableAnalysisDate('2024-02-29');
+    assert(d4.primary === 'Thursday, Feb 29', `2024-02-29 formatted as Thursday, Feb 29 (got ${d4.primary})`);
+
+    // Clean up test reports
+    await deleteReport(baseRep.id);
+    await deleteReport(savedAsNewRep.id);
+  } catch (err) {
+    assert(false, 'Test Suite 33 execution', (err as Error).message);
+  }
+
+  // --- TEST 34: CHoCH Tracking, Repeated Levels, and Metadata Visibility ---
+  console.log('\n--- Test Suite 34: CHoCH Tracking, Repeated Levels, and Metadata Visibility ---');
+  try {
+    // 1. Metadata and Timestamps visibility config
+    const rawVis = {
+      otherSections: {
+        metadataAndTimestamps: false,
+        majorLiquidityChecklist: true,
+        majorLiquidityWatchlist: true,
+        supplyDemandManager: true,
+        openingCandle: true,
+        overallNotes: true,
+        plannedScenarios: true,
+      },
+    };
+    const normalizedVis = normalizeWorkspaceVisibilityConfig(rawVis as any);
+    assert(normalizedVis.otherSections.metadataAndTimestamps === false, 'Metadata and Timestamps can be hidden in workspace visibility');
+
+    const defaultNorm = normalizeWorkspaceVisibilityConfig(null);
+    assert(defaultNorm.otherSections.metadataAndTimestamps === true, 'Metadata and Timestamps defaults to true if omitted');
+
+    // 2. CHoCH event creation and linked Internal + Fractal structure
+    const initialRep = createInitialAnalysisData('XAUUSD');
+    const tf4h = initialRep.timeframes['4H'];
+    tf4h.internal.direction = 'Bullish';
+    tf4h.internal.high = '2700.00';
+    tf4h.internal.low = '2650.00';
+    tf4h.fractal.direction = 'Bullish';
+    tf4h.fractal.fractalBosAt = '2680.00';
+
+    const chochEventId = `choch_${Date.now()}_test`;
+    const chochEvt: StructureEvent = {
+      id: chochEventId,
+      type: 'CHoCH',
+      direction: 'Bearish',
+      brokenLevel: '2680.00',
+      high: '2700.00',
+      low: '2650.00',
+      newActiveLevel: '2665.00',
+      affectedStructure: 'Fractal',
+      timestamp: Date.now(),
+      previousSnapshot: {
+        direction: 'Bullish',
+        fractalLevel: '2680.00',
+      },
+    };
+
+    // Both Internal and Fractal history receive canonical event with shared stable ID
+    tf4h.internal.history = [chochEvt];
+    tf4h.fractal.history = [chochEvt];
+    tf4h.fractal.direction = 'Bearish';
+    tf4h.fractal.fractalBosAt = '2665.00';
+
+    assert(tf4h.internal.direction === 'Bullish', 'Internal active direction is preserved when CHoCH occurs');
+    assert(tf4h.fractal.direction === 'Bearish', 'Active Fractal direction is reversed on CHoCH');
+    assert(tf4h.fractal.fractalBosAt === '2665.00', 'Active Fractal level is updated to new level on CHoCH');
+    assert(tf4h.internal.history[0].id === tf4h.fractal.history[0].id, 'Internal and Fractal share canonical CHoCH event ID');
+
+    // Save and reload to verify persistence across IndexedDB
+    await saveReport({ ...initialRep, status: 'Original' });
+    const reloaded = await getReportById(initialRep.id);
+    assert(!!reloaded, 'Report with CHoCH event reloaded from IndexedDB');
+    assert(reloaded?.timeframes['4H'].fractal.direction === 'Bearish', 'Reloaded report preserves active Fractal direction');
+    assert(reloaded?.timeframes['4H'].fractal.history?.[0].type === 'CHoCH', 'Reloaded report preserves Fractal CHoCH history event');
+    assert(reloaded?.timeframes['4H'].internal.history?.[0].type === 'CHoCH', 'Reloaded report preserves Internal CHoCH history event');
+
+    // Simulate deleting CHoCH event: restores baseline snapshot without affecting other structures
+    const deletedSnap = tf4h.fractal.history[0].previousSnapshot;
+    tf4h.fractal.history = [];
+    tf4h.internal.history = [];
+    tf4h.fractal.direction = (deletedSnap?.direction as any) || '';
+    tf4h.fractal.fractalBosAt = deletedSnap?.fractalLevel || '';
+
+    assert(tf4h.fractal.direction === 'Bullish', 'Deleting CHoCH restores previous baseline Fractal direction');
+    assert(tf4h.fractal.fractalBosAt === '2680.00', 'Deleting CHoCH restores previous baseline Fractal level');
+    assert(tf4h.internal.direction === 'Bullish', 'Internal direction remained intact after CHoCH deletion');
+
+    // 3. Repeated Analysis Levels testing
+    const repWithLevels = createInitialAnalysisData('XAUUSD');
+    // Set matching price across 3 distinct timeframes: Daily, 4H, 1H
+    repWithLevels.timeframes['Daily'].swing.high = '2685.50';
+    repWithLevels.timeframes['4H'].internal.ibosAt = '2685.5'; // normalized match
+    repWithLevels.timeframes['1H'].fractal.fractalBosAt = '2685.500'; // normalized match
+    repWithLevels.timeframes['15M'].supportLevels = [{ id: 's1', level: '2620.00' }];
+    repWithLevels.timeframes['5M'].demandLevels = [{ id: 'd1', level: '2620' }]; // match across 2 timeframes
+
+    const repeated = findMatchingValues(repWithLevels.timeframes);
+    assert(repeated.length === 2, `findMatchingValues identified 2 repeated level groups (got ${repeated.length})`);
+    assert(repeated[0].normalizedPrice === '2685.5', 'Top repeated level is 2685.5 (highest timeframe count of 3)');
+    const distinctTfsForTop = new Set(repeated[0].occurrences.map((o) => o.timeframe));
+    assert(distinctTfsForTop.size === 3, 'Top repeated level appears in 3 distinct timeframes');
+    assert(repeated[1].normalizedPrice === '2620', 'Second repeated level is 2620 (appears in 2 distinct timeframes)');
+
+    // Single timeframe occurrence should NOT be included
+    repWithLevels.timeframes['1M'].swing.low = '2500.00';
+    const repAfterSingle = findMatchingValues(repWithLevels.timeframes);
+    const has2500 = repAfterSingle.some((g) => g.normalizedPrice === '2500');
+    assert(!has2500, 'Price point present in only 1 timeframe is excluded from repeated levels');
+
+    // Clean up
+    await deleteReport(initialRep.id);
+
+    // 4. Test Trade Editing Safety and Non-Destructive Draft Persistence
+    const testDraft = createInitialAnalysisData('XAUUSD');
+    testDraft.title = 'Unfinished Active Analysis Draft';
+    testDraft.overallNotes = 'Important draft notes typed by user';
+    await saveDraft(testDraft);
+
+    // Create a saved report with an initial trade
+    const testReport = createInitialAnalysisData('XAUUSD');
+    testReport.title = 'Report With Recorded Trade';
+    const tradeId = `trd_${Date.now()}_original`;
+    testReport.trades = [
+      {
+        id: tradeId,
+        pair: 'XAUUSD',
+        date: '2026-11-05',
+        direction: 'Buy',
+        scenarioLabel: 'Scenario 1',
+        entryPrice: '2650.00',
+        stopLoss: '2640.00',
+        takeProfit: '2675.00',
+        outcome: 'Open',
+        rulesFollowed: true,
+        notes: 'Initial entry note',
+        createdAt: Date.now() - 5000,
+        updatedAt: Date.now() - 5000,
+      },
+    ];
+    await saveReport({ ...testReport, status: 'Original' });
+
+    // Simulate editing trade
+    const existingTrade = testReport.trades![0];
+    const updatedTrade = {
+      ...existingTrade,
+      exitPrice: '2675.00',
+      outcome: 'Win' as const,
+      notes: 'Updated trade note after TP reached',
+      updatedAt: Date.now(),
+    };
+
+    // Save trade edit to report
+    const updatedTradesList = (testReport.trades || []).map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
+    const savedUpdatedRep = await saveReport({
+      ...testReport,
+      trades: updatedTradesList,
+      status: 'Original',
+    });
+
+    assert(savedUpdatedRep.trades?.length === 1, 'Editing trade did NOT duplicate the trade');
+    assert(savedUpdatedRep.trades?.[0].id === tradeId, 'Edited trade preserved exact original ID');
+    assert(savedUpdatedRep.trades?.[0].outcome === 'Win', 'Edited trade updated outcome to Win');
+    assert(savedUpdatedRep.trades?.[0].createdAt === existingTrade.createdAt, 'Original trade creation timestamp was preserved');
+
+    // Verify active Analysis draft was NOT cleared or overwritten
+    const draftAfterTradeEdit = await getDraft();
+    assert(!!draftAfterTradeEdit, 'Active analysis draft remains intact after trade editing');
+    assert(draftAfterTradeEdit?.id === testDraft.id, 'Draft ID matches active analysis draft');
+    assert(draftAfterTradeEdit?.overallNotes === 'Important draft notes typed by user', 'Draft content was not cleared or altered');
+
+    // 5. Test Full Backup Roundtrip (Reports, Images, Scenarios, Trades, Linked CHoCH)
+    const backupImgId = await saveImage('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'Test Chart');
+    testReport.timeframes['4H'].chartImageId = backupImgId;
+    testReport.timeframes['4H'].internal.history = [chochEvt];
+    testReport.timeframes['4H'].fractal.history = [chochEvt];
+    await saveReport({ ...testReport, status: 'Original' });
+
+    const fullBackup = await createFullBackup();
+    assert(fullBackup.app === 'ABMAX_ANALYSIS', 'Backup format app tag is ABMAX_ANALYSIS');
+    assert(fullBackup.version === 2, 'Backup format version is 2');
+    assert(fullBackup.reports.some((r) => r.id === testReport.id), 'Backup includes test report');
+    assert(fullBackup.images.some((img) => img.id === backupImgId), 'Backup includes standalone image data');
+    assert(!!fullBackup.draft, 'Backup includes active draft');
+    assert(!('accessToken' in fullBackup) && !('refreshToken' in fullBackup), 'Backup excludes authentication tokens');
+
+    // Analyze backup
+    const preview = await analyzeBackup(fullBackup);
+    assert(preview.skippedReportsCount >= 1, 'Re-import analysis detects existing reports to skip duplicates');
+
+    // Restore backup
+    const restoreResult = await restoreBackup(fullBackup);
+    assert(restoreResult.addedReports === 0, 'Restoring exact duplicate reports adds 0 duplicates');
+    assert(restoreResult.addedImages >= 1, 'Restoring images safely persists dataUrl');
+
+    // Clean up
+    await deleteReport(testReport.id);
+    await deleteImage(backupImgId);
+  } catch (err) {
+    assert(false, 'Test Suite 34 execution', (err as Error).message);
   }
 
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);

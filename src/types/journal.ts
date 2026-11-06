@@ -13,14 +13,34 @@ export const TIMEFRAME_ORDER: TimeframeId[] = [
 
 export type OverallBias = 'Bullish' | 'Neutral' | 'Bearish' | 'Not sure' | '';
 
-export type StructureDirection = 'Bullish' | 'Bearish' | 'Neutral' | '';
-export type FractalDirection = 'Bullish' | 'Bearish' | '';
+export type StructureDirection = 'Bullish' | 'Bearish' | 'Neutral' | 'Waiting' | 'Not sure' | '';
+export type FractalDirection = 'Bullish' | 'Bearish' | 'Waiting' | '';
+
+export interface StructureEvent {
+  id: string; // e.g. "bos_..." or "mss_..." or "choch_..."
+  type: 'BOS' | 'MSS' | 'CHoCH';
+  direction: 'Bullish' | 'Bearish';
+  brokenLevel: string; // Broken price level
+  high: string; // Relevant swing/internal high
+  low: string; // Relevant swing/internal low
+  timestamp: number;
+  affectedStructure?: 'Swing' | 'Internal' | 'Fractal';
+  newActiveLevel?: string; // Resulting active Fractal level for CHoCH
+  previousSnapshot?: {
+    direction: StructureDirection | FractalDirection;
+    high?: string;
+    low?: string;
+    brokenLevel?: string;
+    fractalLevel?: string;
+  };
+}
 
 export interface SwingStructure {
   direction: StructureDirection;
   high: string;
   low: string;
   bosAt: string;
+  history?: StructureEvent[];
 }
 
 export interface InternalStructure {
@@ -28,11 +48,13 @@ export interface InternalStructure {
   high: string;
   low: string;
   ibosAt: string;
+  history?: StructureEvent[];
 }
 
 export interface FractalStructure {
   direction: FractalDirection;
   fractalBosAt: string;
+  history?: StructureEvent[];
 }
 
 export type PriceLocation = 'Discount' | 'Equilibrium' | 'Premium' | '';
@@ -197,6 +219,9 @@ export interface TimeframeDeepFieldsVisibility {
   pwl?: boolean;
   pdh?: boolean;
   pdl?: boolean;
+  timeframeInfoSection?: boolean; // Analysis information top section
+  structureTrackingControls?: boolean; // Structure tracking controls (BOS/MSS)
+  structureHistory?: boolean; // Structure history
 }
 
 export const DEFAULT_DEEP_FIELDS_VISIBILITY: TimeframeDeepFieldsVisibility = {
@@ -220,6 +245,9 @@ export const DEFAULT_DEEP_FIELDS_VISIBILITY: TimeframeDeepFieldsVisibility = {
   pwl: true,
   pdh: true,
   pdl: true,
+  timeframeInfoSection: true,
+  structureTrackingControls: true,
+  structureHistory: true,
 };
 
 export function createDefaultPerTimeframeFields(): Record<TimeframeId, TimeframeDeepFieldsVisibility> {
@@ -256,9 +284,13 @@ export interface WorkspaceVisibilityConfig {
     pwl?: boolean;
     pdh?: boolean;
     pdl?: boolean;
+    timeframeInfoSection?: boolean;
+    structureTrackingControls?: boolean;
+    structureHistory?: boolean;
   };
   perTimeframeFields?: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
   otherSections: {
+    metadataAndTimestamps?: boolean;
     majorLiquidityChecklist: boolean;
     majorLiquidityWatchlist: boolean;
     supplyDemandManager: boolean;
@@ -292,9 +324,13 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
     liquidityLevels: true,
     timeframeNotes: true,
     chartAttachments: true,
+    timeframeInfoSection: true,
+    structureTrackingControls: true,
+    structureHistory: true,
   },
   perTimeframeFields: createDefaultPerTimeframeFields(),
   otherSections: {
+    metadataAndTimestamps: true,
     majorLiquidityChecklist: true,
     majorLiquidityWatchlist: true,
     supplyDemandManager: true,
@@ -378,10 +414,20 @@ export function normalizeWorkspaceVisibilityConfig(
       pwl: existing?.pwl !== undefined ? Boolean(existing.pwl) : true,
       pdh: existing?.pdh !== undefined ? Boolean(existing.pdh) : true,
       pdl: existing?.pdl !== undefined ? Boolean(existing.pdl) : true,
+      timeframeInfoSection: existing?.timeframeInfoSection !== undefined
+        ? Boolean(existing.timeframeInfoSection)
+        : (legacyDeep?.timeframeInfoSection !== false),
+      structureTrackingControls: existing?.structureTrackingControls !== undefined
+        ? Boolean(existing.structureTrackingControls)
+        : (legacyDeep?.structureTrackingControls !== false),
+      structureHistory: existing?.structureHistory !== undefined
+        ? Boolean(existing.structureHistory)
+        : (legacyDeep?.structureHistory !== false),
     };
   }
 
   const otherSections = {
+    metadataAndTimestamps: raw?.otherSections?.metadataAndTimestamps !== false,
     majorLiquidityChecklist: raw?.otherSections?.majorLiquidityChecklist !== false,
     majorLiquidityWatchlist: raw?.otherSections?.majorLiquidityWatchlist !== false,
     supplyDemandManager: raw?.otherSections?.supplyDemandManager !== false,
@@ -479,6 +525,9 @@ export interface ReportVisibilityConfig {
     pwl?: boolean;
     pdh?: boolean;
     pdl?: boolean;
+    timeframeInfoSection?: boolean;
+    structureTrackingControls?: boolean;
+    structureHistory?: boolean;
   };
   perTimeframeFields?: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
   notesAndLevels: {
@@ -526,6 +575,9 @@ export const DEFAULT_REPORT_VISIBILITY: ReportVisibilityConfig = {
     liquidityLevels: true,
     timeframeNotes: true,
     timeframeImages: true,
+    timeframeInfoSection: true,
+    structureTrackingControls: true,
+    structureHistory: true,
   },
   perTimeframeFields: createDefaultPerTimeframeFields(),
   notesAndLevels: {
@@ -616,6 +668,15 @@ export function normalizeReportVisibilityConfig(
       pwl: existing?.pwl !== undefined ? Boolean(existing.pwl) : true,
       pdh: existing?.pdh !== undefined ? Boolean(existing.pdh) : true,
       pdl: existing?.pdl !== undefined ? Boolean(existing.pdl) : true,
+      timeframeInfoSection: existing?.timeframeInfoSection !== undefined
+        ? Boolean(existing.timeframeInfoSection)
+        : (legacyFields?.timeframeInfoSection !== false),
+      structureTrackingControls: existing?.structureTrackingControls !== undefined
+        ? Boolean(existing.structureTrackingControls)
+        : (legacyFields?.structureTrackingControls !== false),
+      structureHistory: existing?.structureHistory !== undefined
+        ? Boolean(existing.structureHistory)
+        : (legacyFields?.structureHistory !== false),
     };
   }
 
@@ -712,16 +773,19 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
       high: '',
       low: '',
       bosAt: '',
+      history: [],
     },
     internal: {
       direction: '',
       high: '',
       low: '',
       ibosAt: '',
+      history: [],
     },
     fractal: {
       direction: '',
       fractalBosAt: '',
+      history: [],
     },
     supplyLevels: [],
     demandLevels: [],

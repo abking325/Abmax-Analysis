@@ -774,12 +774,13 @@ export async function getAllImages(): Promise<ImageAttachment[]> {
 /* ================= BACKUP & RESTORE ================= */
 
 export async function createFullBackup(): Promise<BackupData> {
-  const [reports, templates, draft, images, presentationConfig] = await Promise.all([
+  const [reports, templates, draft, images, presentationConfig, visibilityConfig] = await Promise.all([
     getAllReports(),
     getAllTemplates(),
     getDraft(),
     getAllImages(),
     getUserReportPresentationConfig(),
+    getUserVisibilityConfig(),
   ]);
 
   const theme =
@@ -820,6 +821,7 @@ export async function createFullBackup(): Promise<BackupData> {
     preferences: {
       theme,
       presentationConfig,
+      visibilityConfig: visibilityConfig || undefined,
     },
     workingSessions,
   };
@@ -960,6 +962,11 @@ export async function restoreBackup(
   // Restore report presentation preference if present
   if (backup.preferences?.presentationConfig) {
     await saveUserReportPresentationConfig(backup.preferences.presentationConfig);
+  }
+
+  // Restore workspace visibility config if present
+  if (backup.preferences?.visibilityConfig) {
+    await saveUserVisibilityConfig(backup.preferences.visibilityConfig);
   }
 
   return { addedReports, addedTemplates, addedImages };

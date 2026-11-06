@@ -8,6 +8,7 @@ import {
 import {
   calculateOverallAlignment,
   findMatchingValues,
+  formatReadableAnalysisDate,
   isDeepAnalysisAligned,
   getTimeframeStructureAlignment,
   getTimeframePairAlignments,
@@ -598,7 +599,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                 Analysis Date
               </span>
               <span className="font-medium text-gray-900">
-                {report.date || 'Not specified'}
+                {report.date ? formatReadableAnalysisDate(report.date).full : 'Not specified'}
               </span>
             </div>
 
