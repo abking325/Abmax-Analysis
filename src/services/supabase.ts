@@ -2,14 +2,14 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 // Environment variables (safe for Vite browser and Node/tsx testing runtime)
 const env = (typeof import.meta !== 'undefined' && import.meta.env ? (import.meta.env as Record<string, string | undefined>) : {}) as Record<string, string | undefined>;
-const rawUrl = (env.VITE_SUPABASE_URL || '').trim();
+const rawUrl = (env.VITE_SUPABASE_URL || 'https://fxzurpdymuhlfkdxfgel.supabase.co').trim();
 // Normalize URL: remove any trailing /rest/v1 or trailing slashes to ensure base URL format
 export const supabaseUrl = rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
 
 export const supabaseKey = (
   env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   env.VITE_SUPABASE_ANON_KEY ||
-  ''
+  'sb_publishable_4YIOKlRXAjiSiVlHVU7OaA_-hdCJi-_'
 ).trim();
 
 export const isSupabaseConfigured = Boolean(

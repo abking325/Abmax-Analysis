@@ -624,9 +624,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
 
               {errorMsg && (
-                <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{errorMsg}</span>
+                <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex flex-col gap-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{errorMsg}</span>
+                  </div>
+                  {(errorMsg.toLowerCase().includes('expired') ||
+                    errorMsg.toLowerCase().includes('recovery') ||
+                    errorMsg.toLowerCase().includes('session')) &&
+                    tab === 'reset' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTab('forgot');
+                          setErrorMsg(null);
+                          setSuccessMsg(null);
+                        }}
+                        className="self-start text-[11px] font-semibold text-emerald-theme hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <KeyRound className="w-3 h-3" />
+                        <span>Request a new password reset link &rarr;</span>
+                      </button>
+                    )}
                 </div>
               )}
 

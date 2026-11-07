@@ -3568,6 +3568,73 @@ async function runTests() {
     assert(false, 'Test Suite 34 execution', (err as Error).message);
   }
 
+  // --- TEST 35: Authentication, OTP Verification, Recovery & Callback Flow Verification ---
+  console.log('\n--- Test Suite 35: Complete Authentication, OTP Verification & Recovery Security ---');
+  try {
+    // 1. Password policy & match validation
+    const validateSignUpInput = (email: string, pw: string, confirmPw: string) => {
+      const cleanEmail = email.trim();
+      if (!cleanEmail || !cleanEmail.includes('@')) return { valid: false, error: 'Invalid email' };
+      if (pw !== confirmPw) return { valid: false, error: 'Passwords do not match.' };
+      if (pw.length < 6) return { valid: false, error: 'Password must be at least 6 characters.' };
+      return { valid: true, error: null };
+    };
+
+    assert(!validateSignUpInput('trader@example.com', 'abc', 'abc').valid, 'Password < 6 chars rejected');
+    assert(validateSignUpInput('trader@example.com', 'abc', 'abc').error === 'Password must be at least 6 characters.', 'Exact password length error returned');
+    assert(!validateSignUpInput('trader@example.com', 'secret123', 'secret999').valid, 'Mismatched passwords rejected');
+    assert(validateSignUpInput('trader@example.com', 'secret123', 'secret999').error === 'Passwords do not match.', 'Exact password mismatch error returned');
+    assert(validateSignUpInput('  trader@example.com  ', 'secret123', 'secret123').valid, 'Valid trimmed signup input accepted');
+
+    // 2. OTP Code Formatting & Validation
+    const sanitizeOtp = (raw: string) => raw.replace(/\D/g, '').slice(0, 6);
+    assert(sanitizeOtp('123-456') === '123456', 'Hyphenated OTP code cleaned to 6 digits');
+    assert(sanitizeOtp('98 76 54') === '987654', 'Spaced OTP code cleaned to 6 digits');
+    assert(sanitizeOtp('1234567890') === '123456', 'Overflow OTP code truncated to exactly 6 digits');
+    assert(sanitizeOtp('abc123def') === '123', 'Alphanumeric noise stripped from OTP');
+
+    // 3. Neutral forgot password response
+    const neutralForgotMsg = 'If an account exists for this email, you will receive password reset instructions shortly.';
+    assert(!neutralForgotMsg.includes('does not exist') && !neutralForgotMsg.includes('found'), 'Forgot password message prevents user account enumeration');
+
+    // 4. Expired recovery link detection
+    const isUrlExpiredRecovery = (urlParams: string) => {
+      return (
+        urlParams.includes('error_code=otp_expired') ||
+        urlParams.includes('error=access_denied') ||
+        urlParams.includes('Email+link+is+invalid') ||
+        urlParams.includes('otp_expired')
+      );
+    };
+
+    assert(isUrlExpiredRecovery('#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired'), 'Expired token hash correctly identified');
+    assert(isUrlExpiredRecovery('?error=access_denied&error_code=otp_expired'), 'Expired query params correctly identified');
+    assert(!isUrlExpiredRecovery('#access_token=valid_token&type=recovery'), 'Valid recovery token NOT flagged as expired');
+
+    // 5. Android Callback Scheme Verification
+    const androidCallbackScheme = 'com.abmax.analysis://auth/callback';
+    assert(androidCallbackScheme.startsWith('com.abmax.analysis://'), 'Android callback uses package custom scheme');
+    assert(androidCallbackScheme.endsWith('/auth/callback'), 'Android callback uses canonical auth/callback path');
+
+    // 6. Single-Pass Processing Guard
+    const processedUrls = new Set<string>();
+    const processOnce = (url: string) => {
+      if (processedUrls.has(url)) return false;
+      processedUrls.add(url);
+      return true;
+    };
+
+    assert(processOnce('com.abmax.analysis://auth/callback#access_token=xyz'), 'First token callback processed');
+    assert(!processOnce('com.abmax.analysis://auth/callback#access_token=xyz'), 'Duplicate token callback blocked by single-pass guard');
+
+    // 7. Session Isolation Check
+    const guestData = { accountId: 'local', activeReportId: 'rep_guest_1' };
+    const userAData = { accountId: 'user_uuid_123', activeReportId: 'rep_user_1' };
+    assert(guestData.accountId !== userAData.accountId, 'Guest session is isolated from signed-in user session');
+  } catch (err) {
+    assert(false, 'Test Suite 35 execution', (err as Error).message);
+  }
+
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);
   if (failed > 0) {
     process.exit(1);

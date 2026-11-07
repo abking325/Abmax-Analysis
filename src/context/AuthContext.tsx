@@ -33,13 +33,64 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [isRecoveryLinkExpired, setIsRecoveryLinkExpired] = useState(false);
 
+  const processedUrlsRef = React.useRef<Set<string>>(new Set());
+
+  const handleDeepLinkUrl = React.useCallback(async (url: string) => {
+    if (!url || !supabase) return;
+    if (processedUrlsRef.current.has(url)) return;
+    processedUrlsRef.current.add(url);
+
+    try {
+      await Browser.close().catch(() => {});
+    } catch {
+      // safe ignore
+    }
+
+    // Check if password recovery deep link or expired token
+    if (url.includes('type=recovery')) {
+      setIsPasswordRecovery(true);
+    } else if (
+      url.includes('error_code=otp_expired') ||
+      url.includes('error=access_denied') ||
+      url.includes('otp_expired')
+    ) {
+      setIsRecoveryLinkExpired(true);
+    }
+
+    // Process OAuth tokens or code from deep link callback
+    if (url.includes('access_token=') || url.includes('code=')) {
+      const hashOrSearch = url.includes('#') ? url.split('#')[1] : url.split('?')[1] || '';
+      const params = new URLSearchParams(hashOrSearch);
+      const accessToken = params.get('access_token');
+      const refreshToken = params.get('refresh_token');
+      const code = params.get('code');
+
+      if (accessToken && refreshToken) {
+        const { data, error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        if (!error && data.session) {
+          setSession(data.session);
+          setUser(data.session.user);
+        }
+      } else if (code) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        if (!error && data.session) {
+          setSession(data.session);
+          setUser(data.session.user);
+        }
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!supabase) {
       setLoading(false);
       return;
     }
 
-    // Inspect URL for password recovery or expired link tokens
+    // Inspect URL for password recovery or expired link tokens on Web
     if (typeof window !== 'undefined') {
       const hash = window.location.hash || '';
       const search = window.location.search || '';
@@ -52,7 +103,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         fullUrlParams.includes('otp_expired')
       ) {
         setIsRecoveryLinkExpired(true);
-        // Clean error tokens after parsing
+        // Clean error tokens from address bar without exposing tokens in history
         window.history.replaceState(null, '', window.location.pathname);
       } else if (fullUrlParams.includes('type=recovery')) {
         setIsPasswordRecovery(true);
@@ -65,8 +116,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(session?.user ?? null);
       setLoading(false);
       // Clean tokens from address bar only after session extraction completes
-      if (typeof window !== 'undefined' && window.location.hash && !window.location.hash.includes('type=recovery')) {
-        window.history.replaceState(null, '', window.location.pathname);
+      if (typeof window !== 'undefined' && (window.location.hash || window.location.search.includes('code='))) {
+        if (!window.location.hash.includes('type=recovery')) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
       }
     });
 
@@ -83,7 +136,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       // Secure address bar cleanup after Supabase handles authentication tokens
-      if (typeof window !== 'undefined' && window.location.hash) {
+      if (typeof window !== 'undefined' && window.location.hash && !window.location.hash.includes('type=recovery')) {
         window.history.replaceState(null, '', window.location.pathname);
       }
     });
@@ -91,52 +144,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Capacitor native URL listener for OAuth return & password recovery deep links
     let appUrlPluginHandle: { remove: () => void } | null = null;
     if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
-      App.addListener('appUrlOpen', async ({ url }) => {
-        try {
-          await Browser.close().catch(() => {});
-        } catch {
-          // safe ignore
-        }
-
-        if (!url) return;
-
-        // Check if password recovery deep link
-        if (url.includes('type=recovery')) {
-          setIsPasswordRecovery(true);
-        } else if (
-          url.includes('error_code=otp_expired') ||
-          url.includes('error=access_denied') ||
-          url.includes('otp_expired')
-        ) {
-          setIsRecoveryLinkExpired(true);
-        }
-
-        // Process OAuth tokens or code from deep link callback
-        if (url.includes('access_token=') || url.includes('code=')) {
-          if (!supabase) return;
-          const hashOrSearch = url.includes('#') ? url.split('#')[1] : url.split('?')[1] || '';
-          const params = new URLSearchParams(hashOrSearch);
-          const accessToken = params.get('access_token');
-          const refreshToken = params.get('refresh_token');
-          const code = params.get('code');
-
-          if (accessToken && refreshToken) {
-            const { data, error } = await supabase.auth.setSession({
-              access_token: accessToken,
-              refresh_token: refreshToken,
-            });
-            if (!error && data.session) {
-              setSession(data.session);
-              setUser(data.session.user);
-            }
-          } else if (code) {
-            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-            if (!error && data.session) {
-              setSession(data.session);
-              setUser(data.session.user);
-            }
+      // Check cold-start launch URL
+      App.getLaunchUrl()
+        .then((launch) => {
+          if (launch?.url) {
+            handleDeepLinkUrl(launch.url);
           }
-        }
+        })
+        .catch(() => {});
+
+      // Listen for runtime deep link open
+      App.addListener('appUrlOpen', ({ url }) => {
+        handleDeepLinkUrl(url);
       }).then((handle) => {
         appUrlPluginHandle = handle;
       });
@@ -146,7 +165,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       subscription.unsubscribe();
       appUrlPluginHandle?.remove();
     };
-  }, []);
+  }, [handleDeepLinkUrl]);
 
   const signIn = async (email: string, password: string, rememberMe: boolean = true) => {
     if (!supabase) {
@@ -202,11 +221,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } as AuthError,
       };
     }
-    const res = await supabase.auth.verifyOtp({
-      email: email.trim(),
-      token: token.trim(),
+    const cleanEmail = email.trim();
+    const cleanToken = token.trim();
+    let res = await supabase.auth.verifyOtp({
+      email: cleanEmail,
+      token: cleanToken,
       type: 'signup',
     });
+    if (
+      res.error &&
+      (res.error.message.toLowerCase().includes('type') ||
+        res.error.message.toLowerCase().includes('invalid'))
+    ) {
+      const fallback = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: cleanToken,
+        type: 'email',
+      });
+      if (!fallback.error) {
+        res = fallback;
+      }
+    }
     if (!res.error && res.data.session) {
       setSession(res.data.session);
       setUser(res.data.session.user);
@@ -223,9 +258,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } as AuthError,
       };
     }
+    const redirectUrl = getAppRedirectUrl();
     const res = await supabase.auth.resend({
       type: 'signup',
       email: email.trim(),
+      options: {
+        emailRedirectTo: redirectUrl,
+      },
     });
     return { error: res.error };
   };
@@ -254,7 +293,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             skipBrowserRedirect: true,
           },
         });
-        if (error) return { error };
+        if (error) {
+          if (
+            error.message?.toLowerCase().includes('not enabled') ||
+            error.message?.toLowerCase().includes('unsupported')
+          ) {
+            return {
+              error: new AuthError(
+                'Google sign-in is not yet enabled in the Supabase project. Please sign in with email/password or enable Google provider in the Supabase Dashboard.'
+              ),
+            };
+          }
+          return { error };
+        }
         if (data?.url) {
           await Browser.open({ url: data.url, windowName: '_system' });
         }
@@ -266,6 +317,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             redirectTo: redirectUrl,
           },
         });
+        if (error) {
+          if (
+            error.message?.toLowerCase().includes('not enabled') ||
+            error.message?.toLowerCase().includes('unsupported')
+          ) {
+            return {
+              error: new AuthError(
+                'Google sign-in is not yet enabled in the Supabase project. Please sign in with email/password or enable Google provider in the Supabase Dashboard.'
+              ),
+            };
+          }
+        }
         return { error };
       }
     } catch (err) {
@@ -317,9 +380,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } as AuthError,
       };
     }
+    const {
+      data: { session: activeSession },
+    } = await supabase.auth.getSession();
+    if (!activeSession) {
+      return {
+        error: {
+          name: 'NoRecoverySession',
+          message:
+            'Your password reset session has expired or is invalid. Please request a new password reset link.',
+        } as AuthError,
+      };
+    }
     const res = await supabase.auth.updateUser({ password: newPassword });
     if (!res.error) {
       setIsPasswordRecovery(false);
+      if (typeof window !== 'undefined' && window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
     }
     return { error: res.error };
   };
