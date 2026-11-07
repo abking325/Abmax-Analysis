@@ -79,17 +79,23 @@ function MainApp() {
 
   // Cold start splash state (genuine cold launch / full restart only)
   const [isColdStarting, setIsColdStarting] = useState(true);
+  const [splashStage, setSplashStage] = useState<1 | 2>(1);
   const [splashFadingOut, setSplashFadingOut] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [showSlowFeedback, setShowSlowFeedback] = useState(false);
   const coldStartStartTimeRef = useRef<number>(Date.now());
 
-  // Preload and decode startup image early
+  // Preload and decode both startup stage images early
   useEffect(() => {
-    const img = new Image();
-    img.src = '/abmax-startup.png';
-    if (img.decode) {
-      img.decode().catch(() => {});
+    const img1 = new Image();
+    img1.src = '/abmax-hero.png';
+    if (img1.decode) {
+      img1.decode().catch(() => {});
+    }
+    const img2 = new Image();
+    img2.src = '/abmax-startup.png';
+    if (img2.decode) {
+      img2.decode().catch(() => {});
     }
   }, []);
 
@@ -275,9 +281,21 @@ function MainApp() {
   // Hydrate on mount: restores latest persisted working state before empty defaults or autosave can overwrite
   useEffect(() => {
     let isMounted = true;
+    coldStartStartTimeRef.current = Date.now();
+    setSplashStage(1);
+
     const slowTimer = setTimeout(() => {
       if (isMounted) setShowSlowFeedback(true);
     }, 3200);
+
+    // Coordinate cold start launch screen to display two-stage startup for ~3s on initial launch:
+    // Stage 1 (0 to ~1.4s): A emblem first
+    // Stage 2 (~1.4s to ~3.0s): A emblem with "AbMax Analysis" lettering
+    const stage2Timer = setTimeout(() => {
+      if (isMounted) {
+        setSplashStage(2);
+      }
+    }, 1400);
 
     (async () => {
       try {
@@ -306,7 +324,6 @@ function MainApp() {
           restoreScrollPosition(targetScroll);
         }
 
-        // Coordinate cold start launch screen to display for the approved ~3s on initial startup
         const elapsed = Date.now() - coldStartStartTimeRef.current;
         const remainingTime = Math.max(0, 3000 - elapsed);
         setTimeout(() => {
@@ -333,23 +350,24 @@ function MainApp() {
                 if (isMounted) setIsColdStarting(false);
               }, 200);
             }
-          }, 600);
+          }, 800);
         }
       }
     })();
 
-    // Absolute fallback: ensure launch overlay never traps user if hydration takes unexpectedly long
+    // Absolute fallback: ensure launch overlay never traps user if hydration takes unexpectedly long (>7s)
     const safetyTimer = setTimeout(() => {
       if (isMounted) {
         setSplashFadingOut(true);
         setTimeout(() => {
           if (isMounted) setIsColdStarting(false);
-        }, 200);
+        }, 300);
       }
-    }, 2000);
+    }, 7000);
 
     return () => {
       isMounted = false;
+      clearTimeout(stage2Timer);
       clearTimeout(slowTimer);
       clearTimeout(safetyTimer);
     };
@@ -786,25 +804,46 @@ function MainApp() {
           }`}
         >
           <div className="relative w-full h-full flex flex-col items-center justify-center p-4">
-            <img
-              src="/abmax-startup.png"
-              onError={(e) => {
-                const img = e.currentTarget;
-                if (!img.src.includes('/splash-launch.png')) {
-                  img.src = '/splash-launch.png';
-                }
-              }}
-              alt="AbMax Analysis"
-              className="w-full h-full max-h-[90vh] max-w-[480px] object-contain"
-            />
+            {/* Stage 1: A emblem first */}
+            <div
+              className={`absolute inset-0 flex items-center justify-center p-4 transition-opacity duration-500 ${
+                splashStage === 1 ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
+            >
+              <img
+                src="/abmax-hero.png"
+                alt="AbMax Analysis Emblem"
+                className="w-44 h-44 sm:w-56 sm:h-56 max-h-[50vh] max-w-[280px] object-contain drop-shadow-2xl"
+              />
+            </div>
+
+            {/* Stage 2: A emblem with "AbMax Analysis" lettering */}
+            <div
+              className={`absolute inset-0 flex items-center justify-center p-4 transition-opacity duration-500 ${
+                splashStage === 2 ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
+            >
+              <img
+                src="/abmax-startup.png"
+                onError={(e) => {
+                  const img = e.currentTarget;
+                  if (!img.src.includes('/splash-launch.png')) {
+                    img.src = '/splash-launch.png';
+                  }
+                }}
+                alt="AbMax Analysis"
+                className="w-full h-full max-h-[90vh] max-w-[480px] object-contain"
+              />
+            </div>
+
             {showSlowFeedback && !initError && (
-              <div className="absolute bottom-8 flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 text-xs shadow-lg backdrop-blur-md">
+              <div className="absolute bottom-8 flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 text-xs shadow-lg backdrop-blur-md z-10">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
                 <span>Restoring session workspace...</span>
               </div>
             )}
             {initError && (
-              <div className="absolute bottom-8 flex flex-col items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-950/90 border border-rose-800 text-rose-200 text-xs shadow-xl max-w-sm text-center">
+              <div className="absolute bottom-8 flex flex-col items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-950/90 border border-rose-800 text-rose-200 text-xs shadow-xl max-w-sm text-center z-10">
                 <span>Failed to initialize workspace data: {initError}</span>
                 <button
                   type="button"

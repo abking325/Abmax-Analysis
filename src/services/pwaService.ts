@@ -26,6 +26,18 @@ export function registerPwaServiceWorker(): void {
     return;
   }
 
+  // Bypass service worker in development preview mode to prevent dev asset caching and reload conflicts
+  if (import.meta.env.DEV) {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        for (const reg of registrations) {
+          reg.unregister();
+        }
+      }).catch(() => {});
+    }
+    return;
+  }
+
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return;
   }
