@@ -102,6 +102,17 @@ jobs:
           packages: 'platform-tools platforms;android-36 platforms;android-35 build-tools;36.0.0 build-tools;35.0.0'
           accept-android-sdk-licenses: true
 
+      - name: Add Android Build Tools to PATH
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -d "$SDK_ROOT/build-tools" ]; then
+            BUILD_TOOLS_DIR=$(ls -d "$SDK_ROOT"/build-tools/* 2>/dev/null | sort -V | tail -n 1)
+            if [ -n "$BUILD_TOOLS_DIR" ] && [ -d "$BUILD_TOOLS_DIR" ]; then
+              echo "$BUILD_TOOLS_DIR" >> "$GITHUB_PATH"
+              echo "Added Android build-tools to PATH: $BUILD_TOOLS_DIR"
+            fi
+          fi
+
       - name: Grant Execute Permissions for gradlew
         run: chmod +x android/gradlew
 
@@ -233,20 +244,62 @@ jobs:
           cp "$FOUND_APK" apk-output/AbmaxAnalysis.apk
           ls -lh apk-output/
 
+          # 1. Resolve apksigner binary location robustly
+          APKSIGNER_BIN=""
+          if command -v apksigner >/dev/null 2>&1; then
+            APKSIGNER_BIN=$(command -v apksigner)
+          else
+            SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+            if [ -n "$SDK_ROOT" ] && [ -d "$SDK_ROOT/build-tools" ]; then
+              APKSIGNER_BIN=$(find "$SDK_ROOT/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+            elif [ -d "/usr/local/lib/android/sdk/build-tools" ]; then
+              APKSIGNER_BIN=$(find "/usr/local/lib/android/sdk/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+            fi
+          fi
+
+          # 2. Check if apksigner tool was found
+          if [ -z "$APKSIGNER_BIN" ] || [ ! -x "$APKSIGNER_BIN" ]; then
+            echo "::error::Android SDK verification tool 'apksigner' not found! Build-tools may not be configured. Cannot verify APK cryptographic signature."
+            echo "Current PATH: $PATH"
+            echo "SDK Root: ${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+            exit 1
+          fi
+
+          echo "Using apksigner at: $APKSIGNER_BIN"
           echo "Verifying APK Signature and Certificate using apksigner..."
-          if apksigner verify --verbose --print-certs apk-output/AbmaxAnalysis.apk > apksigner_out.txt 2>&1; then
-            cat apksigner_out.txt
+
+          # 3. Perform cryptographic verification and capture detailed output
+          set +e
+          "$APKSIGNER_BIN" verify --verbose --print-certs apk-output/AbmaxAnalysis.apk > apksigner_out.txt 2>&1
+          VERIFY_EXIT_CODE=$?
+          set -e
+
+          cat apksigner_out.txt
+
+          if [ $VERIFY_EXIT_CODE -eq 0 ]; then
             CERT_FINGERPRINT=$(grep -i "SHA-256 digest:" apksigner_out.txt | head -n 1 | awk '{print $3}')
             echo "✅ Verified APK signature successfully. Signer certificate SHA-256: $CERT_FINGERPRINT"
             echo "APK_CERT_FINGERPRINT=$CERT_FINGERPRINT" >> $GITHUB_ENV
             echo "is_apk_signed=true" >> $GITHUB_OUTPUT
+
+            # Compare certificate fingerprint against configured / permanent signing key
+            PERMANENT_EXPECTED_SHA256="C9:E6:DF:37:89:CC:1F:25:1C:B0:69:38:60:68:1C:10:E2:4F:C1:08:AC:75:93:D6:CD:9A:B7:CE:36:2F:16:E5"
+            EXPECTED_SHA256="${SIGNING_SHA256:-$PERMANENT_EXPECTED_SHA256}"
+            if [ -n "$CERT_FINGERPRINT" ]; then
+              CLEAN_EXPECTED=$(echo "$EXPECTED_SHA256" | tr '[:lower:]' '[:upper:]' | tr -d ' :')
+              CLEAN_ACTUAL=$(echo "$CERT_FINGERPRINT" | tr '[:lower:]' '[:upper:]' | tr -d ' :')
+              if [ "$CLEAN_EXPECTED" = "$CLEAN_ACTUAL" ]; then
+                echo "✅ Verified certificate fingerprint matches permanent signing key ($CERT_FINGERPRINT)."
+              else
+                echo "ℹ️ Signer certificate SHA-256: $CERT_FINGERPRINT (Keystore: $EXPECTED_SHA256)"
+              fi
+            fi
           else
-            cat apksigner_out.txt
             if [ "${{ steps.setup_signing.outputs.unsigned_verification }}" = "true" ]; then
               echo "::warning::Unsigned verification build confirmed unsigned. Not for device installation."
               echo "is_apk_signed=false" >> $GITHUB_OUTPUT
             else
-              echo "::error::Generated APK has no valid cryptographic signature! Refusing to distribute."
+              echo "::error::APK cryptographic signature verification failed! The APK was compiled but does not have a valid cryptographic signature (apksigner exit code $VERIFY_EXIT_CODE)."
               exit 1
             fi
           fi
@@ -258,6 +311,7 @@ jobs:
           path: apk-output/AbmaxAnalysis.apk
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
       - name: Build Summary
         run: |

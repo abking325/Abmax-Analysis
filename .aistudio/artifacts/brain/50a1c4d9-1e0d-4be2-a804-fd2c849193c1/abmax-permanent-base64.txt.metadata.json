@@ -1,0 +1,5 @@
+{
+  "summary":  "ABMAX Analysis permanent Android release signing key encoded as Base64 string. Ready to copy into GitHub Repository Secret 'KEYSTORE_BASE64' to complete automated APK signing and delivery. Key alias: abmax, Store & Key Password: abmaxandroid2026, Certificate SHA-256: C9:E6:DF:37:89:CC:1F:25:1C:B0:69:38:60:68:1C:10:E2:4F:C1:08:AC:75:93:D6:CD:9A:B7:CE:36:2F:16:E5.",
+  "updatedAt":  "2026-11-08T22:13:48.984192037Z",
+  "userFacing":  true
+}

@@ -7,12 +7,11 @@ coverage/
 .env*
 !.env.example
 *.keystore
-!android/app/abmax-permanent.keystore
 *.jks
 *.p12
 *.key
 keystore_base64.txt
-!android/app/abmax-permanent-base64.txt
+*base64.txt
 debug_keystore_base64.txt
 bun.lock
 .checkpoint*

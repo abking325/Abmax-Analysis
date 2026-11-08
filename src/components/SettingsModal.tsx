@@ -20,6 +20,8 @@ import {
   Database,
   Download,
   Upload,
+  Copy,
+  Key,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BackupModal } from './BackupModal';
@@ -78,6 +80,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [selectedEditorTf, setSelectedEditorTf] = useState<TimeframeId>('Monthly');
   const [selectedReportTf, setSelectedReportTf] = useState<TimeframeId>('Monthly');
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [copiedBase64, setCopiedBase64] = useState(false);
   const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState<boolean>(() => {
     return typeof localStorage !== 'undefined' ? localStorage.getItem('abmax_auto_sync_disabled') !== 'true' : true;
   });
@@ -144,6 +147,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       await signOut();
     } catch (err) {
       console.error('Sign out error:', err);
+    }
+  };
+
+  const handleCopyKeystoreBase64 = async () => {
+    try {
+      const res = await fetch('/download-keystore-base64');
+      if (!res.ok) throw new Error('Failed to fetch keystore base64');
+      const text = await res.text();
+      await navigator.clipboard.writeText(text.trim());
+      setCopiedBase64(true);
+      setTimeout(() => setCopiedBase64(false), 2500);
+    } catch (err) {
+      console.error('Copy keystore error:', err);
     }
   };
 
@@ -677,6 +693,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <Upload className="w-3.5 h-3.5 text-emerald-theme" />
                       <span>Restore Report Backup</span>
                     </button>
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 5: ANDROID RELEASE KEYSTORE BACKUP */}
+              <section className="space-y-2.5">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Android Signing Keystore &amp; GitHub Secret</span>
+                </div>
+
+                <div className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-3">
+                  <p className="text-[11px] text-app-secondary leading-relaxed">
+                    Permanent release signing credentials for GitHub Actions APK automated delivery. Kept strictly private and ignored by git.
+                  </p>
+
+                  <div className="p-2.5 rounded bg-app-field border border-app font-mono text-[10px] space-y-1 text-app-secondary">
+                    <div><strong className="text-app-main">Alias:</strong> abmax</div>
+                    <div><strong className="text-app-main">Password:</strong> abmaxandroid2026</div>
+                    <div><strong className="text-app-main">Cert SHA-256:</strong> C9:E6:DF:37:89:CC:1F:25:1C:B0:69:38:60:68:1C:10:E2:4F:C1:08:AC:75:93:D6:CD:9A:B7:CE:36:2F:16:E5</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={handleCopyKeystoreBase64}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-theme hover:bg-emerald-theme-hover text-white transition-colors cursor-pointer shadow-2xs"
+                    >
+                      {copiedBase64 ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedBase64 ? 'Copied to Clipboard!' : 'Copy KEYSTORE_BASE64 Secret'}</span>
+                    </button>
+
+                    <a
+                      href="/download-keystore-base64"
+                      download="abmax-permanent-base64.txt"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-app-field hover:bg-app-main text-app-main border border-app transition-colors cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-emerald-theme" />
+                      <span>Download Base64 (.txt)</span>
+                    </a>
+
+                    <a
+                      href="/download-keystore-file"
+                      download="abmax-permanent.keystore"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-app-field hover:bg-app-main text-app-main border border-app transition-colors cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Download Keystore (.keystore)</span>
+                    </a>
                   </div>
                 </div>
               </section>
