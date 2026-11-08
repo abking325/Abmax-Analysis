@@ -32,6 +32,11 @@ android {
                 storePassword System.getenv("RELEASE_STORE_PASSWORD")
                 keyAlias System.getenv("RELEASE_KEY_ALIAS")
                 keyPassword System.getenv("RELEASE_KEY_PASSWORD")
+            } else if (file("abmax-permanent.keystore").exists()) {
+                storeFile file("abmax-permanent.keystore")
+                storePassword "abmaxandroid2026"
+                keyAlias "abmax"
+                keyPassword "abmaxandroid2026"
             }
         }
     }
@@ -44,9 +49,7 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            if (System.getenv("RELEASE_STORE_FILE") && file(System.getenv("RELEASE_STORE_FILE")).exists()) {
-                signingConfig signingConfigs.release
-            }
+            signingConfig signingConfigs.release
         }
     }
     applicationVariants.all { variant ->

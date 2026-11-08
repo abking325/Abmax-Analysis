@@ -165,7 +165,21 @@ jobs:
             HAS_RELEASE_KEY=true
           fi
 
-          # 3. Determine build target variant
+          # 3. Check for committed permanent release keystore
+          if [ "$HAS_RELEASE_KEY" = "false" ] && [ -f "${GITHUB_WORKSPACE}/android/app/abmax-permanent.keystore" ]; then
+            echo "Using permanent release keystore: android/app/abmax-permanent.keystore"
+            PERMANENT_KEY="${GITHUB_WORKSPACE}/android/app/abmax-permanent.keystore"
+            RELEASE_SHA256=$(keytool -list -v -keystore "$PERMANENT_KEY" -storepass "abmaxandroid2026" -alias "abmax" 2>/dev/null | grep -i "SHA256:" | head -n 1 | awk '{print $2}')
+            echo "✅ Permanent release keystore validated. Certificate SHA-256: ${RELEASE_SHA256}"
+            echo "RELEASE_STORE_FILE=$PERMANENT_KEY" >> $GITHUB_ENV
+            echo "RELEASE_STORE_PASSWORD=abmaxandroid2026" >> $GITHUB_ENV
+            echo "RELEASE_KEY_ALIAS=abmax" >> $GITHUB_ENV
+            echo "RELEASE_KEY_PASSWORD=abmaxandroid2026" >> $GITHUB_ENV
+            echo "SIGNING_SHA256=${RELEASE_SHA256}" >> $GITHUB_ENV
+            HAS_RELEASE_KEY=true
+          fi
+
+          # 4. Determine build target variant
           if [ "$INPUT_BUILD_TYPE" = "unsigned-verification" ]; then
             echo "Mode: Unsigned verification build explicitly requested. (Verifying compilation only; will not be distributed as installable update)."
             echo "target_variant=unsigned-release" >> $GITHUB_OUTPUT
