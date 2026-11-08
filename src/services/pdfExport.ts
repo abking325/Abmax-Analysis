@@ -1,17 +1,92 @@
 import { jsPDF } from 'jspdf';
-import { ReportPresentationConfig, SavedReport, TIMEFRAME_ORDER, TimeframeId } from '../types/journal';
+import {
+  ReportPresentationConfig,
+  SavedReport,
+  TIMEFRAME_ORDER,
+  TimeframeId,
+} from '../types/journal';
 import {
   calculateOverallAlignment,
   findMatchingValues,
   isDeepAnalysisAligned,
 } from '../utils/analysisUtils';
 import { exportBlobOrDownload } from '../utils/nativeExport';
+import { getChartImageUrl } from './cloudSync';
+import { getImage } from './db';
+
+export type PdfExportStyle = 'minimal' | 'emerald' | 'dark';
 
 export interface ExportPdfOptions {
   report: SavedReport;
-  imagesMap?: Record<string, string>; // imgId -> dataUrl/blobUrl
+  imagesMap?: Record<string, string>; // imgId or tf -> dataUrl/blobUrl
   presentationConfig?: ReportPresentationConfig;
+  style?: PdfExportStyle; // Defaults to 'minimal' (Minimal Journal)
+  userId?: string | null;
 }
+
+export interface PdfThemePalette {
+  style: PdfExportStyle;
+  displayName: string;
+  isDark: boolean;
+  pageBg: [number, number, number];
+  primaryText: [number, number, number];
+  secondaryText: [number, number, number];
+  headingText: [number, number, number];
+  accentText: [number, number, number];
+  warningText: [number, number, number];
+  dividerColor: [number, number, number];
+  headerRuleColor: [number, number, number];
+  sectionFill: [number, number, number];
+  cardBorder: [number, number, number];
+}
+
+export const PDF_THEMES: Record<PdfExportStyle, PdfThemePalette> = {
+  minimal: {
+    style: 'minimal',
+    displayName: 'Minimal Journal',
+    isDark: false,
+    pageBg: [255, 255, 255],
+    primaryText: [15, 23, 42], // #0f172a
+    secondaryText: [100, 116, 139], // #64748b
+    headingText: [30, 41, 59], // #1e293b
+    accentText: [15, 23, 42], // #0f172a
+    warningText: [185, 28, 28], // #b91c1c
+    dividerColor: [226, 232, 240], // #e2e8f0
+    headerRuleColor: [15, 23, 42],
+    sectionFill: [248, 250, 252], // #f8fafc
+    cardBorder: [226, 232, 240],
+  },
+  emerald: {
+    style: 'emerald',
+    displayName: 'Emerald',
+    isDark: false,
+    pageBg: [255, 255, 255],
+    primaryText: [15, 23, 42], // #0f172a
+    secondaryText: [100, 116, 139], // #64748b
+    headingText: [6, 95, 70], // #065f46 deep emerald
+    accentText: [4, 120, 87], // #047857 emerald
+    warningText: [185, 28, 28], // #b91c1c
+    dividerColor: [209, 250, 229], // #d1fae5
+    headerRuleColor: [6, 95, 70],
+    sectionFill: [236, 253, 245], // #ecfdf5 soft emerald tint
+    cardBorder: [167, 243, 208], // #a7f3d0
+  },
+  dark: {
+    style: 'dark',
+    displayName: 'Dark Trading Desk',
+    isDark: true,
+    pageBg: [15, 23, 42], // #0f172a charcoal
+    primaryText: [248, 250, 252], // #f8fafc
+    secondaryText: [148, 163, 184], // #94a3b8
+    headingText: [56, 189, 248], // #38bdf8 cyan
+    accentText: [52, 211, 153], // #34d399 emerald
+    warningText: [248, 113, 113], // #f87171 coral
+    dividerColor: [51, 65, 85], // #334155
+    headerRuleColor: [56, 189, 248],
+    sectionFill: [30, 41, 59], // #1e293b dark card fill
+    cardBorder: [51, 65, 85],
+  },
+};
 
 const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
   Monthly: 'MONTHLY',
@@ -25,14 +100,124 @@ const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
 };
 
 /**
- * Generates an A4 portrait PDF Blob with selectable text
- * matching the organized document layout specification.
+ * Pre-fetches and resolves all chart images attached to the report.
+ * Checks imagesMap, IndexedDB, and Supabase cloud signed URLs.
+ */
+export async function resolveAllReportImages(
+  report: SavedReport,
+  userId?: string | null,
+  initialMap: Record<string, string> = {}
+): Promise<Record<string, string>> {
+  const resolved: Record<string, string> = { ...initialMap };
+
+  // 1. Timeframe charts
+  for (const tf of TIMEFRAME_ORDER) {
+    const tfData = report.timeframes[tf];
+    if (tfData?.chartImageId) {
+      const imgId = tfData.chartImageId;
+      if (!resolved[imgId] && !resolved[tf]) {
+        try {
+          const url = await getChartImageUrl(userId || null, imgId);
+          if (url) {
+            resolved[imgId] = url;
+            resolved[tf] = url;
+          } else {
+            const local = await getImage(imgId);
+            if (local) {
+              resolved[imgId] = local;
+              resolved[tf] = local;
+            }
+          }
+        } catch {
+          // Handled honestly during render
+        }
+      } else if (resolved[tf] && !resolved[imgId]) {
+        resolved[imgId] = resolved[tf];
+      }
+    }
+  }
+
+  // 2. Scenario images
+  if (report.scenarios) {
+    for (const sc of report.scenarios) {
+      if (sc.images) {
+        for (const img of sc.images) {
+          if (img.dataUrl && img.id && !resolved[img.id]) {
+            resolved[img.id] = img.dataUrl;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Trade images
+  if (report.trades) {
+    for (const trd of report.trades) {
+      if (trd.images) {
+        for (const img of trd.images) {
+          if (img.dataUrl && img.id && !resolved[img.id]) {
+            resolved[img.id] = img.dataUrl;
+          }
+        }
+      }
+    }
+  }
+
+  return resolved;
+}
+
+/**
+ * Calculates natural dimensions of an image in mm preserving aspect ratio.
+ */
+function getImageDimensions(
+  src: string,
+  maxW: number,
+  maxH: number
+): Promise<{ width: number; height: number; error: boolean }> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || !window.Image) {
+      resolve({ width: maxW, height: maxH, error: false });
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const naturalW = img.naturalWidth || 800;
+      const naturalH = img.naturalHeight || 600;
+      const aspect = naturalW / naturalH;
+
+      let renderW = maxW;
+      let renderH = renderW / aspect;
+
+      if (renderH > maxH) {
+        renderH = maxH;
+        renderW = renderH * aspect;
+      }
+
+      resolve({ width: renderW, height: renderH, error: false });
+    };
+    img.onerror = () => {
+      resolve({ width: maxW, height: maxH, error: true });
+    };
+    img.src = src;
+  });
+}
+
+/**
+ * Generates an A4 portrait PDF Blob with selectable text and presentation theme.
+ * Defaults to 'minimal' (Minimal Journal). Content is 100% identical across all three styles.
  */
 export async function generateReportPdfBlob({
   report,
   imagesMap = {},
   presentationConfig,
-}: ExportPdfOptions): Promise<{ blob: Blob; filename: string; doc: jsPDF }> {
+  style = 'minimal',
+  userId,
+}: ExportPdfOptions): Promise<{ blob: Blob; filename: string; doc: jsPDF; style: PdfExportStyle }> {
+  const theme = PDF_THEMES[style] || PDF_THEMES.minimal;
+
+  // Fully resolve all available images from storage / cache
+  const allImages = await resolveAllReportImages(report, userId, imagesMap);
+
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -44,16 +229,27 @@ export async function generateReportPdfBlob({
   const marginX = 11;
   const marginY = 12;
   const usableWidth = pageWidth - marginX * 2; // 188 mm
-  const usableBottom = pageHeight - marginY;
-
-  // Color palette matching Emerald Minimal typeset theme
-  const emeraldMuted: [number, number, number] = [6, 95, 70]; // #065f46
-  const textDark: [number, number, number] = [15, 23, 42]; // #0f172a
-  const textMuted: [number, number, number] = [100, 116, 139]; // #64748b
-  const ruleGray: [number, number, number] = [226, 232, 240]; // #e2e8f0
+  const usableBottom = pageHeight - marginY - 10; // Reserve room for page numbers
 
   const alignment = calculateOverallAlignment(report.timeframes);
   const matchingValues = findMatchingValues(report.timeframes);
+
+  // Helper to paint page background for dark theme
+  const applyPageBackground = () => {
+    if (theme.isDark) {
+      doc.setFillColor(...theme.pageBg);
+      doc.rect(0, 0, pageWidth, pageHeight, 'F');
+    }
+  };
+
+  // Helper to start a fresh page
+  const addNewPage = () => {
+    doc.addPage();
+    applyPageBackground();
+  };
+
+  // Apply background to first page
+  applyPageBackground();
 
   // Helper to draw header
   const drawPageHeader = () => {
@@ -63,26 +259,26 @@ export async function generateReportPdfBlob({
     if (report.title) {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(16);
-      doc.setTextColor(...textDark);
+      doc.setTextColor(...theme.primaryText);
       doc.text(report.title, marginX, curY);
       curY += 5.5;
 
-      doc.setFontSize(11);
-      doc.setTextColor(...emeraldMuted);
-      doc.text(`ABMAX | ${report.pair} ANALYSIS`, marginX, curY);
+      doc.setFontSize(10.5);
+      doc.setTextColor(...theme.headingText);
+      doc.text(`ABMAX | ${report.pair} ANALYSIS  •  ${theme.displayName.toUpperCase()}`, marginX, curY);
       curY += 5;
     } else {
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(18);
-      doc.setTextColor(...emeraldMuted);
+      doc.setFontSize(17);
+      doc.setTextColor(...theme.headingText);
       doc.text(`ABMAX | ${report.pair} ANALYSIS`, marginX, curY);
       curY += 6;
     }
 
     // Metadata line 1
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.setTextColor(...textDark);
+    doc.setFontSize(8);
+    doc.setTextColor(...theme.primaryText);
 
     const timeStr = report.time
       ? `${report.time}${report.timezone ? ` (${report.timezone})` : ''}`
@@ -91,7 +287,7 @@ export async function generateReportPdfBlob({
       `Date: ${report.date}`,
       `Session: ${report.session}`,
       timeStr ? `Time: ${timeStr}` : '',
-      `Made: ${report.analysisTiming || 'On time'}`,
+      `Timing: ${report.analysisTiming || 'On time'}`,
       `Overall Alignment: ${alignment.label}`,
     ].filter(Boolean);
 
@@ -100,7 +296,7 @@ export async function generateReportPdfBlob({
 
     // Provenance line
     doc.setFontSize(7.5);
-    doc.setTextColor(...textMuted);
+    doc.setTextColor(...theme.secondaryText);
     const provParts: string[] = [];
     if (report.status === 'Modified') {
       provParts.push('Status: Modified Analysis');
@@ -116,12 +312,14 @@ export async function generateReportPdfBlob({
     if (report.updatedAt) {
       provParts.push(`Updated: ${new Date(report.updatedAt).toLocaleString()}`);
     }
+    provParts.push(`Export Style: ${theme.displayName}`);
+
     doc.text(provParts.join('   ·   '), marginX, curY);
     curY += 3.5;
 
     // Separator rule
-    doc.setDrawColor(...ruleGray);
-    doc.setLineWidth(0.3);
+    doc.setDrawColor(...theme.headerRuleColor);
+    doc.setLineWidth(theme.style === 'minimal' ? 0.3 : 0.4);
     doc.line(marginX, curY, marginX + usableWidth, curY);
 
     return curY + 4;
@@ -159,11 +357,23 @@ export async function generateReportPdfBlob({
     const hasNote = Boolean(d.note && d.note.trim());
     const hasChart = Boolean(d.chartImageId);
     const hasSD = (report.supplyDemandLevels || []).some((sd) => sd.timeframe === tf);
-    return hasBias || hasPriceLoc || hasSwing || hasInternal || hasFractal || hasStructuredLevels || hasNote || hasChart || hasSD;
+    return (
+      hasBias ||
+      hasPriceLoc ||
+      hasSwing ||
+      hasInternal ||
+      hasFractal ||
+      hasStructuredLevels ||
+      hasNote ||
+      hasChart ||
+      hasSD
+    );
   };
 
-  // Helper to compile timeframe content lines
-  const getTimeframeLines = (tf: TimeframeId): Array<{ type: 'heading' | 'body' | 'rule'; text: string }> => {
+  // Helper to compile timeframe content lines (identical across all styles)
+  const getTimeframeLines = (
+    tf: TimeframeId
+  ): Array<{ type: 'heading' | 'body' | 'rule'; text: string }> => {
     const items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
     const d = report.timeframes[tf];
     const tfLabel = TIMEFRAME_DISPLAY_NAMES[tf] || tf.toUpperCase();
@@ -189,7 +399,7 @@ export async function generateReportPdfBlob({
       items.push({ type: 'body', text: 'Bias: —' });
     }
 
-    // 2. Price Location (Equilibrium / Discount / Premium)
+    // 2. Price Location
     if (d.priceLocation?.location || d.priceLocation?.levelRange) {
       const loc = d.priceLocation.location || '—';
       const range = d.priceLocation.levelRange ? ` (${d.priceLocation.levelRange})` : '';
@@ -199,7 +409,7 @@ export async function generateReportPdfBlob({
       });
     }
 
-    // Previous-Period Levels (Monthly PMH/PML, Weekly PWH/PWL, Daily PDH/PDL)
+    // Previous-Period Levels
     if (tf === 'Monthly' && (d.pmh || d.pml)) {
       const parts: string[] = [];
       if (d.pmh) parts.push(`PMH ${d.pmh}`);
@@ -226,7 +436,7 @@ export async function generateReportPdfBlob({
       });
     }
 
-    // 3. Swing: [direction] | High [value] | Low [value] | BOS [value]
+    // 3. Swing
     const swingHasContent = Boolean(
       d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt
     );
@@ -241,7 +451,7 @@ export async function generateReportPdfBlob({
       });
     }
 
-    // 4. Internal: [direction] | High [value] | Low [value] | iBOS [value]
+    // 4. Internal
     const internalHasContent = Boolean(
       d.internal.direction || d.internal.high || d.internal.low || d.internal.ibosAt
     );
@@ -256,7 +466,7 @@ export async function generateReportPdfBlob({
       });
     }
 
-    // 5. Fractal: [direction] | BOS [value]
+    // 5. Fractal
     const fractalHasContent = Boolean(d.fractal.direction || d.fractal.fractalBosAt);
     if (fractalHasContent) {
       const fDir = d.fractal.direction || '—';
@@ -282,7 +492,7 @@ export async function generateReportPdfBlob({
       }
     }
 
-    // 7. Structured Deep Levels (Supply, Demand, Support, Resistance, Liquidity)
+    // 7. Structured Deep Levels
     if (d.supplyLevels && d.supplyLevels.length > 0) {
       const str = d.supplyLevels.map((l) => `${l.level}${l.note ? ` (${l.note})` : ''}`).join(', ');
       items.push({ type: 'body', text: `Supply Levels: ${str}` });
@@ -327,11 +537,11 @@ export async function generateReportPdfBlob({
       });
     }
 
-    // 10. Chart indicator
+    // 10. Attached Chart reference
     if (d.chartImageId) {
       items.push({
         type: 'body',
-        text: 'Chart: Attached (see Appendix page)',
+        text: 'Chart Screenshot: Attached (see Attached Charts section)',
       });
     }
 
@@ -388,7 +598,7 @@ export async function generateReportPdfBlob({
   }
   col3Items.push({ type: 'rule', text: '' });
 
-  // Render a column's items within bounds
+  // Render a column's items within bounds with themed fonts and colors
   const renderColumnItems = (
     items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }>,
     x: number,
@@ -400,19 +610,19 @@ export async function generateReportPdfBlob({
       if (item.type === 'heading') {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8.5);
-        doc.setTextColor(...emeraldMuted);
+        doc.setTextColor(...theme.headingText);
         const lines = doc.splitTextToSize(item.text, colWidth);
         doc.text(lines, x, y);
         y += lines.length * 3.6 + 1.2;
       } else if (item.type === 'body') {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7.5);
-        doc.setTextColor(...textDark);
+        doc.setTextColor(...theme.primaryText);
         const lines = doc.splitTextToSize(item.text, colWidth);
         doc.text(lines, x, y);
         y += lines.length * 3.1 + 1.2;
       } else if (item.type === 'rule') {
-        doc.setDrawColor(...ruleGray);
+        doc.setDrawColor(...theme.dividerColor);
         doc.setLineWidth(0.2);
         doc.line(x, y, x + colWidth, y);
         y += 2.8;
@@ -429,7 +639,7 @@ export async function generateReportPdfBlob({
   const maxColumnY = Math.max(endY1, endY2, endY3);
 
   // Draw subtle vertical column separators
-  doc.setDrawColor(...ruleGray);
+  doc.setDrawColor(...theme.dividerColor);
   doc.setLineWidth(0.2);
   const separatorTop = bodyStartY - 2;
   const separatorBottom = Math.min(maxColumnY, usableBottom - 25);
@@ -439,12 +649,12 @@ export async function generateReportPdfBlob({
   // Full-width ending: Matching Values and Footer
   let endingY = maxColumnY + 4;
   if (endingY > usableBottom - 25) {
-    doc.addPage();
+    addNewPage();
     endingY = marginY + 6;
   }
 
   // Full-width separator
-  doc.setDrawColor(...ruleGray);
+  doc.setDrawColor(...theme.dividerColor);
   doc.setLineWidth(0.3);
   doc.line(marginX, endingY, marginX + usableWidth, endingY);
   endingY += 4;
@@ -452,13 +662,13 @@ export async function generateReportPdfBlob({
   // Matching Values section
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
-  doc.setTextColor(...emeraldMuted);
+  doc.setTextColor(...theme.headingText);
   doc.text('MATCHING VALUES', marginX, endingY);
   endingY += 4;
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
-  doc.setTextColor(...textDark);
+  doc.setTextColor(...theme.primaryText);
 
   if (matchingValues.length > 0) {
     for (const group of matchingValues) {
@@ -479,22 +689,22 @@ export async function generateReportPdfBlob({
 
   // Helper to ensure enough vertical room or start a new page
   const ensureSpace = (neededHeight: number) => {
-    if (endingY + neededHeight > usableBottom - 10) {
-      doc.addPage();
+    if (endingY + neededHeight > usableBottom) {
+      addNewPage();
       endingY = marginY + 6;
     }
   };
 
-  // PLANNED SCENARIOS SECTION (Appended after 3-column analysis and matching values)
-  ensureSpace(15);
-  doc.setDrawColor(...ruleGray);
+  // PLANNED SCENARIOS SECTION
+  ensureSpace(16);
+  doc.setDrawColor(...theme.dividerColor);
   doc.setLineWidth(0.3);
   doc.line(marginX, endingY, marginX + usableWidth, endingY);
   endingY += 4;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
-  doc.setTextColor(...emeraldMuted);
+  doc.setTextColor(...theme.headingText);
   const scnCount = report.scenarios?.length || 0;
   doc.text(`PLANNED SCENARIOS (${scnCount})`, marginX, endingY);
   endingY += 4.5;
@@ -502,10 +712,9 @@ export async function generateReportPdfBlob({
   if (report.scenarios && report.scenarios.length > 0) {
     for (const sc of report.scenarios) {
       ensureSpace(18);
-      // Scenario Header: Label [Direction] Strategy
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
-      doc.setTextColor(...textDark);
+      doc.setTextColor(...theme.primaryText);
       const imgCountText = sc.images && sc.images.length > 0 ? ` [${sc.images.length} chart(s)]` : '';
       const scHeader = `${sc.label || 'Scenario'}${sc.direction ? ` [${sc.direction.toUpperCase()}]` : ''}${
         sc.strategy ? ` — ${sc.strategy}` : ''
@@ -515,7 +724,7 @@ export async function generateReportPdfBlob({
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.setTextColor(...textDark);
+      doc.setTextColor(...theme.primaryText);
 
       if (sc.description) {
         const descLines = doc.splitTextToSize(`Description: ${sc.description}`, usableWidth);
@@ -532,7 +741,7 @@ export async function generateReportPdfBlob({
       }
 
       if (sc.invalidationConditions) {
-        doc.setTextColor(185, 28, 28); // subtle red
+        doc.setTextColor(...theme.warningText);
         const invLines = doc.splitTextToSize(
           `Invalidation: ${sc.invalidationConditions}`,
           usableWidth
@@ -540,7 +749,7 @@ export async function generateReportPdfBlob({
         ensureSpace(invLines.length * 3.2);
         doc.text(invLines, marginX, endingY);
         endingY += invLines.length * 3.2 + 2;
-        doc.setTextColor(...textDark);
+        doc.setTextColor(...theme.primaryText);
       } else {
         endingY += 1;
       }
@@ -548,21 +757,21 @@ export async function generateReportPdfBlob({
   } else {
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(7.5);
-    doc.setTextColor(...textMuted);
+    doc.setTextColor(...theme.secondaryText);
     doc.text('No scenarios recorded.', marginX, endingY);
     endingY += 4.5;
   }
 
-  // TRADES TAKEN SECTION (Appended below Planned Scenarios)
-  ensureSpace(15);
-  doc.setDrawColor(...ruleGray);
+  // TRADES TAKEN SECTION
+  ensureSpace(16);
+  doc.setDrawColor(...theme.dividerColor);
   doc.setLineWidth(0.3);
   doc.line(marginX, endingY, marginX + usableWidth, endingY);
   endingY += 4;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
-  doc.setTextColor(...emeraldMuted);
+  doc.setTextColor(...theme.headingText);
   const tradeCount = report.trades?.length || 0;
   doc.text(`TRADES TAKEN (${tradeCount})`, marginX, endingY);
   endingY += 4.5;
@@ -572,7 +781,7 @@ export async function generateReportPdfBlob({
       ensureSpace(16);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
-      doc.setTextColor(...textDark);
+      doc.setTextColor(...theme.primaryText);
       const outcomeText = trd.outcome ? ` | Outcome: ${trd.outcome}` : '';
       const rulesText = trd.rulesFollowed !== false ? ' [Rules Followed]' : ' [Rules Broken]';
       const imgText = trd.images && trd.images.length > 0 ? ` [${trd.images.length} screenshot(s)]` : '';
@@ -582,7 +791,7 @@ export async function generateReportPdfBlob({
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.setTextColor(...textDark);
+      doc.setTextColor(...theme.primaryText);
 
       const priceParts: string[] = [];
       if (trd.timeframeTaken) priceParts.push(`TF: ${trd.timeframeTaken}`);
@@ -602,11 +811,11 @@ export async function generateReportPdfBlob({
         const noteLines = doc.splitTextToSize(`Notes: "${trd.notes}"`, usableWidth - 3);
         ensureSpace(noteLines.length * 3.2);
         doc.setFont('helvetica', 'italic');
-        doc.setTextColor(...textMuted);
+        doc.setTextColor(...theme.secondaryText);
         doc.text(noteLines, marginX + 3, endingY);
         endingY += noteLines.length * 3.2 + 2;
         doc.setFont('helvetica', 'normal');
-        doc.setTextColor(...textDark);
+        doc.setTextColor(...theme.primaryText);
       } else {
         endingY += 1.5;
       }
@@ -614,216 +823,282 @@ export async function generateReportPdfBlob({
   } else {
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(7.5);
-    doc.setTextColor(...textMuted);
+    doc.setTextColor(...theme.secondaryText);
     doc.text('No trades recorded.', marginX, endingY);
     endingY += 4.5;
   }
 
-  endingY += 3;
-
-  // Small footer
-  doc.setDrawColor(...ruleGray);
-  doc.setLineWidth(0.2);
-  doc.line(marginX, endingY, marginX + usableWidth, endingY);
-  endingY += 3.5;
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
-  doc.setTextColor(...textMuted);
-  doc.text('ABMAX ANALYSIS — Trading Journal', marginX, endingY);
-
-  // CHART ATTACHMENT PAGES (APPENDIX)
-  // Check if user preferences allow timeframe chart export and any timeframe has attached charts
+  // =========================================================================
+  // ATTACHED CHARTS & SCREENSHOTS SECTION (Compact Thumbnail Grid)
+  // Preserves aspect ratio, maximum dimensions, honest error handling, zooming
+  // =========================================================================
   const includeTfCharts = presentationConfig?.pdfImages?.includeTimeframeCharts !== false;
   const includeScenarioImages = presentationConfig?.pdfImages?.includeScenarioImages !== false;
   const includeTradeImages = presentationConfig?.pdfImages?.includeTradeImages !== false;
 
-  const chartsToExport: Array<{ tf: TimeframeId; imgUrl: string }> = [];
+  interface AttachedChartItem {
+    id: string;
+    label: string;
+    sublabel: string;
+    caption?: string;
+    imgUrl?: string;
+  }
+
+  const allAttachedCharts: AttachedChartItem[] = [];
+
   if (includeTfCharts) {
     for (const tf of TIMEFRAME_ORDER) {
       const imgId = report.timeframes[tf]?.chartImageId;
-      if (imgId && imagesMap[imgId]) {
-        chartsToExport.push({ tf, imgUrl: imagesMap[imgId] });
+      if (imgId) {
+        allAttachedCharts.push({
+          id: imgId,
+          label: `${TIMEFRAME_DISPLAY_NAMES[tf]} TIMEFRAME`,
+          sublabel: `Analysis Chart (${report.pair})`,
+          imgUrl: allImages[imgId] || allImages[tf],
+        });
       }
     }
   }
 
-  if (chartsToExport.length > 0) {
-    for (const chart of chartsToExport) {
-      doc.addPage();
-      let pageY = marginY + 4;
-
-      // Appendix Page Header
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(14);
-      doc.setTextColor(...emeraldMuted);
-      doc.text(`CHART APPENDIX — ${TIMEFRAME_DISPLAY_NAMES[chart.tf]}`, marginX, pageY);
-      pageY += 5;
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
-      doc.setTextColor(...textMuted);
-      doc.text(`Report: ${report.pair}  •  ${report.date}  •  ${report.session} Session`, marginX, pageY);
-      pageY += 3;
-
-      doc.setDrawColor(...ruleGray);
-      doc.setLineWidth(0.3);
-      doc.line(marginX, pageY, marginX + usableWidth, pageY);
-      pageY += 6;
-
-      try {
-        // Draw image scaled while preserving aspect ratio
-        const maxImgWidth = usableWidth; // 188mm
-        const maxImgHeight = pageHeight - pageY - marginY - 10; // ~230mm
-
-        // Use jsPDF's internal image handling
-        doc.addImage(
-          chart.imgUrl,
-          'JPEG',
-          marginX,
-          pageY,
-          maxImgWidth,
-          maxImgHeight,
-          undefined,
-          'FAST'
-        );
-      } catch (err) {
-        console.warn(`Could not render chart image for ${chart.tf}:`, err);
-        doc.setFontSize(8);
-        doc.setTextColor(...textMuted);
-        doc.text(`[Chart screenshot for ${chart.tf} could not be rendered in PDF]`, marginX, pageY + 10);
-      }
-
-      // Appendix footer
-      doc.setFontSize(7);
-      doc.setTextColor(...textMuted);
-      doc.text(
-        `ABMAX ANALYSIS — ${TIMEFRAME_DISPLAY_NAMES[chart.tf]} Chart Screenshot`,
-        marginX,
-        pageHeight - marginY
-      );
-    }
-  }
-
-  // SCENARIO ATTACHMENT PAGES (APPENDIX)
   if (includeScenarioImages && report.scenarios) {
     for (const sc of report.scenarios) {
-      if (sc.images && sc.images.length > 0) {
-        for (let i = 0; i < sc.images.length; i++) {
-          const img = sc.images[i];
-          if (img.dataUrl) {
-            doc.addPage();
-            let pageY = marginY + 4;
-
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(13);
-            doc.setTextColor(...emeraldMuted);
-            doc.text(`SCENARIO APPENDIX — ${sc.label || 'Scenario'} (Chart ${i + 1}/${sc.images.length})`, marginX, pageY);
-            pageY += 5;
-
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            doc.setTextColor(...textMuted);
-            const captionStr = img.caption ? `Caption: "${img.caption}"  •  ` : '';
-            doc.text(`${captionStr}Strategy: ${sc.strategy || 'N/A'}  •  Direction: ${sc.direction || 'N/A'}`, marginX, pageY);
-            pageY += 3;
-
-            doc.setDrawColor(...ruleGray);
-            doc.setLineWidth(0.3);
-            doc.line(marginX, pageY, marginX + usableWidth, pageY);
-            pageY += 6;
-
-            try {
-              const maxImgWidth = usableWidth;
-              const maxImgHeight = pageHeight - pageY - marginY - 10;
-              doc.addImage(img.dataUrl, 'JPEG', marginX, pageY, maxImgWidth, maxImgHeight, undefined, 'FAST');
-            } catch (err) {
-              console.warn(`Could not render scenario image in PDF:`, err);
-              doc.setFontSize(8);
-              doc.setTextColor(...textMuted);
-              doc.text(`[Scenario chart for ${sc.label} could not be rendered in PDF]`, marginX, pageY + 10);
-            }
-
-            doc.setFontSize(7);
-            doc.setTextColor(...textMuted);
-            doc.text(
-              `ABMAX ANALYSIS — Planned Scenario Setup Chart`,
-              marginX,
-              pageHeight - marginY
-            );
-          }
-        }
+      if (sc.images) {
+        sc.images.forEach((img, idx) => {
+          allAttachedCharts.push({
+            id: img.id,
+            label: `SCENARIO: ${sc.label || 'Plan'} (Chart ${idx + 1}/${sc.images.length})`,
+            sublabel: `${sc.direction || 'Setup'} • ${sc.strategy || 'Strategy'}`,
+            caption: img.caption,
+            imgUrl: img.dataUrl || allImages[img.id],
+          });
+        });
       }
     }
   }
 
-  // TRADE SCREENSHOT ATTACHMENT PAGES (APPENDIX)
   if (includeTradeImages && report.trades) {
     for (const trd of report.trades) {
-      if (trd.images && trd.images.length > 0) {
-        for (let i = 0; i < trd.images.length; i++) {
-          const img = trd.images[i];
-          if (img.dataUrl) {
-            doc.addPage();
-            let pageY = marginY + 4;
-
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(13);
-            doc.setTextColor(...emeraldMuted);
-            doc.text(`TRADE APPENDIX — ${trd.direction || 'Trade'} Execution (Screenshot ${i + 1}/${trd.images.length})`, marginX, pageY);
-            pageY += 5;
-
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            doc.setTextColor(...textMuted);
-            const captionStr = img.caption ? `Caption: "${img.caption}"  •  ` : '';
-            doc.text(`${captionStr}Plan: ${trd.scenarioLabel || 'Execution'}  •  Outcome: ${trd.outcome || 'N/A'}`, marginX, pageY);
-            pageY += 3;
-
-            doc.setDrawColor(...ruleGray);
-            doc.setLineWidth(0.3);
-            doc.line(marginX, pageY, marginX + usableWidth, pageY);
-            pageY += 6;
-
-            try {
-              const maxImgWidth = usableWidth;
-              const maxImgHeight = pageHeight - pageY - marginY - 10;
-              doc.addImage(img.dataUrl, 'JPEG', marginX, pageY, maxImgWidth, maxImgHeight, undefined, 'FAST');
-            } catch (err) {
-              console.warn(`Could not render trade screenshot in PDF:`, err);
-              doc.setFontSize(8);
-              doc.setTextColor(...textMuted);
-              doc.text(`[Trade screenshot for ${trd.direction} execution could not be rendered in PDF]`, marginX, pageY + 10);
-            }
-
-            doc.setFontSize(7);
-            doc.setTextColor(...textMuted);
-            doc.text(
-              `ABMAX ANALYSIS — Executed Trade Screenshot`,
-              marginX,
-              pageHeight - marginY
-            );
-          }
-        }
+      if (trd.images) {
+        trd.images.forEach((img, idx) => {
+          allAttachedCharts.push({
+            id: img.id,
+            label: `TRADE: ${trd.direction || 'Trade'} (Screenshot ${idx + 1}/${trd.images.length})`,
+            sublabel: `${trd.scenarioLabel || 'Execution'} • Outcome: ${trd.outcome || 'N/A'}`,
+            caption: img.caption,
+            imgUrl: img.dataUrl || allImages[img.id],
+          });
+        });
       }
     }
   }
 
-  // Sanitize filename: ABMAX_[PAIR]_[ANALYSIS-DATE].pdf
+  if (allAttachedCharts.length > 0) {
+    ensureSpace(24);
+    doc.setDrawColor(...theme.dividerColor);
+    doc.setLineWidth(0.3);
+    doc.line(marginX, endingY, marginX + usableWidth, endingY);
+    endingY += 4;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(...theme.headingText);
+    doc.text(`ATTACHED CHARTS & SCREENSHOTS (${allAttachedCharts.length})`, marginX, endingY);
+    endingY += 5;
+
+    // Render compact 2-column thumbnail cards
+    const thumbGutter = 5;
+    const thumbCardWidth = (usableWidth - thumbGutter) / 2; // ~91.5 mm
+    const maxImgW = thumbCardWidth - 6; // ~85.5 mm
+    const maxImgH = 50; // max 50mm height to avoid tall screenshots consuming a full page
+    const cardPaddingTop = 8;
+    const cardPaddingBottom = 6;
+
+    for (let i = 0; i < allAttachedCharts.length; i += 2) {
+      const item1 = allAttachedCharts[i];
+      const item2 = allAttachedCharts[i + 1] as AttachedChartItem | undefined;
+
+      // Measure dimensions for item1
+      let dims1 = { width: maxImgW, height: 45, error: false };
+      if (item1.imgUrl) {
+        dims1 = await getImageDimensions(item1.imgUrl, maxImgW, maxImgH);
+      } else {
+        dims1.error = true;
+      }
+
+      // Measure dimensions for item2 if present
+      let dims2 = { width: maxImgW, height: 45, error: false };
+      if (item2?.imgUrl) {
+        dims2 = await getImageDimensions(item2.imgUrl, maxImgW, maxImgH);
+      } else if (item2) {
+        dims2.error = true;
+      }
+
+      const rowH = Math.max(dims1.height, item2 ? dims2.height : 0) + cardPaddingTop + cardPaddingBottom + (item1.caption || item2?.caption ? 5 : 0);
+
+      // Check page break
+      ensureSpace(rowH + 4);
+
+      // Render Item 1 Card
+      const card1X = marginX;
+      const card1Y = endingY;
+
+      // Card background and border
+      doc.setFillColor(...theme.sectionFill);
+      doc.setDrawColor(...theme.cardBorder);
+      doc.setLineWidth(0.2);
+      doc.roundedRect(card1X, card1Y, thumbCardWidth, rowH, 1.5, 1.5, 'FD');
+
+      // Card Header
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(...theme.headingText);
+      doc.text(item1.label, card1X + 3, card1Y + 4);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.setTextColor(...theme.secondaryText);
+      doc.text(item1.sublabel, card1X + 3, card1Y + 7);
+
+      // Image or Honest Error Message
+      if (item1.imgUrl && !dims1.error) {
+        try {
+          const imgX = card1X + 3 + (maxImgW - dims1.width) / 2;
+          const imgY = card1Y + cardPaddingTop;
+          doc.addImage(
+            item1.imgUrl,
+            'JPEG',
+            imgX,
+            imgY,
+            dims1.width,
+            dims1.height,
+            undefined,
+            'FAST'
+          );
+        } catch (err) {
+          doc.setFontSize(7);
+          doc.setTextColor(...theme.warningText);
+          doc.text('[Chart image could not be embedded in PDF]', card1X + 4, card1Y + 22);
+        }
+      } else {
+        doc.setFontSize(7);
+        doc.setTextColor(...theme.warningText);
+        doc.text('⚠️ Chart image could not be loaded from storage.', card1X + 4, card1Y + 20);
+        doc.setFontSize(6);
+        doc.setTextColor(...theme.secondaryText);
+        doc.text('(Tap Retry in export dialog to reload)', card1X + 4, card1Y + 24);
+      }
+
+      if (item1.caption) {
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.5);
+        doc.setTextColor(...theme.secondaryText);
+        const capLines = doc.splitTextToSize(`"${item1.caption}"`, maxImgW);
+        doc.text(capLines, card1X + 3, card1Y + cardPaddingTop + dims1.height + 3.5);
+      }
+
+      // Render Item 2 Card (if present)
+      if (item2) {
+        const card2X = marginX + thumbCardWidth + thumbGutter;
+        const card2Y = endingY;
+
+        doc.setFillColor(...theme.sectionFill);
+        doc.setDrawColor(...theme.cardBorder);
+        doc.setLineWidth(0.2);
+        doc.roundedRect(card2X, card2Y, thumbCardWidth, rowH, 1.5, 1.5, 'FD');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(...theme.headingText);
+        doc.text(item2.label, card2X + 3, card2Y + 4);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(...theme.secondaryText);
+        doc.text(item2.sublabel, card2X + 3, card2Y + 7);
+
+        if (item2.imgUrl && !dims2.error) {
+          try {
+            const imgX = card2X + 3 + (maxImgW - dims2.width) / 2;
+            const imgY = card2Y + cardPaddingTop;
+            doc.addImage(
+              item2.imgUrl,
+              'JPEG',
+              imgX,
+              imgY,
+              dims2.width,
+              dims2.height,
+              undefined,
+              'FAST'
+            );
+          } catch (err) {
+            doc.setFontSize(7);
+            doc.setTextColor(...theme.warningText);
+            doc.text('[Chart image could not be embedded in PDF]', card2X + 4, card2Y + 22);
+          }
+        } else {
+          doc.setFontSize(7);
+          doc.setTextColor(...theme.warningText);
+          doc.text('⚠️ Chart image could not be loaded from storage.', card2X + 4, card2Y + 20);
+          doc.setFontSize(6);
+          doc.setTextColor(...theme.secondaryText);
+          doc.text('(Tap Retry in export dialog to reload)', card2X + 4, card2Y + 24);
+        }
+
+        if (item2.caption) {
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(6.5);
+          doc.setTextColor(...theme.secondaryText);
+          const capLines = doc.splitTextToSize(`"${item2.caption}"`, maxImgW);
+          doc.text(capLines, card2X + 3, card2Y + cardPaddingTop + dims2.height + 3.5);
+        }
+      }
+
+      endingY += rowH + 4;
+    }
+  }
+
+  // =========================================================================
+  // FINAL PASS: Page Numbering & Footer across all generated pages
+  // =========================================================================
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    const footerY = pageHeight - marginY + 2;
+
+    doc.setDrawColor(...theme.dividerColor);
+    doc.setLineWidth(0.2);
+    doc.line(marginX, footerY - 3, marginX + usableWidth, footerY - 3);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(...theme.secondaryText);
+    doc.text(
+      `ABMAX ANALYSIS  •  ${report.pair}  •  ${theme.displayName}`,
+      marginX,
+      footerY
+    );
+
+    const pageStr = `Page ${i} of ${totalPages}`;
+    const pageStrWidth = doc.getTextWidth(pageStr);
+    doc.text(pageStr, marginX + usableWidth - pageStrWidth, footerY);
+  }
+
+  // Sanitize filename: ABMAX_[PAIR]_[STYLE]_[DATE].pdf
   const sanitizedPair = (report.pair || 'UNKNOWN').replace(/[^a-zA-Z0-9_-]/g, '_');
   const sanitizedDate = (report.date || new Date().toISOString().slice(0, 10)).replace(
     /[^a-zA-Z0-9_-]/g,
     '_'
   );
-  const filename = `ABMAX_${sanitizedPair}_${sanitizedDate}.pdf`;
+  const styleSlug = theme.style;
+  const filename = `ABMAX_${sanitizedPair}_${styleSlug}_${sanitizedDate}.pdf`;
   const pdfBlob = doc.output('blob');
 
-  return { blob: pdfBlob, filename, doc };
+  return { blob: pdfBlob, filename, doc, style: theme.style };
 }
 
 /**
  * Generates and triggers download of an A4 portrait PDF with selectable text
- * matching the organized document layout specification.
+ * matching the chosen presentation style. Defaults to 'minimal' (Minimal Journal).
  */
 export async function downloadReportPdf(options: ExportPdfOptions): Promise<void> {
   const { blob, filename } = await generateReportPdfBlob(options);

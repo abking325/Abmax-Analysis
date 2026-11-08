@@ -27,6 +27,7 @@ import {
   checkSupabaseConnectivity,
   setCloudVerifiedState,
 } from '../services/supabaseDiagnostic';
+import { formatAuthError } from '../utils/authErrorUtils';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -334,9 +335,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const renderGoogleButton = () => (
     <div className="space-y-3 pt-1">
-      <div className="relative flex items-center justify-center">
+      <div className="relative flex items-center justify-center my-1">
         <div className="border-t border-app w-full" />
-        <span className="bg-app-main px-2 text-[10px] uppercase tracking-wider text-app-secondary">
+        <span className="bg-app-main px-3 text-[10px] uppercase tracking-wider text-app-secondary whitespace-nowrap shrink-0">
           or continue with
         </span>
       </div>
@@ -623,31 +624,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               )}
 
-              {errorMsg && (
-                <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex flex-col gap-2">
-                  <div className="flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>{errorMsg}</span>
+              {errorMsg && (() => {
+                const formatted = formatAuthError(errorMsg);
+                return (
+                  <div className={`p-2.5 rounded border text-xs flex flex-col gap-2 ${
+                    formatted.isConnectionError
+                      ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 text-amber-800 dark:text-amber-200'
+                      : 'bg-rose-50 dark:bg-rose-950/40 border-rose-300 text-rose-700 dark:text-rose-300'
+                  }`}>
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className={`w-4 h-4 shrink-0 mt-0.5 ${
+                        formatted.isConnectionError ? 'text-amber-600 dark:text-amber-400' : 'text-rose-500'
+                      }`} />
+                      <div className="space-y-1 min-w-0">
+                        <div className="font-semibold">{formatted.headline}</div>
+                        {formatted.details && (
+                          <div className="text-[11px] opacity-90 leading-relaxed font-normal">
+                            {formatted.details}
+                          </div>
+                        )}
+                        {formatted.endpoint && (
+                          <div className="text-[10px] font-mono opacity-80 pt-0.5 truncate">
+                            Endpoint: {formatted.endpoint}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {(errorMsg.toLowerCase().includes('expired') ||
+                      errorMsg.toLowerCase().includes('recovery') ||
+                      errorMsg.toLowerCase().includes('session')) &&
+                      tab === 'reset' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTab('forgot');
+                            setErrorMsg(null);
+                            setSuccessMsg(null);
+                          }}
+                          className="self-start text-[11px] font-semibold text-emerald-theme hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <KeyRound className="w-3 h-3" />
+                          <span>Request a new password reset link &rarr;</span>
+                        </button>
+                      )}
                   </div>
-                  {(errorMsg.toLowerCase().includes('expired') ||
-                    errorMsg.toLowerCase().includes('recovery') ||
-                    errorMsg.toLowerCase().includes('session')) &&
-                    tab === 'reset' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTab('forgot');
-                          setErrorMsg(null);
-                          setSuccessMsg(null);
-                        }}
-                        className="self-start text-[11px] font-semibold text-emerald-theme hover:underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <KeyRound className="w-3 h-3" />
-                        <span>Request a new password reset link &rarr;</span>
-                      </button>
-                    )}
-                </div>
-              )}
+                );
+              })()}
 
               {successMsg && (
                 <div className="p-2.5 rounded bg-emerald-pale text-emerald-theme border border-emerald-500/40 text-xs flex items-start gap-2">

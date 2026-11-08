@@ -46,10 +46,11 @@ import { getChartImageUrl } from '../services/cloudSync';
 import { useAuth } from '../context/AuthContext';
 import { ImageViewerModal } from './ImageViewerModal';
 import { OrganizedReportView } from './OrganizedReportView';
-import { downloadReportPdf } from '../services/pdfExport';
+import { downloadReportPdf, PdfExportStyle } from '../services/pdfExport';
 import { EditScenariosModal } from './EditScenariosModal';
 import { TakeTradeModal } from './TakeTradeModal';
 import { ShareReportModal } from './ShareReportModal';
+import { PdfStyleChooserModal } from './PdfStyleChooserModal';
 
 interface ReportDetailsModalProps {
   isOpen: boolean;
@@ -80,6 +81,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   // View mode: 'standard' (Normal report details) is the default; 'organized' for sheet layout
   const [viewMode, setViewMode] = useState<'standard' | 'organized'>('standard');
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [isPdfChooserOpen, setIsPdfChooserOpen] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [imagesMap, setImagesMap] = useState<Record<string, string>>({});
   const [expandedImages, setExpandedImages] = useState<Record<TimeframeId, boolean>>({
@@ -219,15 +221,16 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     );
   }, [presentationConfig?.sectionVisibility, overrideShowAll]);
 
-  const handleDownloadPdf = async () => {
+  const handleDownloadPdf = async (style: PdfExportStyle = 'minimal') => {
     if (!report || exportingPdf) return;
     setExportingPdf(true);
     setPdfError(null);
     try {
-      await downloadReportPdf({ report, imagesMap });
+      await downloadReportPdf({ report, imagesMap, style, userId: user?.id });
     } catch (err) {
       console.error('[ReportDetailsModal] PDF download failed:', err);
       setPdfError((err as Error).message || 'Failed to generate PDF');
+      throw err;
     } finally {
       setExportingPdf(false);
     }
