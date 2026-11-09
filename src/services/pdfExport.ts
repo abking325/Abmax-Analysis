@@ -140,8 +140,9 @@ export async function resolveAllReportImages(
   // 2. Scenario images
   if (report.scenarios) {
     for (const sc of report.scenarios) {
-      if (sc.images) {
-        for (const img of sc.images) {
+      const scImages = sc.images;
+      if (scImages && scImages.length > 0) {
+        for (const img of scImages) {
           if (img.dataUrl && img.id && !resolved[img.id]) {
             resolved[img.id] = img.dataUrl;
           }
@@ -153,8 +154,9 @@ export async function resolveAllReportImages(
   // 3. Trade images
   if (report.trades) {
     for (const trd of report.trades) {
-      if (trd.images) {
-        for (const img of trd.images) {
+      const trdImages = trd.images;
+      if (trdImages && trdImages.length > 0) {
+        for (const img of trdImages) {
           if (img.dataUrl && img.id && !resolved[img.id]) {
             resolved[img.id] = img.dataUrl;
           }
@@ -862,11 +864,12 @@ export async function generateReportPdfBlob({
 
   if (includeScenarioImages && report.scenarios) {
     for (const sc of report.scenarios) {
-      if (sc.images) {
-        sc.images.forEach((img, idx) => {
+      const scImages = sc.images;
+      if (scImages && scImages.length > 0) {
+        scImages.forEach((img, idx) => {
           allAttachedCharts.push({
             id: img.id,
-            label: `SCENARIO: ${sc.label || 'Plan'} (Chart ${idx + 1}/${sc.images.length})`,
+            label: `SCENARIO: ${sc.label || 'Plan'} (Chart ${idx + 1}/${scImages.length})`,
             sublabel: `${sc.direction || 'Setup'} • ${sc.strategy || 'Strategy'}`,
             caption: img.caption,
             imgUrl: img.dataUrl || allImages[img.id],
@@ -878,11 +881,12 @@ export async function generateReportPdfBlob({
 
   if (includeTradeImages && report.trades) {
     for (const trd of report.trades) {
-      if (trd.images) {
-        trd.images.forEach((img, idx) => {
+      const trdImages = trd.images;
+      if (trdImages && trdImages.length > 0) {
+        trdImages.forEach((img, idx) => {
           allAttachedCharts.push({
             id: img.id,
-            label: `TRADE: ${trd.direction || 'Trade'} (Screenshot ${idx + 1}/${trd.images.length})`,
+            label: `TRADE: ${trd.direction || 'Trade'} (Screenshot ${idx + 1}/${trdImages.length})`,
             sublabel: `${trd.scenarioLabel || 'Execution'} • Outcome: ${trd.outcome || 'N/A'}`,
             caption: img.caption,
             imgUrl: img.dataUrl || allImages[img.id],
@@ -1089,8 +1093,8 @@ export async function generateReportPdfBlob({
     /[^a-zA-Z0-9_-]/g,
     '_'
   );
-  const styleSlug = theme.style;
-  const filename = `ABMAX_${sanitizedPair}_${styleSlug}_${sanitizedDate}.pdf`;
+  const stylePart = theme.style && theme.style !== 'minimal' ? `_${theme.style}` : '';
+  const filename = `ABMAX_${sanitizedPair}${stylePart}_${sanitizedDate}.pdf`;
   const pdfBlob = doc.output('blob');
 
   return { blob: pdfBlob, filename, doc, style: theme.style };

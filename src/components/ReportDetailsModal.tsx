@@ -577,7 +577,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
         {/* Download PDF */}
         <button
           type="button"
-          onClick={handleDownloadPdf}
+          onClick={() => setIsPdfChooserOpen(true)}
           disabled={exportingPdf}
           className="inline-flex items-center justify-center gap-2 px-3 py-2.5 min-h-[44px] text-xs font-semibold bg-app-field text-app-main border border-app hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer disabled:opacity-50 shadow-2xs"
           title="Download selectable PDF"
@@ -1620,6 +1620,16 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
               }
               setIsEditScenariosOpen(false);
             }}
+          />
+        )}
+
+        {isPdfChooserOpen && report && (
+          <PdfStyleChooserModal
+            isOpen={isPdfChooserOpen}
+            onClose={() => setIsPdfChooserOpen(false)}
+            onDownload={handleDownloadPdf}
+            reportPair={report.pair}
+            reportDate={report.date}
           />
         )}
       </>

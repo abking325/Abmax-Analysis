@@ -3635,6 +3635,219 @@ async function runTests() {
     assert(false, 'Test Suite 35 execution', (err as Error).message);
   }
 
+  // --- Test Suite 36: Multi-Style PDF Presentation, Defaults & Image Collection Safety ---
+  try {
+    console.log('\n--- Test Suite 36: Multi-Style PDF Presentation, Defaults & Image Collection Safety ---');
+    const { generateReportPdfBlob, PDF_THEMES } = await import('../services/pdfExport');
+
+    // 1. Verify default export style is Minimal Journal
+    assert(PDF_THEMES.minimal.displayName === 'Minimal Journal', 'Minimal Journal is registered');
+    assert(PDF_THEMES.emerald.displayName === 'Emerald', 'Emerald is registered');
+    assert(PDF_THEMES.dark.displayName === 'Dark Trading Desk', 'Dark Trading Desk is registered');
+    assert(PDF_THEMES.dark.isDark === true, 'Dark Trading Desk flagged as dark canvas');
+    assert(PDF_THEMES.minimal.isDark === false, 'Minimal Journal flagged as light canvas');
+
+    // 2. Base test report with all sections, matching values, scenarios, and trades
+    const testReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_pdf_multistyle_test',
+      title: 'Gold Daily Expansion & CHoCH Retest',
+      date: '2026-11-09',
+      time: '14:30:00',
+      session: 'NY AM',
+      analysisTiming: 'On time',
+      overallNotes: 'Key liquidity sweeps observed across London and NY open.',
+      scenarios: [
+        {
+          id: 'sc_1',
+          label: 'Bullish Expansion Scenario',
+          direction: 'Buy',
+          strategy: 'Internal BOS Retest',
+          description: 'Wait for pullback into 15M discount zone before entering.',
+          entryConditions: '1M MSS confirmation inside discount array',
+          invalidationConditions: 'Decisive close below 2640.00',
+          createdAt: 1700000000000,
+          updatedAt: 1700000000000,
+          // Test with absent images (undefined)
+        },
+        {
+          id: 'sc_2',
+          label: 'Bearish Reversal Scenario',
+          direction: 'Sell',
+          strategy: 'External Liquidity Grab Sweep',
+          description: 'Fade the high if expansion fails to hold premium high.',
+          entryConditions: 'Sweep of 2685.50 followed by displacement',
+          invalidationConditions: 'Break and hold above 2690.00',
+          images: [], // Test with empty image array
+          createdAt: 1700000000000,
+          updatedAt: 1700000000000,
+        },
+        {
+          id: 'sc_3',
+          label: 'Range Equilibrium Scenario',
+          direction: '',
+          strategy: 'Mean Reversion',
+          description: 'Trade between established value boundaries.',
+          entryConditions: 'Rejection at high/low edges',
+          invalidationConditions: 'Trend breakout with high volume',
+          images: [
+            {
+              id: 'img_sc_3_1',
+              dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+              caption: '15M Range Boundary Chart',
+              createdAt: 1700000000000,
+            },
+          ], // Test with populated image collection
+          createdAt: 1700000000000,
+          updatedAt: 1700000000000,
+        },
+      ],
+      trades: [
+        {
+          id: 'trd_1',
+          pair: 'XAUUSD',
+          date: '2026-11-09',
+          direction: 'Buy',
+          scenarioLabel: 'Bullish Expansion Scenario',
+          entryPrice: '2652.50',
+          stopLoss: '2645.00',
+          takeProfit: '2680.00',
+          exitPrice: '2678.50',
+          riskReward: '3.47',
+          outcome: 'Win',
+          rulesFollowed: true,
+          timeframeTaken: '15M',
+          session: 'NY AM',
+          notes: 'Executed cleanly on 1M MSS confirmation.',
+          createdAt: 1700000000000,
+          updatedAt: 1700000000000,
+          // Test with absent images (undefined)
+        },
+        {
+          id: 'trd_2',
+          pair: 'XAUUSD',
+          date: '2026-11-09',
+          direction: 'Sell',
+          scenarioLabel: 'Bearish Reversal Scenario',
+          entryPrice: '2684.00',
+          stopLoss: '2688.00',
+          takeProfit: '2665.00',
+          outcome: 'Loss',
+          rulesFollowed: false,
+          timeframeTaken: '5M',
+          session: 'NY AM',
+          notes: 'Entered prematurely before sweep confirmation.',
+          createdAt: 1700000100000,
+          updatedAt: 1700000100000,
+          images: [], // Test with empty image array
+        },
+        {
+          id: 'trd_3',
+          pair: 'XAUUSD',
+          date: '2026-11-09',
+          direction: 'Buy',
+          scenarioLabel: 'Range Equilibrium Scenario',
+          entryPrice: '2648.00',
+          stopLoss: '2642.00',
+          takeProfit: '2670.00',
+          outcome: 'Open',
+          rulesFollowed: true,
+          timeframeTaken: '1H',
+          session: 'London',
+          notes: 'Holding trade overnight towards target.',
+          createdAt: 1700000200000,
+          updatedAt: 1700000200000,
+          images: [
+            {
+              id: 'img_trd_3_1',
+              dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+              caption: 'Trade Entry Confirmation Execution',
+              createdAt: 1700000200000,
+            },
+          ], // Test with populated image collection
+        },
+      ],
+      createdAt: 1700000000000,
+      updatedAt: 1700000500000,
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+
+    // 3. Test Default Export (Unspecified style defaults to Minimal Journal)
+    const defaultExport = await generateReportPdfBlob({ report: testReport });
+    assert(defaultExport.style === 'minimal', 'Default export style is minimal');
+    assert(defaultExport.blob instanceof Blob, 'Default export returns valid Blob');
+    assert(defaultExport.blob.size > 2000, 'Default export Blob contains document content');
+    assert(defaultExport.filename === 'ABMAX_XAUUSD_2026-11-09.pdf', `Default filename: ${defaultExport.filename}`);
+
+    // Verify PDF header magic bytes (%PDF-)
+    const defaultHeaderBuf = await defaultExport.blob.arrayBuffer();
+    const defaultMagic = String.fromCharCode(...new Uint8Array(defaultHeaderBuf.slice(0, 5)));
+    assert(defaultMagic === '%PDF-', 'Default export starts with valid %PDF- magic signature');
+
+    // 4. Test Explicit Minimal Journal Style
+    const minimalExport = await generateReportPdfBlob({ report: testReport, style: 'minimal' });
+    assert(minimalExport.style === 'minimal', 'Minimal style export confirms minimal');
+    assert(minimalExport.blob.size > 2000, 'Minimal export Blob contains document content');
+    assert(minimalExport.filename === 'ABMAX_XAUUSD_2026-11-09.pdf', 'Minimal style filename matches expected format');
+
+    // 5. Test Emerald Style
+    const emeraldExport = await generateReportPdfBlob({ report: testReport, style: 'emerald' });
+    assert(emeraldExport.style === 'emerald', 'Emerald export style confirms emerald');
+    assert(emeraldExport.blob.size > 2000, 'Emerald export Blob contains document content');
+    assert(emeraldExport.filename === 'ABMAX_XAUUSD_emerald_2026-11-09.pdf', `Emerald filename: ${emeraldExport.filename}`);
+    const emeraldHeaderBuf = await emeraldExport.blob.arrayBuffer();
+    const emeraldMagic = String.fromCharCode(...new Uint8Array(emeraldHeaderBuf.slice(0, 5)));
+    assert(emeraldMagic === '%PDF-', 'Emerald export starts with valid %PDF- magic signature');
+
+    // 6. Test Dark Trading Desk Style
+    const darkExport = await generateReportPdfBlob({ report: testReport, style: 'dark' });
+    assert(darkExport.style === 'dark', 'Dark Trading Desk export style confirms dark');
+    assert(darkExport.blob.size > 2000, 'Dark Trading Desk export Blob contains document content');
+    assert(darkExport.filename === 'ABMAX_XAUUSD_dark_2026-11-09.pdf', `Dark Trading Desk filename: ${darkExport.filename}`);
+    const darkHeaderBuf = await darkExport.blob.arrayBuffer();
+    const darkMagic = String.fromCharCode(...new Uint8Array(darkHeaderBuf.slice(0, 5)));
+    assert(darkMagic === '%PDF-', 'Dark Trading Desk starts with valid %PDF- magic signature');
+
+    // 7. Verify all 3 styles produce documents with the same page count
+    const defaultPageCount = defaultExport.doc.getNumberOfPages();
+    const emeraldPageCount = emeraldExport.doc.getNumberOfPages();
+    const darkPageCount = darkExport.doc.getNumberOfPages();
+    assert(defaultPageCount > 0, `Default export has pages: ${defaultPageCount}`);
+    assert(defaultPageCount === emeraldPageCount, 'Default and Emerald have identical page counts');
+    assert(defaultPageCount === darkPageCount, 'Default and Dark have identical page counts');
+
+    // 8. Test Export with completely empty report (no scenarios, no trades, no images)
+    const emptyReport: SavedReport = {
+      ...createInitialAnalysisData('EURUSD'),
+      id: 'rpt_empty_test',
+      date: '2026-11-09',
+      scenarios: [],
+      trades: [],
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+    const emptyExport = await generateReportPdfBlob({ report: emptyReport, style: 'minimal' });
+    assert(emptyExport.blob.size > 1000, 'Empty report exports successfully without errors');
+
+    // 9. Verify auth error formatting utility distinguishes connection error from wrong password
+    const { formatAuthError } = await import('../utils/authErrorUtils');
+    const fetchErr = formatAuthError(new TypeError('Failed to fetch'));
+    assert(fetchErr.isConnectionError === true, 'Failed to fetch is categorized as connection error');
+    assert(fetchErr.headline.includes('Cannot connect to Supabase'), 'Helpful headline displayed for Failed to fetch');
+    assert(Boolean(fetchErr.details?.includes('fxzurpdymuhlfkdxfgel')), 'Diagnostic details mention Supabase project endpoint');
+
+    const credErr = formatAuthError({ message: 'Invalid login credentials' });
+    assert(credErr.isConnectionError === false, 'Invalid login credentials is NOT categorized as connection error');
+    assert(credErr.headline === 'Invalid email address or password.', 'Accurate user-friendly headline for invalid credentials');
+  } catch (err) {
+    assert(false, 'Test Suite 36 execution', (err as Error).message);
+  }
+
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);
   if (failed > 0) {
     process.exit(1);
