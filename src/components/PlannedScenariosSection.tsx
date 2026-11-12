@@ -3,6 +3,7 @@ import { Plus, Trash2, ChevronDown, ChevronUp, Check, Edit2 } from 'lucide-react
 import { PlannedScenario } from '../types/journal';
 import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
+import { StrategySelector } from './StrategySelector';
 
 interface PlannedScenariosSectionProps {
   scenarios: PlannedScenario[];
@@ -10,6 +11,7 @@ interface PlannedScenariosSectionProps {
   onSaveScenario?: (scenarioId: string) => Promise<void>;
   initialExpandedMap?: Record<string, boolean>;
   onExpandedMapChange?: (map: Record<string, boolean>) => void;
+  userId?: string | null;
 }
 
 export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = ({
@@ -18,6 +20,7 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
   onSaveScenario,
   initialExpandedMap,
   onExpandedMapChange,
+  userId,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() => initialExpandedMap || {});
@@ -314,17 +317,48 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {/* Strategy Used */}
                       <div className="sm:col-span-2">
-                        <label className="block text-xs font-medium text-app-secondary mb-1">
-                          Strategy Used
-                        </label>
-                        <input
-                          type="text"
-                          value={scenario.strategy}
-                          onChange={(e) =>
-                            handleUpdateScenario(scenario.id, { strategy: e.target.value })
+                        <StrategySelector
+                          userId={userId}
+                          strategyId={scenario.strategyId}
+                          strategy={scenario.strategy}
+                          strategySnapshot={scenario.strategySnapshot}
+                          onChange={({ strategyId, strategy, strategySnapshot }) =>
+                            handleUpdateScenario(scenario.id, {
+                              strategyId,
+                              strategy,
+                              strategySnapshot,
+                            })
                           }
-                          placeholder="e.g. 15M CHoCH + 5M FVG Tap, Asia Range Sweep Reversal..."
-                          className="w-full px-3 py-1.5 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                          hasExistingTargetContent={Boolean(
+                            scenario.description.trim() ||
+                              scenario.entryConditions.trim() ||
+                              scenario.invalidationConditions.trim()
+                          )}
+                          onApplyStrategyRules={(selectedStrat, mode) => {
+                            const nextDescription =
+                              mode === 'replace'
+                                ? selectedStrat.description || scenario.description
+                                : scenario.description.trim()
+                                  ? scenario.description
+                                  : selectedStrat.description || '';
+                            const nextEntry =
+                              mode === 'replace'
+                                ? selectedStrat.entryRules || scenario.entryConditions
+                                : scenario.entryConditions.trim()
+                                  ? scenario.entryConditions
+                                  : selectedStrat.entryRules || '';
+                            const nextInvalidation =
+                              mode === 'replace'
+                                ? selectedStrat.invalidationConditions || scenario.invalidationConditions
+                                : scenario.invalidationConditions.trim()
+                                  ? scenario.invalidationConditions
+                                  : selectedStrat.invalidationConditions || '';
+                            handleUpdateScenario(scenario.id, {
+                              description: nextDescription,
+                              entryConditions: nextEntry,
+                              invalidationConditions: nextInvalidation,
+                            });
+                          }}
                         />
                       </div>
 

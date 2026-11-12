@@ -1182,7 +1182,14 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     for (const tf of TIMEFRAME_ORDER) {
       const tfd = d.timeframes?.[tf];
       if (!tfd) continue;
-      if (tfd.overallBias || (tfd.biasSpecific || '').trim().length > 0 || tfd.chartImageId) return true;
+      if (
+        tfd.overallBias ||
+        (tfd.biasSpecific || '').trim().length > 0 ||
+        (tfd.personalBiasNotes || '').trim().length > 0 ||
+        tfd.chartImageId
+      ) {
+        return true;
+      }
       if (tfd.swing?.high || tfd.swing?.low || tfd.internal?.high || tfd.internal?.low) return true;
       if ((tfd.supplyLevels || []).length > 0 || (tfd.demandLevels || []).length > 0) return true;
     }
@@ -1853,6 +1860,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             onSaveScenario={handleSaveScenarioDirectly}
             initialExpandedMap={expandedScenariosRef.current}
             onExpandedMapChange={handleExpandedScenariosChange}
+            userId={user?.id}
           />
         </>
       )}

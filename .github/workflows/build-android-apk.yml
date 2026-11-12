@@ -217,8 +217,20 @@ jobs:
       - name: Set Android version
         shell: bash
         run: |
-          echo "ANDROID_VERSION_CODE=$((GITHUB_RUN_NUMBER + 10))" >> "$GITHUB_ENV"
-          echo "ANDROID_VERSION_NAME=1.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          # Monotonic versionCode formula preventing collisions between reruns and subsequent runs:
+          # Run N Attempt 1 = BASE + N*100, Run N Attempt 2 = BASE + N*100 + 1 < Run (N+1) Attempt 1 = BASE + (N+1)*100.
+          # Always exceeds baseline (36) and any earlier run; if workflow numbering ever resets, bump vars.ANDROID_BASE_VERSION_CODE above the highest distributed versionCode.
+          BASE_CODE=${{ vars.ANDROID_BASE_VERSION_CODE || 36 }}
+          RUN_NUM=${GITHUB_RUN_NUMBER:-1}
+          RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-1}
+          CALC_CODE=$(( BASE_CODE + (RUN_NUM * 100) + (RUN_ATTEMPT - 1) ))
+          if [ "$CALC_CODE" -le "$BASE_CODE" ]; then
+            echo "::error::Computed versionCode (${CALC_CODE}) did not exceed BASE_CODE (${BASE_CODE})."
+            exit 1
+          fi
+          echo "ANDROID_VERSION_CODE=${CALC_CODE}" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_NAME=1.0.${CALC_CODE}" >> "$GITHUB_ENV"
+          echo "Computed Android versionCode=${CALC_CODE} (base=${BASE_CODE}, run=${RUN_NUM}, attempt=${RUN_ATTEMPT})"
 
       - name: Assemble Android APK with Gradle
         working-directory: ./android

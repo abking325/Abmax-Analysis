@@ -74,6 +74,7 @@ export interface TimeframeData {
   timeframe: TimeframeId;
   overallBias: OverallBias;
   biasSpecific: string;
+  personalBiasNotes?: string; // Optional user personal bias narrative (Monthly, Weekly, Daily only)
   priceLocation?: PriceLocationData;
   swing: SwingStructure;
   internal: InternalStructure;
@@ -93,6 +94,19 @@ export interface TimeframeData {
   pwl?: string;
   pdh?: string;
   pdl?: string;
+}
+
+export const HIGHER_BIAS_TIMEFRAMES: ReadonlyArray<TimeframeId> = ['Monthly', 'Weekly', 'Daily'];
+
+export function isHigherPersonalBiasTimeframe(tf: TimeframeId): boolean {
+  return tf === 'Monthly' || tf === 'Weekly' || tf === 'Daily';
+}
+
+export function getPersonalBiasLabel(tf: TimeframeId): 'My Monthly Bias' | 'My Weekly Bias' | 'My Daily Bias' | null {
+  if (tf === 'Monthly') return 'My Monthly Bias';
+  if (tf === 'Weekly') return 'My Weekly Bias';
+  if (tf === 'Daily') return 'My Daily Bias';
+  return null;
 }
 
 export type TradingPair = 'XAUUSD' | 'BTCUSD' | 'EURUSD';
@@ -134,10 +148,61 @@ export const MAJOR_LIQUIDITY_ITEMS = [
 
 export type MajorLiquidityItem = typeof MAJOR_LIQUIDITY_ITEMS[number];
 
+export interface StrategySnapshot {
+  id?: string;
+  name: string;
+  description?: string;
+  setupContext?: string;
+  entryRules?: string;
+  invalidationConditions?: string;
+  riskManagementRules?: string;
+  exitRules?: string;
+  tags?: string[];
+  notes?: string;
+  isArchived?: boolean;
+  capturedAt: number;
+}
+
+export interface TradingStrategy {
+  id: string; // e.g. "str_..."
+  name: string;
+  description?: string;
+  setupContext?: string;
+  entryRules?: string;
+  invalidationConditions?: string;
+  riskManagementRules?: string;
+  exitRules?: string;
+  tags?: string[];
+  notes?: string;
+  isArchived?: boolean;
+  userId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export function createStrategySnapshot(strategy: TradingStrategy): StrategySnapshot {
+  return {
+    id: strategy.id,
+    name: strategy.name,
+    description: strategy.description,
+    setupContext: strategy.setupContext,
+    entryRules: strategy.entryRules,
+    invalidationConditions: strategy.invalidationConditions,
+    riskManagementRules: strategy.riskManagementRules,
+    exitRules: strategy.exitRules,
+    tags: strategy.tags ? [...strategy.tags] : undefined,
+    notes: strategy.notes,
+    isArchived: strategy.isArchived,
+    capturedAt: Date.now(),
+  };
+}
+
 export interface PlannedScenario {
   id: string; // stable UUID or unique id (e.g. scn_...)
   label: string; // "Scenario 1", "Scenario 2", etc.
-  strategy: string; // Strategy Used
+  strategy: string; // Strategy Used (display name or free-text custom strategy)
+  strategyId?: string; // Optional linked TradingStrategy ID
+  strategySnapshot?: StrategySnapshot; // Immutable snapshot captured when selected
   direction: 'Buy' | 'Sell' | '';
   description: string; // Scenario Description
   entryConditions: string; // Entry Conditions / Rules
@@ -156,8 +221,13 @@ export interface RecordedTrade {
   id: string; // stable UUID or unique id (e.g. trd_...)
   scenarioId?: string; // linked planned scenario ID (or empty if unlinked)
   scenarioLabel?: string; // display snapshot of scenario label
+  strategy?: string; // Strategy Used (either from strategy selector, linked scenario, or custom text)
+  strategyId?: string; // Optional linked TradingStrategy ID
+  strategySnapshot?: StrategySnapshot; // Immutable snapshot captured at execution/edit time
   scenarioSnapshot?: {
     strategy?: string;
+    strategyId?: string;
+    strategySnapshot?: StrategySnapshot;
     direction?: string;
     description?: string;
     entryConditions?: string;
@@ -200,6 +270,7 @@ export interface OpeningCandleEntry {
 
 export interface TimeframeDeepFieldsVisibility {
   overallInterpretation: boolean;
+  personalBiasNotes?: boolean;
   priceLocation: boolean;
   swingStructure: boolean;
   internalStructure: boolean;
@@ -226,6 +297,7 @@ export interface TimeframeDeepFieldsVisibility {
 
 export const DEFAULT_DEEP_FIELDS_VISIBILITY: TimeframeDeepFieldsVisibility = {
   overallInterpretation: true,
+  personalBiasNotes: true,
   priceLocation: true,
   swingStructure: true,
   internalStructure: true,
@@ -267,6 +339,7 @@ export interface WorkspaceVisibilityConfig {
   timeframes: Record<TimeframeId, boolean>;
   deepSections?: {
     overallInterpretation: boolean;
+    personalBiasNotes?: boolean;
     priceLocation: boolean;
     swingStructure: boolean;
     internalStructure: boolean;
@@ -313,6 +386,7 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
   },
   deepSections: {
     overallInterpretation: true,
+    personalBiasNotes: true,
     priceLocation: true,
     swingStructure: true,
     internalStructure: true,
@@ -340,6 +414,119 @@ export const DEFAULT_VISIBILITY_CONFIG: WorkspaceVisibilityConfig = {
   },
 };
 
+export interface JournalVisibilityConfig {
+  myJournal: boolean; // My Journal / personal notes
+  myJournalNotes?: boolean; // Alias for My Journal notes
+  dailyPreparation: boolean; // Daily preparation
+  preTradeChecklist: boolean; // Pre-trade checklist
+  inTradeManagement: boolean; // In-trade management
+  postTradeReview: boolean; // Post-trade review
+  dailyReflection: boolean; // Daily reflection
+  moodReadiness: boolean; // Mood / readiness
+  tagsAndLessons: boolean; // Tags and lessons
+  linkedAnalysisTrade: boolean; // Linked analysis / trade information
+  attachments: boolean; // Attachments / screenshots
+  summaryCards: boolean; // Summary statistics cards
+}
+
+export const DEFAULT_JOURNAL_VISIBILITY_CONFIG: JournalVisibilityConfig = {
+  myJournal: true,
+  myJournalNotes: true,
+  dailyPreparation: true,
+  preTradeChecklist: true,
+  inTradeManagement: true,
+  postTradeReview: true,
+  dailyReflection: true,
+  moodReadiness: true,
+  tagsAndLessons: true,
+  linkedAnalysisTrade: true,
+  attachments: true,
+  summaryCards: true,
+};
+
+export function normalizeJournalVisibilityConfig(
+  raw?: Partial<JournalVisibilityConfig> | null
+): JournalVisibilityConfig {
+  const myJournalVal = (raw?.myJournal === false || raw?.myJournalNotes === false)
+    ? false
+    : Boolean(raw?.myJournal ?? raw?.myJournalNotes ?? true);
+
+  return {
+    myJournal: myJournalVal,
+    myJournalNotes: myJournalVal,
+    dailyPreparation: raw?.dailyPreparation !== false,
+    preTradeChecklist: raw?.preTradeChecklist !== false,
+    inTradeManagement: raw?.inTradeManagement !== false,
+    postTradeReview: raw?.postTradeReview !== false,
+    dailyReflection: raw?.dailyReflection !== false,
+    moodReadiness: raw?.moodReadiness !== false,
+    tagsAndLessons: raw?.tagsAndLessons !== false,
+    linkedAnalysisTrade: raw?.linkedAnalysisTrade !== false,
+    attachments: raw?.attachments !== false,
+    summaryCards: raw?.summaryCards !== false,
+  };
+}
+
+export interface PerformanceVisibilityConfig {
+  totalsSummary: boolean; // Analysis and trade totals
+  activeDays: boolean; // Active-day statistics
+  disciplineStats?: boolean; // Rule-compliance statistics
+  disciplineCompliance?: boolean; // Rule-compliance statistics (alias)
+  reviewCompletion: boolean; // Review completion
+  outcomeStats?: boolean; // Outcome statistics
+  outcomeDistribution?: boolean; // Outcome statistics (alias)
+  activityCalendar: boolean; // Activity chart / calendar
+  instrumentBreakdown: boolean; // Instrument breakdown
+  sessionBreakdown: boolean; // Session breakdown
+  setupBreakdown: boolean; // Setup breakdown
+  mistakesAndLessons: boolean; // Mistake / lesson analysis
+  metricDefinitions: boolean; // Metric definitions & accuracy invariants
+}
+
+export const DEFAULT_PERFORMANCE_VISIBILITY_CONFIG: PerformanceVisibilityConfig = {
+  totalsSummary: true,
+  activeDays: true,
+  disciplineStats: true,
+  disciplineCompliance: true,
+  reviewCompletion: true,
+  outcomeStats: true,
+  outcomeDistribution: true,
+  activityCalendar: true,
+  instrumentBreakdown: true,
+  sessionBreakdown: true,
+  setupBreakdown: true,
+  mistakesAndLessons: true,
+  metricDefinitions: true,
+};
+
+export function normalizePerformanceVisibilityConfig(
+  raw?: Partial<PerformanceVisibilityConfig> | null
+): PerformanceVisibilityConfig {
+  const disciplineVal = (raw?.disciplineCompliance === false || raw?.disciplineStats === false)
+    ? false
+    : Boolean(raw?.disciplineCompliance ?? raw?.disciplineStats ?? true);
+
+  const outcomeVal = (raw?.outcomeDistribution === false || raw?.outcomeStats === false)
+    ? false
+    : Boolean(raw?.outcomeDistribution ?? raw?.outcomeStats ?? true);
+
+  return {
+    totalsSummary: raw?.totalsSummary !== false,
+    activeDays: raw?.activeDays !== false,
+    disciplineStats: disciplineVal,
+    disciplineCompliance: disciplineVal,
+    reviewCompletion: raw?.reviewCompletion !== false,
+    outcomeStats: outcomeVal,
+    outcomeDistribution: outcomeVal,
+    activityCalendar: raw?.activityCalendar !== false,
+    instrumentBreakdown: raw?.instrumentBreakdown !== false,
+    sessionBreakdown: raw?.sessionBreakdown !== false,
+    setupBreakdown: raw?.setupBreakdown !== false,
+    mistakesAndLessons: raw?.mistakesAndLessons !== false,
+    metricDefinitions: raw?.metricDefinitions !== false,
+  };
+}
+
 export interface NormalizedWorkspaceVisibilityConfig extends WorkspaceVisibilityConfig {
   perTimeframeFields: Record<TimeframeId, TimeframeDeepFieldsVisibility>;
 }
@@ -365,6 +552,9 @@ export function normalizeWorkspaceVisibilityConfig(
       overallInterpretation: existing?.overallInterpretation !== undefined
         ? Boolean(existing.overallInterpretation)
         : (legacyDeep?.overallInterpretation !== false),
+      personalBiasNotes: existing?.personalBiasNotes !== undefined
+        ? Boolean(existing.personalBiasNotes)
+        : true,
       priceLocation: existing?.priceLocation !== undefined
         ? Boolean(existing.priceLocation)
         : (legacyDeep?.priceLocation !== false),
@@ -506,6 +696,7 @@ export interface ReportVisibilityConfig {
   timeframes: Record<TimeframeId, boolean>;
   timeframeFields?: {
     overallInterpretation: boolean;
+    personalBiasNotes?: boolean;
     priceLocation: boolean;
     swingStructure: boolean;
     internalStructure: boolean;
@@ -563,6 +754,7 @@ export const DEFAULT_REPORT_VISIBILITY: ReportVisibilityConfig = {
   },
   timeframeFields: {
     overallInterpretation: true,
+    personalBiasNotes: true,
     priceLocation: true,
     swingStructure: true,
     internalStructure: true,
@@ -619,6 +811,9 @@ export function normalizeReportVisibilityConfig(
       overallInterpretation: existing?.overallInterpretation !== undefined
         ? Boolean(existing.overallInterpretation)
         : (legacyFields?.overallInterpretation !== false),
+      personalBiasNotes: existing?.personalBiasNotes !== undefined
+        ? Boolean(existing.personalBiasNotes)
+        : true,
       priceLocation: existing?.priceLocation !== undefined
         ? Boolean(existing.priceLocation)
         : (legacyFields?.priceLocation !== false),
@@ -743,6 +938,99 @@ export const DEFAULT_REPORT_PRESENTATION: ReportPresentationConfig = {
   },
 };
 
+export type JournalEntryType =
+  | 'prep'
+  | 'pre_trade'
+  | 'in_trade'
+  | 'post_trade'
+  | 'daily_reflection'
+  | 'general'
+  | 'no_trade_day'
+  | 'pre-trade'
+  | 'in-trade'
+  | 'post-trade'
+  | 'daily-reflection'
+  | 'no-trade-day'
+  | 'my_journal'
+  | 'my-journal';
+
+export type MyJournalContext = 'Before Trading' | 'During Trading' | 'After Trading' | 'General' | 'No-Trade Day';
+
+export type EmotionalReadiness = 'Optimal / Calm' | 'Focused' | 'Anxious' | 'Fatigued' | 'Overconfident' | 'Distracted' | '';
+
+export interface JournalPrep {
+  sessionIntention?: string;
+  readinessState?: EmotionalReadiness;
+  prioritizedRules?: string[];
+  dailyPlanNotes?: string;
+}
+
+export interface JournalPreTrade {
+  reasonForTrade?: string;
+  setupTag?: string;
+  confirmationChecklist?: Array<{ item: string; checked: boolean }>;
+  plannedRiskR?: string;
+  linkedReportId?: string;
+  linkedScenarioId?: string;
+  linkedTradeId?: string;
+}
+
+export interface JournalInTrade {
+  managementDecisions?: string;
+  planAdjustments?: string;
+  emotionalObservations?: string;
+  timelineNotes?: Array<{ timestamp: number; note: string }>;
+  screenshotImageIds?: string[];
+}
+
+export interface JournalPostTrade {
+  tradeId?: string;
+  executionReview?: string;
+  rulesFollowedStatus?: 'Followed' | 'Broken' | 'Unreviewed';
+  followedRules?: 'yes' | 'no' | 'unreviewed' | 'Followed' | 'Broken' | 'Unreviewed';
+  outcome?: 'win' | 'loss' | 'breakeven' | 'open' | string;
+  mistakeTags?: string[];
+  lessonTags?: string[];
+  lessonsLearned?: string;
+  repeatOrImprove?: string;
+}
+
+export interface JournalDailyReflection {
+  whatWorked?: string;
+  whatDidNot?: string;
+  keyLessons?: string;
+  nextSessionCommitment?: string;
+  noTradesDay?: boolean;
+}
+
+export interface JournalEntry {
+  id: string; // e.g. "jrn_..."
+  title: string;
+  date: string; // YYYY-MM-DD
+  time?: string; // HH:MM
+  session?: TradingSession;
+  pair?: TradingPair;
+  entryType: JournalEntryType;
+  myJournalContext?: MyJournalContext;
+  emotionalState?: EmotionalReadiness;
+  tags?: string[];
+  notes?: string;
+  generalNotes?: string;
+  prep?: JournalPrep;
+  preTrade?: JournalPreTrade;
+  inTrade?: JournalInTrade;
+  postTrade?: JournalPostTrade;
+  reflection?: JournalDailyReflection;
+  images?: ImageAttachment[];
+  imageUrl?: string;
+  linkedReportId?: string;
+  linkedReportTitle?: string;
+  linkedTradeId?: string;
+  createdAt: number;
+  updatedAt: number;
+  userId?: string;
+}
+
 export interface BackupData {
   version: number;
   exportedAt: string;
@@ -751,10 +1039,27 @@ export interface BackupData {
   templates: SavedTemplate[];
   draft: AnalysisData | null;
   images: ImageAttachment[];
+  journalEntries?: JournalEntry[];
+  strategies?: TradingStrategy[];
+  journalDraft?: any;
+  myJournalDraft?: any;
+  scopedJournalDrafts?: Record<string, any>;
+  scopedMyJournalDrafts?: Record<string, any>;
+  scopedStrategyDrafts?: Record<string, Partial<TradingStrategy>>;
+  ownership?: {
+    exportedByAccountId: string;
+    totalJournalEntries: number;
+    entryOwners: Record<string, number>;
+    scopedDraftAccounts: string[];
+    totalStrategies?: number;
+    strategyOwners?: Record<string, number>;
+  };
   preferences: {
     theme: 'light' | 'dark';
     visibilityConfig?: WorkspaceVisibilityConfig;
     presentationConfig?: ReportPresentationConfig;
+    journalVisibilityConfig?: JournalVisibilityConfig;
+    performanceVisibilityConfig?: PerformanceVisibilityConfig;
   };
   workingSessions?: Record<string, unknown>;
 }
@@ -764,6 +1069,7 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
     timeframe: tf,
     overallBias: '',
     biasSpecific: '',
+    ...(isHigherPersonalBiasTimeframe(tf) ? { personalBiasNotes: '' } : {}),
     priceLocation: {
       location: '',
       levelRange: '',

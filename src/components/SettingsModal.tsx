@@ -22,17 +22,25 @@ import {
   Upload,
   Copy,
   Key,
+  BookOpen,
+  TrendingUp,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BackupModal } from './BackupModal';
 import {
   createDefaultPerTimeframeFields,
   DEFAULT_DEEP_FIELDS_VISIBILITY,
+  DEFAULT_JOURNAL_VISIBILITY_CONFIG,
+  DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
   DEFAULT_VISIBILITY_CONFIG,
+  JournalVisibilityConfig,
+  normalizeJournalVisibilityConfig,
+  normalizePerformanceVisibilityConfig,
   normalizeReportVisibilityConfig,
   normalizeWorkspaceVisibilityConfig,
+  PerformanceVisibilityConfig,
   ReportPresentationConfig,
   ReportVisibilityConfig,
   TimeframeDeepFieldsVisibility,
@@ -42,6 +50,8 @@ import {
 import {
   getUserReportPresentationConfig,
   saveUserReportPresentationConfig,
+  saveUserJournalVisibilityConfig,
+  saveUserPerformanceVisibilityConfig,
 } from '../services/db';
 import { uploadPreferencesToCloud } from '../services/cloudSync';
 
@@ -57,6 +67,11 @@ interface SettingsModalProps {
   onChangeVisibilityConfig: (config: WorkspaceVisibilityConfig) => void;
   onApplyVisibilityToCurrentAnalysis?: () => void;
   hasActiveAnalysis?: boolean;
+  journalVisibilityConfig?: JournalVisibilityConfig;
+  onChangeJournalVisibilityConfig?: (config: JournalVisibilityConfig) => void;
+  performanceVisibilityConfig?: PerformanceVisibilityConfig;
+  onChangePerformanceVisibilityConfig?: (config: PerformanceVisibilityConfig) => void;
+  initialTab?: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility';
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -71,9 +86,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeVisibilityConfig,
   onApplyVisibilityToCurrentAnalysis,
   hasActiveAnalysis = false,
+  journalVisibilityConfig = DEFAULT_JOURNAL_VISIBILITY_CONFIG,
+  onChangeJournalVisibilityConfig,
+  performanceVisibilityConfig = DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
+  onChangePerformanceVisibilityConfig,
+  initialTab,
 }) => {
   const { user, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState<'general' | 'admin'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility'>(initialTab || 'general');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab, isOpen]);
   const [adminSubTab, setAdminSubTab] = useState<'editor_visibility' | 'report_presentation'>('editor_visibility');
   const [presentationConfig, setPresentationConfig] = useState<ReportPresentationConfig>(DEFAULT_REPORT_PRESENTATION);
   const [appliedNotice, setAppliedNotice] = useState(false);
@@ -397,16 +423,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const getDeepAnalysisFieldsForTf = (tf: TimeframeId): { key: keyof TimeframeDeepFieldsVisibility; label: string }[] => {
     const list = [...DEEP_ANALYSIS_FIELDS];
     if (tf === 'Monthly') {
+      list.splice(1, 0, { key: 'personalBiasNotes', label: 'My Monthly Bias' });
       list.push(
         { key: 'pmh', label: 'Previous Month High (PMH)' },
         { key: 'pml', label: 'Previous Month Low (PML)' }
       );
     } else if (tf === 'Weekly') {
+      list.splice(1, 0, { key: 'personalBiasNotes', label: 'My Weekly Bias' });
       list.push(
         { key: 'pwh', label: 'Previous Week High (PWH)' },
         { key: 'pwl', label: 'Previous Week Low (PWL)' }
       );
     } else if (tf === 'Daily') {
+      list.splice(1, 0, { key: 'personalBiasNotes', label: 'My Daily Bias' });
       list.push(
         { key: 'pdh', label: 'Previous Day High (PDH)' },
         { key: 'pdl', label: 'Previous Day Low (PDL)' }
@@ -424,6 +453,130 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     { key: 'overallNotes', label: 'Overall Notes' },
     { key: 'plannedScenarios', label: 'Planned Scenarios' },
   ];
+
+  /* ================= JOURNAL VISIBILITY HELPERS ================= */
+  const JOURNAL_VISIBILITY_ITEMS: { key: keyof JournalVisibilityConfig; label: string; description: string }[] = [
+    { key: 'myJournal', label: 'My Journal / personal notes', description: 'Dedicated personal writing area for freeform thoughts, mindsets, and daily reflections' },
+    { key: 'summaryCards', label: 'Summary cards', description: 'Quick metric cards and stats overview at the top of the trading journal' },
+    { key: 'dailyPreparation', label: 'Daily preparation', description: 'Pre-market intention, prioritized trading rules, and session preparation plan' },
+    { key: 'preTradeChecklist', label: 'Pre-trade checklist', description: 'Confirmation rules checklist, setup tag, and planned risk metrics' },
+    { key: 'inTradeManagement', label: 'In-trade management', description: 'Position adjustments, emotional observations, and trade timeline log' },
+    { key: 'postTradeReview', label: 'Post-trade review', description: 'Post-trade execution grading, rule-adherence tracking, and repeat/improve notes' },
+    { key: 'dailyReflection', label: 'Daily reflection', description: 'End-of-day reflection on what worked, what did not, and session commitments' },
+    { key: 'moodReadiness', label: 'Mood / emotional readiness', description: 'Psychological readiness state selector and focus indicators' },
+    { key: 'tagsAndLessons', label: 'Tags and lessons', description: 'Categorization tags for setups, mistakes, and reusable trading lessons' },
+    { key: 'linkedAnalysisTrade', label: 'Linked analysis & trade info', description: 'Cross-links connecting notes to specific pairs, sessions, and market reports' },
+    { key: 'attachments', label: 'Attachments & chart screenshots', description: 'Image attachments and screenshot proof' },
+  ];
+
+  const toggleJournalVis = (key: keyof JournalVisibilityConfig) => {
+    if (!onChangeJournalVisibilityConfig) return;
+    const currentVal = journalVisibilityConfig[key] !== false;
+    const nextVal = !currentVal;
+    const updated: JournalVisibilityConfig = {
+      ...journalVisibilityConfig,
+      [key]: nextVal,
+    };
+    onChangeJournalVisibilityConfig(updated);
+    saveUserJournalVisibilityConfig(updated);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { journalVisibilityConfig: updated });
+    }
+  };
+
+  const handleShowAllJournalVis = () => {
+    if (!onChangeJournalVisibilityConfig) return;
+    const allVisible: JournalVisibilityConfig = {
+      myJournal: true,
+      dailyPreparation: true,
+      preTradeChecklist: true,
+      inTradeManagement: true,
+      postTradeReview: true,
+      dailyReflection: true,
+      moodReadiness: true,
+      tagsAndLessons: true,
+      linkedAnalysisTrade: true,
+      attachments: true,
+      summaryCards: true,
+    };
+    onChangeJournalVisibilityConfig(allVisible);
+    saveUserJournalVisibilityConfig(allVisible);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { journalVisibilityConfig: allVisible });
+    }
+  };
+
+  const handleRestoreJournalVisDefaults = () => {
+    if (!onChangeJournalVisibilityConfig) return;
+    const def = normalizeJournalVisibilityConfig(DEFAULT_JOURNAL_VISIBILITY_CONFIG);
+    onChangeJournalVisibilityConfig(def);
+    saveUserJournalVisibilityConfig(def);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { journalVisibilityConfig: def });
+    }
+  };
+
+  /* ================= PERFORMANCE VISIBILITY HELPERS ================= */
+  const PERFORMANCE_VISIBILITY_ITEMS: { key: keyof PerformanceVisibilityConfig; label: string; description: string }[] = [
+    { key: 'totalsSummary', label: 'Analysis and trade totals', description: 'Top metric overview cards: Discipline Rate, Trades Recorded, Analyses Created, Win Rate' },
+    { key: 'activeDays', label: 'Active-day statistics', description: 'Summary counters for distinct trading days and market analysis days' },
+    { key: 'disciplineCompliance', label: 'Rule-compliance statistics', description: 'Visual breakdown of rules followed vs rules broken with compliance progress bar' },
+    { key: 'reviewCompletion', label: 'Review completion', description: 'Percentage of recorded trades with completed post-trade evaluations' },
+    { key: 'outcomeDistribution', label: 'Outcome statistics', description: 'Visual distribution of closed trades: Wins, Losses, Breakeven, and Open' },
+    { key: 'activityCalendar', label: 'Activity chart / period filters', description: 'Period filter controls (Today, This Week, This Month, All Time, Custom Range)' },
+    { key: 'instrumentBreakdown', label: 'Instrument breakdown', description: 'Distribution of trades and execution counts across pairs and assets' },
+    { key: 'sessionBreakdown', label: 'Session breakdown', description: 'Distribution of trading activity across London, New York, and Asia sessions' },
+    { key: 'setupBreakdown', label: 'Setup breakdown', description: 'Execution breakdown and distribution by entry setup model' },
+    { key: 'mistakesAndLessons', label: 'Mistake / lesson analysis', description: 'Identified recurring mistake patterns and discipline improvement opportunities' },
+    { key: 'metricDefinitions', label: 'Metric definitions & mathematical transparency', description: 'Formulas and invariants explaining how every metric is derived' },
+  ];
+
+  const togglePerformanceVis = (key: keyof PerformanceVisibilityConfig) => {
+    if (!onChangePerformanceVisibilityConfig) return;
+    const currentVal = performanceVisibilityConfig[key] !== false;
+    const nextVal = !currentVal;
+    const updated: PerformanceVisibilityConfig = {
+      ...performanceVisibilityConfig,
+      [key]: nextVal,
+    };
+    onChangePerformanceVisibilityConfig(updated);
+    saveUserPerformanceVisibilityConfig(updated);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { performanceVisibilityConfig: updated });
+    }
+  };
+
+  const handleShowAllPerformanceVis = () => {
+    if (!onChangePerformanceVisibilityConfig) return;
+    const allVisible: PerformanceVisibilityConfig = {
+      totalsSummary: true,
+      activeDays: true,
+      disciplineCompliance: true,
+      reviewCompletion: true,
+      outcomeDistribution: true,
+      activityCalendar: true,
+      instrumentBreakdown: true,
+      sessionBreakdown: true,
+      setupBreakdown: true,
+      mistakesAndLessons: true,
+      metricDefinitions: true,
+    };
+    onChangePerformanceVisibilityConfig(allVisible);
+    saveUserPerformanceVisibilityConfig(allVisible);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { performanceVisibilityConfig: allVisible });
+    }
+  };
+
+  const handleRestorePerformanceVisDefaults = () => {
+    if (!onChangePerformanceVisibilityConfig) return;
+    const def = normalizePerformanceVisibilityConfig(DEFAULT_PERFORMANCE_VISIBILITY_CONFIG);
+    onChangePerformanceVisibilityConfig(def);
+    saveUserPerformanceVisibilityConfig(def);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, { performanceVisibilityConfig: def });
+    }
+  };
 
   return (
     <div
@@ -453,30 +606,66 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-app bg-app-secondary/40 shrink-0 px-4 sm:px-5">
+        {/* Tab Navigation: 1. General | 2. Theme | 3. Workspace | 4. Journal Sections | 5. Performance Sections */}
+        <div className="flex border-b border-app bg-app-secondary/40 shrink-0 px-2 sm:px-4 overflow-x-auto no-scrollbar">
           <button
             type="button"
             onClick={() => setActiveTab('general')}
-            className={`py-2 px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
               activeTab === 'general'
                 ? 'border-emerald-600 text-emerald-theme'
                 : 'border-transparent text-app-secondary hover:text-app-main'
             }`}
           >
-            General & Theme
+            General
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('theme')}
+            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
+              activeTab === 'theme'
+                ? 'border-emerald-600 text-emerald-theme'
+                : 'border-transparent text-app-secondary hover:text-app-main'
+            }`}
+          >
+            <Monitor className="w-3.5 h-3.5" />
+            Theme
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('admin')}
-            className={`py-2 px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
               activeTab === 'admin'
                 ? 'border-emerald-600 text-emerald-theme'
                 : 'border-transparent text-app-secondary hover:text-app-main'
             }`}
           >
             <Sliders className="w-3.5 h-3.5" />
-            Admin Panel (Workspace)
+            Workspace
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('journal_visibility')}
+            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
+              activeTab === 'journal_visibility'
+                ? 'border-emerald-600 text-emerald-theme'
+                : 'border-transparent text-app-secondary hover:text-app-main'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            Journal Sections
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('performance_visibility')}
+            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
+              activeTab === 'performance_visibility'
+                ? 'border-emerald-600 text-emerald-theme'
+                : 'border-transparent text-app-secondary hover:text-app-main'
+            }`}
+          >
+            <TrendingUp className="w-3.5 h-3.5" />
+            Performance Sections
           </button>
         </div>
 
@@ -572,59 +761,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </section>
 
-              {/* SECTION 2: APPEARANCE */}
-              <section className="space-y-2.5">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
-                  <Monitor className="w-3.5 h-3.5 text-emerald-theme" />
-                  <span>Appearance</span>
-                </div>
-
-                <div className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-3">
-                  <label className="block text-xs font-medium text-app-secondary">
-                    Theme Chooser
-                  </label>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (theme !== 'light') onToggleTheme();
-                      }}
-                      className={`flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold border transition-all cursor-pointer ${
-                        theme === 'light'
-                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
-                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
-                      }`}
-                      aria-pressed={theme === 'light'}
-                    >
-                      <Sun className="w-4 h-4 text-amber-400" />
-                      <span>Light</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (theme !== 'dark') onToggleTheme();
-                      }}
-                      className={`flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold border transition-all cursor-pointer ${
-                        theme === 'dark'
-                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
-                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
-                      }`}
-                      aria-pressed={theme === 'dark'}
-                    >
-                      <Moon className="w-4 h-4 text-slate-300" />
-                      <span>Dark</span>
-                    </button>
-                  </div>
-
-                  <p className="text-[11px] text-app-secondary">
-                    Currently using <strong className="text-app-main font-semibold capitalize">{theme}</strong> theme. Preference is saved automatically.
-                  </p>
-                </div>
-              </section>
-
-              {/* SECTION 3: ANIMATION */}
+              {/* SECTION 2: ANIMATION (Theme chooser lives in dedicated Theme tab) */}
               <section className="space-y-2.5">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
                   <Play className="w-3.5 h-3.5 text-emerald-theme" />
@@ -746,6 +883,182 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </section>
             </>
+          )}
+
+          {/* SECTION: THEME */}
+          {activeTab === 'theme' && (
+            <div className="space-y-4">
+              <section className="space-y-2.5">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
+                  <Monitor className="w-3.5 h-3.5 text-emerald-theme" />
+                  <span>Appearance &amp; Theme Chooser</span>
+                </div>
+
+                <div className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-3">
+                  <label className="block text-xs font-medium text-app-secondary">
+                    Theme Chooser
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (theme !== 'light') onToggleTheme();
+                      }}
+                      className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-md text-xs font-semibold border transition-all cursor-pointer ${
+                        theme === 'light'
+                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
+                      }`}
+                      aria-pressed={theme === 'light'}
+                    >
+                      <Sun className="w-4 h-4 text-amber-400" />
+                      <span>Light</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (theme !== 'dark') onToggleTheme();
+                      }}
+                      className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-md text-xs font-semibold border transition-all cursor-pointer ${
+                        theme === 'dark'
+                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
+                      }`}
+                      aria-pressed={theme === 'dark'}
+                    >
+                      <Moon className="w-4 h-4 text-slate-300" />
+                      <span>Dark</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-app-secondary">
+                    Currently using <strong className="text-app-main font-semibold capitalize">{theme}</strong> theme. Preference is saved automatically and included in backups.
+                  </p>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {/* SECTION: JOURNAL VISIBILITY */}
+          {activeTab === 'journal_visibility' && (
+            <div className="space-y-4">
+              <div className="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-1">
+                <div className="font-semibold flex items-center gap-1.5 text-xs">
+                  <BookOpen className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>Journal — Show/Hide Sections</span>
+                </div>
+                <p className="text-emerald-800 dark:text-emerald-300">
+                  Select which cards, prep workflows, and reflection modules appear on your Journal page. Hiding any section only conceals it visually; your recorded notes, checklist items, and autosaved data remain completely preserved and intact.
+                </p>
+              </div>
+
+              {/* Show All & Restore Defaults Buttons */}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleShowAllJournalVis}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded transition-colors cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Show All
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRestoreJournalVisDefaults}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app rounded transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Restore Defaults
+                </button>
+              </div>
+
+              {/* Labeled Checkboxes */}
+              <div className="divide-y divide-app border border-app rounded-lg bg-app-field/30 overflow-hidden">
+                {JOURNAL_VISIBILITY_ITEMS.map(({ key, label, description }) => {
+                  const isVisible = journalVisibilityConfig[key] !== false;
+                  return (
+                    <label
+                      key={key}
+                      className="flex items-start justify-between p-3 hover:bg-app-field/60 cursor-pointer transition-colors gap-3"
+                    >
+                      <div className="space-y-0.5 min-w-0 pr-2">
+                        <span className="text-xs font-semibold text-app-main block">{label}</span>
+                        <span className="text-[11px] text-app-secondary block leading-snug">{description}</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={isVisible}
+                        onChange={() => toggleJournalVis(key)}
+                        className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer accent-emerald-600"
+                        aria-label={`Toggle visibility of ${label}`}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* SECTION: PERFORMANCE VISIBILITY */}
+          {activeTab === 'performance_visibility' && (
+            <div className="space-y-4">
+              <div className="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-1">
+                <div className="font-semibold flex items-center gap-1.5 text-xs">
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>Performance — Show/Hide Sections</span>
+                </div>
+                <p className="text-emerald-800 dark:text-emerald-300">
+                  Select which analytics summaries, compliance bars, and distribution charts are rendered on your Performance page. Changes are purely presentation-level and never alter calculations, win rates, or underlying trades.
+                </p>
+              </div>
+
+              {/* Show All & Restore Defaults Buttons */}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleShowAllPerformanceVis}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-theme bg-emerald-pale hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded transition-colors cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Show All
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRestorePerformanceVisDefaults}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app rounded transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Restore Defaults
+                </button>
+              </div>
+
+              {/* Labeled Checkboxes */}
+              <div className="divide-y divide-app border border-app rounded-lg bg-app-field/30 overflow-hidden">
+                {PERFORMANCE_VISIBILITY_ITEMS.map(({ key, label, description }) => {
+                  const isVisible = performanceVisibilityConfig[key] !== false;
+                  return (
+                    <label
+                      key={key}
+                      className="flex items-start justify-between p-3 hover:bg-app-field/60 cursor-pointer transition-colors gap-3"
+                    >
+                      <div className="space-y-0.5 min-w-0 pr-2">
+                        <span className="text-xs font-semibold text-app-main block">{label}</span>
+                        <span className="text-[11px] text-app-secondary block leading-snug">{description}</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={isVisible}
+                        onChange={() => togglePerformanceVis(key)}
+                        className="mt-0.5 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer accent-emerald-600"
+                        aria-label={`Toggle visibility of ${label}`}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           {activeTab === 'admin' && (

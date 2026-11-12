@@ -71,6 +71,9 @@ export interface WorkingSessionState {
     home?: number;
     analysis?: number;
     reports?: number;
+    journal?: number;
+    performance?: number;
+    [key: string]: number | undefined;
   };
   analysisUI?: {
     expandedTimeframes: Record<TimeframeId, boolean>;

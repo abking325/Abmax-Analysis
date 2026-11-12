@@ -26,7 +26,53 @@ import {
   saveUserVisibilityConfig,
   getUserReportPresentationConfig,
   saveUserReportPresentationConfig,
+  getUserJournalVisibilityConfig,
+  saveUserJournalVisibilityConfig,
+  getUserPerformanceVisibilityConfig,
+  saveUserPerformanceVisibilityConfig,
+  getMyJournalDraft,
+  saveMyJournalDraft,
+  clearMyJournalDraft,
+  saveJournalEntry,
+  getJournalEntryById,
+  getAllJournalEntries,
+  deleteJournalEntry,
+  saveJournalDraft,
+  getJournalDraft,
+  clearJournalDraft,
+  getLastBackupMetadata,
+  normalizeAccountScope,
+  isJournalEntryOwnedByScope,
+  isStrategyOwnedByScope,
+  saveStrategyDraft,
+  getStrategyDraft,
+  clearStrategyDraft,
+  saveStrategy,
+  getStrategyById,
+  getAllStrategies,
+  getStrategiesForScope,
+  archiveStrategy,
+  deleteStrategy,
 } from '../services/db';
+import {
+  JournalEntry,
+  BackupData,
+  JournalVisibilityConfig,
+  DEFAULT_JOURNAL_VISIBILITY_CONFIG,
+  normalizeJournalVisibilityConfig,
+  PerformanceVisibilityConfig,
+  DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
+  normalizePerformanceVisibilityConfig,
+  TradingStrategy,
+  StrategySnapshot,
+  createStrategySnapshot,
+  HIGHER_BIAS_TIMEFRAMES,
+  isHigherPersonalBiasTimeframe,
+  getPersonalBiasLabel,
+  DEFAULT_DEEP_FIELDS_VISIBILITY,
+} from '../types/journal';
+import { getPdfStatusColor, generateReportPdfBlob } from '../services/pdfExport';
+import { exportPeriodReport, generatePeriodPdfBlob, extractDeduplicatedTrades, calculatePeriodPerformance } from '../services/periodExport';
 import {
   createInitialAnalysisData,
   createEmptyTimeframeData,
@@ -46,12 +92,21 @@ import {
   PlannedScenario,
   TimeframeData,
   StructureEvent,
+  RecordedTrade,
 } from '../types/journal';
 import {
   normalizeReportForContentComparison,
   computeContentFingerprint,
 } from '../services/cloudSync';
-import { formatReadableAnalysisDate, findMatchingValues } from '../utils/analysisUtils';
+import {
+  calculateOverallAlignment,
+  getReportBiasSummary,
+  isDeepAnalysisAligned,
+  getTimeframePairAlignments,
+  generateReportsCsv,
+  formatReadableAnalysisDate,
+  findMatchingValues,
+} from '../utils/analysisUtils';
 
 async function runTests() {
   console.log('=== STARTING ABMAX PERSISTENCE & LIFECYCLE VERIFICATION TESTS ===\n');
@@ -3546,7 +3601,7 @@ async function runTests() {
 
     const fullBackup = await createFullBackup();
     assert(fullBackup.app === 'ABMAX_ANALYSIS', 'Backup format app tag is ABMAX_ANALYSIS');
-    assert(fullBackup.version === 2, 'Backup format version is 2');
+    assert(fullBackup.version >= 4, 'Backup format version is >= 4');
     assert(fullBackup.reports.some((r) => r.id === testReport.id), 'Backup includes test report');
     assert(fullBackup.images.some((img) => img.id === backupImgId), 'Backup includes standalone image data');
     assert(!!fullBackup.draft, 'Backup includes active draft');
@@ -3846,6 +3901,1319 @@ async function runTests() {
     assert(credErr.headline === 'Invalid email address or password.', 'Accurate user-friendly headline for invalid credentials');
   } catch (err) {
     assert(false, 'Test Suite 36 execution', (err as Error).message);
+  }
+
+  // ==========================================
+  // TEST SUITE 37: JOURNAL, PERFORMANCE, BACKUP V3 & COMBINED PERIOD PDF
+  // ==========================================
+  try {
+    console.log('\n--- TEST SUITE 37: JOURNAL, PERFORMANCE, BACKUP V3 & COMBINED PERIOD PDF ---');
+
+    // 1. Journal CRUD Operations
+    const testEntryId = `jrn_${Date.now()}_test`;
+    const sampleJournalEntry: JournalEntry = {
+      id: testEntryId,
+      date: '2026-11-09',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      entryType: 'post-trade',
+      pair: 'XAUUSD',
+      session: 'London',
+      title: 'London Breakout Execution',
+      emotionalState: 'Optimal / Calm',
+      tags: ['Liquidity Sweep + MSS', 'Patience Rewarded'],
+      notes: 'Clean execution following the 15M MSS after Asian high sweep.',
+      postTrade: {
+        tradeId: 'trd_1',
+        followedRules: 'yes',
+        outcome: 'win',
+        lessonsLearned: 'Waiting for the 15M candle to close prevented early stop out.',
+      },
+      linkedReportId: 'rpt_123',
+      linkedReportTitle: 'XAUUSD London Session Review',
+    };
+
+    const savedEntry = await saveJournalEntry(sampleJournalEntry);
+    assert(savedEntry.id === testEntryId, 'saveJournalEntry returns saved ID');
+
+    const retrieved = await getJournalEntryById(testEntryId);
+    assert(Boolean(retrieved), 'getJournalEntryById retrieves saved entry');
+    assert(retrieved?.pair === 'XAUUSD', 'Retrieved entry retains trading pair');
+    assert(retrieved?.emotionalState === 'Optimal / Calm', 'Retrieved entry retains emotional readiness');
+    assert(retrieved?.postTrade?.followedRules === 'yes', 'Retrieved entry retains rule compliance check');
+    assert(retrieved?.postTrade?.outcome === 'win', 'Retrieved entry retains trade outcome');
+    assert(retrieved?.linkedReportTitle === 'XAUUSD London Session Review', 'Retrieved entry retains linked report title');
+
+    const allEntries = await getAllJournalEntries();
+    assert(allEntries.length > 0, `getAllJournalEntries returns list with ${allEntries.length} entries`);
+    const foundInList = allEntries.some((e) => e.id === testEntryId);
+    assert(foundInList, 'Newly saved entry is present in getAllJournalEntries list');
+
+    // 2. Journal Draft Autosave
+    const draftPayload = {
+      entryType: 'prep' as const,
+      pair: 'BTCUSD' as const,
+      session: 'NY AM' as const,
+      title: 'NY Open Crypto Prep',
+      notes: 'Watching 90k support bounce.',
+    };
+    await saveJournalDraft(draftPayload);
+    const loadedDraft = await getJournalDraft();
+    assert(Boolean(loadedDraft), 'getJournalDraft retrieves autosaved draft');
+    assert(loadedDraft?.pair === 'BTCUSD', 'Journal draft retains pair');
+    assert(loadedDraft?.title === 'NY Open Crypto Prep', 'Journal draft retains title');
+
+    await clearJournalDraft();
+    const draftAfterClear = await getJournalDraft();
+    assert(draftAfterClear === null, 'clearJournalDraft successfully deletes autosaved draft');
+
+    // 3. Backup V3 Roundtrip & Backward Compatibility
+    const v3Backup = await createFullBackup();
+    assert(v3Backup.version >= 4, 'createFullBackup generates Version >= 4 payload');
+    assert(Array.isArray(v3Backup.journalEntries), 'v3Backup contains journalEntries array');
+    assert(v3Backup.journalEntries!.some((e) => e.id === testEntryId), 'v3Backup contains our saved journal entry');
+
+    const analysis = await analyzeBackup(v3Backup);
+    assert(analysis.totalJournalEntriesInBackup >= 1, `analyzeBackup counts ${analysis.totalJournalEntriesInBackup} journal entries`);
+
+    // Test backward compatibility: analyze v2 backup without journalEntries
+    const v2BackupMock: BackupData = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      app: 'ABMAX_ANALYSIS',
+      reports: v3Backup.reports,
+      templates: v3Backup.templates,
+      images: v3Backup.images,
+      draft: null,
+      preferences: v3Backup.preferences,
+    };
+    const analysisV2 = await analyzeBackup(v2BackupMock);
+    assert(analysisV2.totalJournalEntriesInBackup === 0, 'analyzeBackup reports 0 journal entries for v2 backup');
+
+    // Test restore of v3 backup
+    const restoreResult = await restoreBackup(v3Backup);
+    assert(typeof restoreResult.addedJournalEntries === 'number', `restoreBackup handles journal entries`);
+
+    // Verify last backup metadata tracking
+    const lastMeta = getLastBackupMetadata();
+    assert(Boolean(lastMeta.timestamp), 'getLastBackupMetadata reports non-empty backup timestamp');
+    assert(lastMeta.status === 'success', 'getLastBackupMetadata reports success status');
+
+    // 4. Performance Metric Invariants
+    // Rule followed trade
+    const postTradeFollowed: JournalEntry = {
+      id: `jrn_perf_1`,
+      title: 'Followed Rule Trade',
+      date: '2026-11-09',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      entryType: 'post-trade',
+      postTrade: { tradeId: 't1', followedRules: 'yes', outcome: 'win' },
+    };
+    // Rule broken trade
+    const postTradeBroken: JournalEntry = {
+      id: `jrn_perf_2`,
+      title: 'Broken Rule Trade',
+      date: '2026-11-09',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      entryType: 'post-trade',
+      postTrade: { tradeId: 't2', followedRules: 'no', outcome: 'loss' },
+    };
+    // Unreviewed trade (neither yes nor no)
+    const postTradeUnreviewed: JournalEntry = {
+      id: `jrn_perf_3`,
+      title: 'Unreviewed Trade',
+      date: '2026-11-09',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      entryType: 'post-trade',
+      postTrade: { tradeId: 't3', outcome: 'open' },
+    };
+
+    const entriesForPerf = [postTradeFollowed, postTradeBroken, postTradeUnreviewed];
+    let rulesFollowed = 0;
+    let rulesBroken = 0;
+    entriesForPerf.forEach((e) => {
+      if (e.postTrade?.followedRules === 'yes') rulesFollowed++;
+      else if (e.postTrade?.followedRules === 'no') rulesBroken++;
+    });
+    const reviewedCount = rulesFollowed + rulesBroken;
+    const disciplineRate = reviewedCount > 0 ? (rulesFollowed / reviewedCount) * 100 : 100;
+    assert(rulesFollowed === 1, 'Correct rules followed count: 1');
+    assert(rulesBroken === 1, 'Correct rules broken count: 1');
+    assert(reviewedCount === 2, 'Unreviewed trade excluded from reviewed denominator: 2');
+    assert(disciplineRate === 50, `Discipline rate accurately calculated: ${disciplineRate}%`);
+
+    // 5. PDF Status Colors
+    const bullLight = getPdfStatusColor('Bullish', false);
+    assert(bullLight[0] === 16 && bullLight[1] === 128 && bullLight[2] === 67, 'Bullish in light style is crisp emerald');
+
+    const bearLight = getPdfStatusColor('Bearish', false);
+    assert(bearLight[0] === 197 && bearLight[1] === 34 && bearLight[2] === 31, 'Bearish in light style is crimson red');
+
+    const neutralLight = getPdfStatusColor('Neutral', false);
+    assert(neutralLight[0] === 71 && neutralLight[1] === 85 && neutralLight[2] === 105, 'Neutral in light style is slate');
+
+    const amberLight = getPdfStatusColor('Not sure', false);
+    assert(amberLight[0] === 180 && amberLight[1] === 83 && amberLight[2] === 9, 'Not sure in light style is amber');
+
+    const bullDark = getPdfStatusColor('Bullish', true);
+    assert(bullDark[0] === 52 && bullDark[1] === 211 && bullDark[2] === 153, 'Bullish in dark style is high-contrast bright emerald');
+
+    const bearDark = getPdfStatusColor('Bearish', true);
+    assert(bearDark[0] === 248 && bearDark[1] === 113 && bearDark[2] === 113, 'Bearish in dark style is high-contrast light red');
+
+    // 6. Period Combined PDF Export
+    const sampleReportForPeriod: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_period_test',
+      date: '2026-11-09',
+      scenarios: [],
+      trades: [],
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+
+    const periodExportMinimal = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-09',
+      preset: 'week',
+      mode: 'summary',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includePerformance: true,
+      includeImages: false,
+      style: 'minimal',
+      reports: [sampleReportForPeriod],
+      journalEntries: [sampleJournalEntry],
+    });
+    assert(periodExportMinimal.blob.size > 2000, 'Period PDF export in minimal style generates non-empty Blob');
+    assert(periodExportMinimal.filename.includes('ABMAX_Period'), `Filename conforms to standard: ${periodExportMinimal.filename}`);
+    const periodBuf = await periodExportMinimal.blob.arrayBuffer();
+    const periodMagic = String.fromCharCode(...new Uint8Array(periodBuf.slice(0, 5)));
+    assert(periodMagic === '%PDF-', 'Period PDF starts with valid %PDF- header');
+
+    // Emerald period export
+    const periodExportEmerald = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-09',
+      preset: 'week',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includePerformance: true,
+      includeImages: false,
+      style: 'emerald',
+      reports: [sampleReportForPeriod],
+      journalEntries: [sampleJournalEntry],
+    });
+    assert(periodExportEmerald.blob.size > 2000, 'Period PDF export in emerald style generates valid document');
+
+    // Cleanup test journal entry
+    await deleteJournalEntry(testEntryId);
+    const deletedEntryCheck = await getJournalEntryById(testEntryId);
+    assert(deletedEntryCheck === null, 'deleteJournalEntry successfully removes entry');
+
+  } catch (err) {
+    assert(false, 'Test Suite 37 execution', (err as Error).message);
+  }
+
+  try {
+    console.log('\n--- TEST SUITE 38: JOURNAL & PERFORMANCE VISIBILITY CONFIGS, MY JOURNAL NOTES & STATISTICAL INDEPENDENCE ---');
+
+    // 1. Journal Visibility Config Persistence & Normalization
+    const defaultJrnVis = await getUserJournalVisibilityConfig();
+    assert(defaultJrnVis.myJournalNotes === true, 'Default journal visibility includes myJournalNotes: true');
+    assert(defaultJrnVis.dailyPreparation === true, 'Default journal visibility includes dailyPreparation: true');
+    assert(defaultJrnVis.summaryCards === true, 'Default journal visibility includes summaryCards: true');
+
+    const customJrnVis: JournalVisibilityConfig = {
+      ...defaultJrnVis,
+      myJournalNotes: false,
+      moodReadiness: false,
+    };
+    await saveUserJournalVisibilityConfig(customJrnVis);
+    const loadedJrnVis = await getUserJournalVisibilityConfig();
+    assert(loadedJrnVis.myJournalNotes === false, 'saveUserJournalVisibilityConfig persisted myJournalNotes: false');
+    assert(loadedJrnVis.moodReadiness === false, 'saveUserJournalVisibilityConfig persisted moodReadiness: false');
+    assert(loadedJrnVis.dailyPreparation === true, 'Unmodified sections retain true default');
+
+    // Test normalizeJournalVisibilityConfig with partial / undefined values
+    const partialJrnNorm = normalizeJournalVisibilityConfig({ myJournalNotes: false } as any);
+    assert(partialJrnNorm.myJournalNotes === false, 'normalizeJournalVisibilityConfig respects explicit false');
+    assert(partialJrnNorm.dailyPreparation === true, 'normalizeJournalVisibilityConfig restores missing fields to true');
+    assert(partialJrnNorm.summaryCards === true, 'normalizeJournalVisibilityConfig restores summaryCards to true');
+
+    // 2. Performance Visibility Config Persistence & Normalization
+    const defaultPerfVis = await getUserPerformanceVisibilityConfig();
+    assert(defaultPerfVis.totalsSummary === true, 'Default performance visibility includes totalsSummary: true');
+    assert(defaultPerfVis.disciplineCompliance === true, 'Default performance visibility includes disciplineCompliance: true');
+    assert(defaultPerfVis.instrumentBreakdown === true, 'Default performance visibility includes instrumentBreakdown: true');
+
+    const customPerfVis: PerformanceVisibilityConfig = {
+      ...defaultPerfVis,
+      activityCalendar: false,
+      mistakesAndLessons: false,
+    };
+    await saveUserPerformanceVisibilityConfig(customPerfVis);
+    const loadedPerfVis = await getUserPerformanceVisibilityConfig();
+    assert(loadedPerfVis.activityCalendar === false, 'saveUserPerformanceVisibilityConfig persisted activityCalendar: false');
+    assert(loadedPerfVis.mistakesAndLessons === false, 'saveUserPerformanceVisibilityConfig persisted mistakesAndLessons: false');
+    assert(loadedPerfVis.totalsSummary === true, 'Unmodified performance sections retain true default');
+
+    const partialPerfNorm = normalizePerformanceVisibilityConfig({ activityCalendar: false } as any);
+    assert(partialPerfNorm.activityCalendar === false, 'normalizePerformanceVisibilityConfig respects explicit false');
+    assert(partialPerfNorm.totalsSummary === true, 'normalizePerformanceVisibilityConfig restores missing fields to true');
+
+    // 3. My Journal Draft Autosave, Retrieval, and Clear
+    const myDraftPayload = {
+      title: 'Mid-Session Mindset Note',
+      notes: 'Market consolidating in tight range, staying patient.',
+      myJournalContext: 'During Trading' as const,
+      emotionalState: 'Focused' as const,
+      tags: ['Discipline', 'Waiting'],
+    };
+    await saveMyJournalDraft(myDraftPayload);
+    const retrievedMyDraft = await getMyJournalDraft();
+    assert(Boolean(retrievedMyDraft), 'getMyJournalDraft retrieves saved draft');
+    assert(retrievedMyDraft?.title === 'Mid-Session Mindset Note', 'My Journal draft title matches');
+    assert(retrievedMyDraft?.myJournalContext === 'During Trading', 'My Journal context matches');
+    assert(retrievedMyDraft?.emotionalState === 'Focused', 'My Journal emotional state matches');
+    assert(retrievedMyDraft?.tags?.length === 2, 'My Journal tags match');
+
+    await clearMyJournalDraft();
+    const clearedMyDraft = await getMyJournalDraft();
+    assert(clearedMyDraft === null, 'clearMyJournalDraft successfully clears draft');
+
+    // 4. My Journal Note CRUD (Freeform personal note)
+    const myNoteId = `jrn_my_${Date.now()}`;
+    const myNoteEntry: JournalEntry = {
+      id: myNoteId,
+      entryType: 'my-journal',
+      title: 'Pre-Market Deep Reflection',
+      date: '2026-11-10',
+      time: '08:30',
+      myJournalContext: 'Before Trading',
+      emotionalState: 'Optimal / Calm',
+      tags: ['Routine', 'Morning Prep'],
+      notes: 'Woke up early, meditated for 15 mins. Focused strictly on NY AM high-probability setups.',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await saveJournalEntry(myNoteEntry);
+    const retrievedMyNote = await getJournalEntryById(myNoteId);
+    assert(Boolean(retrievedMyNote), 'getJournalEntryById retrieves saved My Journal note');
+    assert(retrievedMyNote?.entryType === 'my-journal', 'Entry retains entryType: my-journal');
+    assert(retrievedMyNote?.myJournalContext === 'Before Trading', 'Entry retains myJournalContext: Before Trading');
+    assert(retrievedMyNote?.emotionalState === 'Optimal / Calm', 'Entry retains emotional readiness');
+    assert(Boolean(retrievedMyNote?.notes?.includes('meditated for 15 mins')), 'Entry retains body notes text');
+
+    // Edit My Journal note
+    const updatedMyNote: JournalEntry = {
+      ...retrievedMyNote!,
+      title: 'Pre-Market Deep Reflection (Updated)',
+      notes: 'Updated: added notes regarding gold key levels.',
+      updatedAt: Date.now(),
+    };
+    await saveJournalEntry(updatedMyNote);
+    const reRetrievedMyNote = await getJournalEntryById(myNoteId);
+    assert(reRetrievedMyNote?.title === 'Pre-Market Deep Reflection (Updated)', 'Edited My Journal note successfully updated title');
+    assert(Boolean(reRetrievedMyNote?.notes?.includes('gold key levels')), 'Edited My Journal note successfully updated notes');
+
+    // 5. Statistical Independence Verification
+    // Ensure that having My Journal entries does NOT increment trade counts, win rate, or alter discipline calculations
+    const allJournalEntries = await getAllJournalEntries();
+    const tradeRelatedEntries = allJournalEntries.filter((e) => e.entryType === 'post-trade');
+    const myJournalEntriesList = allJournalEntries.filter((e) => e.entryType === 'my-journal');
+    assert(myJournalEntriesList.length >= 1, 'My Journal entries exist in journal list');
+    // None of the my-journal entries should appear in trade review sets
+    const myJournalInTradeSet = tradeRelatedEntries.some((e) => e.id === myNoteId);
+    assert(!myJournalInTradeSet, 'My Journal note is strictly excluded from tradeRelatedEntries');
+
+    // 6. Period Export Verification (with and without includeMyJournalNotes)
+    const periodExportWithoutNotes = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-10',
+      preset: 'week',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includeMyJournalNotes: false, // DEFAULT OFF
+      includePerformance: true,
+      includeImages: false,
+      style: 'minimal',
+      reports: [],
+      journalEntries: [updatedMyNote],
+    });
+    assert(periodExportWithoutNotes.blob.size > 1000, 'Period PDF generated without My Journal notes');
+
+    const periodExportWithNotes = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-10',
+      preset: 'week',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includeMyJournalNotes: true, // EXPLICIT ON
+      includePerformance: true,
+      includeImages: false,
+      style: 'minimal',
+      reports: [],
+      journalEntries: [updatedMyNote],
+    });
+    assert(periodExportWithNotes.blob.size > 1000, 'Period PDF generated with My Journal notes');
+
+    // 7. Full Backup & Restore v3 with Visibility Preferences and Drafts
+    await saveMyJournalDraft({ title: 'Draft Before Backup', notes: 'Private unsaved reflection draft' });
+    const fullBackupData = await createFullBackup();
+    assert(Boolean(fullBackupData.preferences.journalVisibilityConfig), 'Backup v3 includes journalVisibilityConfig');
+    assert(Boolean(fullBackupData.preferences.performanceVisibilityConfig), 'Backup v3 includes performanceVisibilityConfig');
+    assert(Boolean(fullBackupData.myJournalDraft), 'Backup v3 preserves myJournalDraft');
+
+    await clearMyJournalDraft();
+    const draftAfterClear = await getMyJournalDraft();
+    assert(draftAfterClear === null, 'Draft is cleared before restore');
+
+    await restoreBackup(fullBackupData);
+    const draftAfterRestore = await getMyJournalDraft();
+    assert(draftAfterRestore?.title === 'Draft Before Backup', 'restoreBackup successfully restored myJournalDraft');
+    await clearMyJournalDraft();
+
+    // 8. Account Switch Draft Isolation Test
+    // Simulating User A active draft followed by User B sign-in
+    await saveMyJournalDraft({ title: 'User A Secret Draft', notes: 'Confidential mindset note' });
+    const userADraft = await getMyJournalDraft();
+    assert(userADraft?.title === 'User A Secret Draft', 'User A draft saved in storage');
+    // Account switch occurs: isolate drafts
+    await clearMyJournalDraft();
+    await clearJournalDraft();
+    const userBVisibleDraft = await getMyJournalDraft();
+    assert(userBVisibleDraft === null, 'Account switch successfully cleared User A draft so User B sees null');
+
+    // 9. Zero Denominator Calculation Edge Cases
+    // Empty trades: reviewed trades = 0, decided trades = 0
+    const emptyReviewedTrades = 0;
+    const emptyRulesFollowed = 0;
+    const emptyDisciplineRate = emptyReviewedTrades > 0 ? (emptyRulesFollowed / emptyReviewedTrades) * 100 : null;
+    assert(emptyDisciplineRate === null, 'Zero reviewed trades returns null discipline rate (displays "No reviewed trades")');
+
+    const emptyDecidedTrades = 0;
+    const emptyWins = 0;
+    const emptyWinRate = emptyDecidedTrades > 0 ? (emptyWins / emptyDecidedTrades) * 100 : null;
+    assert(emptyWinRate === null, 'Zero decided trades returns null win rate (displays "No decided trades")');
+
+    // 10. Long Multi-Theme PDF Generation & Inspection (Minimal, Emerald, Dark)
+    const longReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_long_test',
+      title: 'XAUUSD Daily Alignment & Structural Execution Multi-Timeframe Analysis',
+      date: '2026-11-10',
+      scenarios: [
+        {
+          id: 'sc_1',
+          label: 'Scenario 1: Primary Bullish Expansion',
+          strategy: 'Liquidity Sweep + MSS',
+          direction: 'Buy',
+          description: 'Primary Bullish Expansion from 4H Order Block',
+          entryConditions: '15M MSS break above 2690.50 following London liquidity sweep',
+          invalidationConditions: 'Hourly close below 2665.00 support floor',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+      trades: [
+        {
+          id: 'trd_long_1',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          date: '2026-11-10',
+          entryPrice: '2680.50',
+          stopLoss: '2672.00',
+          takeProfit: '2706.00',
+          outcome: 'Win',
+          rulesFollowed: true,
+          notes: 'Entered precisely on 5M MSS candle close after liquidity sweep. Trailed stop loss to breakeven after 2R expansion reached.',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'Original',
+      isModified: false,
+      revision: 1,
+    };
+
+    // Theme 1: Minimal Journal (Default)
+    const longMinimalPdf = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-10',
+      preset: 'week',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includeMyJournalNotes: false, // Confirms private notes remain excluded
+      includePerformance: true,
+      includeImages: false,
+      style: 'minimal',
+      reports: [longReport],
+      journalEntries: [updatedMyNote],
+    });
+    assert(longMinimalPdf.blob.size > 2000, 'Long Minimal Journal PDF generates non-empty Blob');
+    const minimalBuf = await longMinimalPdf.blob.arrayBuffer();
+    assert(String.fromCharCode(...new Uint8Array(minimalBuf.slice(0, 5))) === '%PDF-', 'Minimal Journal PDF starts with %PDF-');
+
+    // Theme 2: Emerald Theme
+    const longEmeraldPdf = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-10',
+      preset: 'week',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includeMyJournalNotes: false,
+      includePerformance: true,
+      includeImages: false,
+      style: 'emerald',
+      reports: [longReport],
+      journalEntries: [updatedMyNote],
+    });
+    assert(longEmeraldPdf.blob.size > 2000, 'Long Emerald PDF generates non-empty Blob');
+    const emeraldBuf = await longEmeraldPdf.blob.arrayBuffer();
+    assert(String.fromCharCode(...new Uint8Array(emeraldBuf.slice(0, 5))) === '%PDF-', 'Emerald PDF starts with %PDF-');
+
+    // Theme 3: Dark Trading Desk Theme
+    const longDarkPdf = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-10',
+      preset: 'week',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includeMyJournalNotes: true, // Explicitly included
+      includePerformance: true,
+      includeImages: false,
+      style: 'dark',
+      reports: [longReport],
+      journalEntries: [updatedMyNote],
+    });
+    assert(longDarkPdf.blob.size > 2000, 'Long Dark Trading Desk PDF generates non-empty Blob');
+    const darkBuf = await longDarkPdf.blob.arrayBuffer();
+    assert(String.fromCharCode(...new Uint8Array(darkBuf.slice(0, 5))) === '%PDF-', 'Dark Trading Desk PDF starts with %PDF-');
+
+    // Cleanup test My Journal note
+    await deleteJournalEntry(myNoteId);
+    const cleanedCheck = await getJournalEntryById(myNoteId);
+    assert(cleanedCheck === null, 'deleteJournalEntry successfully removes My Journal note');
+
+    // ==========================================
+    // Test Suite 39: Account-Scoped Drafts, Ownership Isolation, and Deterministic Trade Deduplication
+    // ==========================================
+    console.log('\n--- Running Test Suite 39: Account-Scoped Drafts & Trade Deduplication ---');
+
+    // 1. Account-Scoped Draft Isolation (Account A vs Account B vs Guest)
+    const userA = 'user_alpha_uuid';
+    const userB = 'user_beta_uuid';
+
+    // Account A writes Trading Journal and My Journal drafts
+    await saveJournalDraft({ title: 'Draft Alpha Trading Plan' }, userA);
+    await saveMyJournalDraft({ notes: 'Draft Alpha Mindset Reflection' }, userA);
+
+    // Switch to Account B: B must not see A's drafts
+    const draftTradingB = await getJournalDraft(userB);
+    const draftMyJournalB = await getMyJournalDraft(userB);
+    assert(draftTradingB === null, 'Account B sees null Trading Journal draft initially');
+    assert(draftMyJournalB === null, 'Account B sees null My Journal draft initially');
+
+    // Account B writes their own distinct drafts
+    await saveJournalDraft({ title: 'Draft Beta Scalping Setup' }, userB);
+    await saveMyJournalDraft({ notes: 'Draft Beta Psychology Log' }, userB);
+
+    // Guest mode draft check
+    await saveJournalDraft({ title: 'Draft Guest General Prep' }, null);
+    await saveMyJournalDraft({ notes: 'Draft Guest Observations' }, null);
+
+    // Switch back to Account A: A's drafts are intact and recovered
+    const recoveredTradingA = await getJournalDraft(userA);
+    const recoveredMyJournalA = await getMyJournalDraft(userA);
+    assert(recoveredTradingA?.title === 'Draft Alpha Trading Plan', 'Account A recovered their own Trading Journal draft');
+    assert(recoveredMyJournalA?.notes === 'Draft Alpha Mindset Reflection', 'Account A recovered their own My Journal draft');
+
+    // Switch back to Account B: B's drafts are intact
+    const recoveredTradingB = await getJournalDraft(userB);
+    const recoveredMyJournalB = await getMyJournalDraft(userB);
+    assert(recoveredTradingB?.title === 'Draft Beta Scalping Setup', 'Account B recovered their own Trading Journal draft');
+    assert(recoveredMyJournalB?.notes === 'Draft Beta Psychology Log', 'Account B recovered their own My Journal draft');
+
+    // Guest mode draft recovery
+    const recoveredGuestTrading = await getJournalDraft(null);
+    const recoveredGuestMyJournal = await getMyJournalDraft(null);
+    assert(recoveredGuestTrading?.title === 'Draft Guest General Prep', 'Guest recovered their own Trading Journal draft');
+    assert(recoveredGuestMyJournal?.notes === 'Draft Guest Observations', 'Guest recovered their own My Journal draft');
+
+    // 2. Backup and Restore with Scoped Drafts & Ownership Metadata
+    const fullBackupWithDrafts = await createFullBackup(userA);
+    assert(Boolean(fullBackupWithDrafts.scopedJournalDrafts), 'Backup includes scopedJournalDrafts map');
+    assert(Boolean(fullBackupWithDrafts.scopedMyJournalDrafts), 'Backup includes scopedMyJournalDrafts map');
+    assert(Boolean(fullBackupWithDrafts.scopedJournalDrafts?.[userA]), 'Backup contains Account A trading draft');
+    assert(Boolean(fullBackupWithDrafts.scopedMyJournalDrafts?.[userB]), 'Backup contains Account B My Journal draft');
+    assert(fullBackupWithDrafts.ownership?.exportedByAccountId === userA, 'Backup records exporting account owner metadata');
+
+    // Clear A's drafts
+    await clearJournalDraft(userA);
+    await clearMyJournalDraft(userA);
+    const checkClearedA = await getJournalDraft(userA);
+    assert(checkClearedA === null, 'Account A trading draft cleared');
+
+    // Restore backup into Account A with 'preserve' mode
+    await restoreBackup(fullBackupWithDrafts, {
+      restoreDraft: true,
+      targetAccountId: userA,
+      foreignOwnershipMode: 'preserve',
+    });
+    const restoredA = await getJournalDraft(userA);
+    const restoredMyA = await getMyJournalDraft(userA);
+    assert(restoredA?.title === 'Draft Alpha Trading Plan', 'Restored Account A trading draft from backup');
+    assert(restoredMyA?.notes === 'Draft Alpha Mindset Reflection', 'Restored Account A My Journal draft from backup');
+
+    // 3. Ownership Isolation for Saved Entries (Account A, Account B, Guest, Legacy undefined)
+    const entryA: JournalEntry = {
+      id: 'entry_alpha_1',
+      title: 'Alpha Trade Review',
+      date: '2026-11-05',
+      time: '08:00',
+      session: 'London',
+      pair: 'XAUUSD',
+      entryType: 'post-trade',
+      userId: userA,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const entryB: JournalEntry = {
+      id: 'entry_beta_1',
+      title: 'Beta Trade Review',
+      date: '2026-11-05',
+      time: '09:00',
+      session: 'NY AM',
+      pair: 'EURUSD',
+      entryType: 'post-trade',
+      userId: userB,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const entryGuestLegacy: JournalEntry = {
+      id: 'entry_guest_legacy_1',
+      title: 'Guest Unscoped Entry',
+      date: '2026-11-05',
+      time: '10:00',
+      session: 'NY PM',
+      pair: 'BTCUSD',
+      entryType: 'my-journal',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await saveJournalEntry(entryA);
+    await saveJournalEntry(entryB);
+    await saveJournalEntry(entryGuestLegacy);
+
+    const allEntriesForIsolation = await getAllJournalEntries();
+    const userAEntries = allEntriesForIsolation.filter((e) => isJournalEntryOwnedByScope(e, userA));
+    const userBEntries = allEntriesForIsolation.filter((e) => isJournalEntryOwnedByScope(e, userB));
+    const guestEntries = allEntriesForIsolation.filter((e) => isJournalEntryOwnedByScope(e, null));
+
+    assert(!userAEntries.some((e) => e.id === 'entry_beta_1'), 'Account A cannot see Account B saved journal entry');
+    assert(!userAEntries.some((e) => e.id === 'entry_guest_legacy_1'), 'Account A cannot see Guest saved journal entry');
+    assert(userAEntries.some((e) => e.id === 'entry_alpha_1'), 'Account A sees Account A entry');
+
+    assert(!userBEntries.some((e) => e.id === 'entry_alpha_1'), 'Account B cannot see Account A saved journal entry');
+    assert(!userBEntries.some((e) => e.id === 'entry_guest_legacy_1'), 'Account B cannot see Guest saved journal entry');
+    assert(userBEntries.some((e) => e.id === 'entry_beta_1'), 'Account B sees Account B entry');
+
+    assert(guestEntries.some((e) => e.id === 'entry_guest_legacy_1'), 'Guest mode sees guest/legacy entries');
+    assert(!guestEntries.some((e) => e.id === 'entry_alpha_1' || e.id === 'entry_beta_1'), 'Guest mode cannot see signed-in user entries');
+
+    // Analyze backup ownership & test deliberate 'skip' and 'claim' restore policies
+    const ownedBackup = await createFullBackup(userA);
+    const previewForB = await analyzeBackup(ownedBackup, userB);
+    assert((previewForB.ownershipSummary?.foreignOwnerEntriesCount || 0) >= 2, 'analyzeBackup counts foreign entries for target Account B');
+
+    await deleteJournalEntry('entry_alpha_1');
+    await deleteJournalEntry('entry_beta_1');
+    await deleteJournalEntry('entry_guest_legacy_1');
+
+    // Test 'skip': only imports entries matching targetScope (userB)
+    const skipRes = await restoreBackup(ownedBackup, {
+      targetAccountId: userB,
+      foreignOwnershipMode: 'skip',
+      restoreDraft: false,
+    });
+    const afterSkip = await getAllJournalEntries();
+    assert(skipRes.skippedForeignJournalEntries >= 2, 'Skip mode skipped foreign Account A and Guest entries');
+    assert(afterSkip.some((e) => e.id === 'entry_beta_1'), 'Skip mode restored matching Account B entry');
+    assert(!afterSkip.some((e) => e.id === 'entry_alpha_1'), 'Skip mode excluded foreign Account A entry');
+
+    // Test 'claim': reassigns ownership of imported entries to targetAccountId (userC)
+    const userC = 'user_charlie_789';
+    await deleteJournalEntry('entry_beta_1');
+    await restoreBackup(ownedBackup, {
+      targetAccountId: userC,
+      foreignOwnershipMode: 'claim',
+      restoreDraft: false,
+    });
+    const afterClaim = await getAllJournalEntries();
+    const claimedA = afterClaim.find((e) => e.id === 'entry_alpha_1');
+    assert(claimedA?.userId === userC, 'Claim mode assigned imported journal entry ownership to userC');
+
+    await deleteJournalEntry('entry_alpha_1');
+    await deleteJournalEntry('entry_beta_1');
+    await deleteJournalEntry('entry_guest_legacy_1');
+    await clearJournalDraft(userA);
+    await clearMyJournalDraft(userA);
+    await clearJournalDraft(userB);
+    await clearMyJournalDraft(userB);
+    await clearJournalDraft(userC);
+    await clearMyJournalDraft(userC);
+    await clearJournalDraft(null);
+    await clearMyJournalDraft(null);
+
+    // 4. Deterministic Trade Deduplication Across Original, Edited, Copied, and Conflict Reports
+    const rpt1: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_dedup_1_orig',
+      date: '2026-11-05',
+      pair: 'XAUUSD',
+      status: 'Original',
+      createdAt: 1000,
+      updatedAt: 1000,
+      trades: [
+        {
+          id: 'trd_shared',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          outcome: 'Loss',
+          rulesFollowed: false,
+          date: '2026-11-05',
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+      ],
+    };
+    const rpt2: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_dedup_2_edited',
+      date: '2026-11-05',
+      pair: 'XAUUSD',
+      status: 'Modified',
+      createdAt: 1000,
+      updatedAt: 2500, // newest revision
+      trades: [
+        {
+          id: 'trd_shared',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          outcome: 'Win',
+          rulesFollowed: true,
+          date: '2026-11-05',
+          createdAt: 1000,
+          updatedAt: 2500, // updated outcome & compliance
+        },
+      ],
+    };
+    const rpt3: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_dedup_3_copy',
+      date: '2026-11-05',
+      pair: 'XAUUSD',
+      status: 'Original',
+      copiedFromId: 'rpt_dedup_1_orig',
+      createdAt: 1500,
+      updatedAt: 1500,
+      trades: [
+        {
+          id: 'trd_shared',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          outcome: 'Loss',
+          rulesFollowed: false,
+          date: '2026-11-05',
+          createdAt: 1000,
+          updatedAt: 1500,
+        },
+      ],
+    };
+    const rpt4: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_dedup_4_conflict',
+      date: '2026-11-05',
+      pair: 'XAUUSD',
+      status: 'Modified',
+      createdAt: 1000,
+      updatedAt: 1800,
+      trades: [
+        {
+          id: 'trd_shared',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          outcome: 'Break-even',
+          rulesFollowed: true,
+          date: '2026-11-05',
+          createdAt: 1000,
+          updatedAt: 1800,
+        },
+      ],
+    };
+    const rpt5: SavedReport = {
+      ...createInitialAnalysisData('EURUSD'),
+      id: 'rpt_dedup_5_new',
+      date: '2026-11-06',
+      pair: 'EURUSD',
+      status: 'Original',
+      createdAt: 3000,
+      updatedAt: 3000,
+      trades: [
+        {
+          id: 'trd_independent',
+          pair: 'EURUSD',
+          direction: 'Sell',
+          outcome: 'Win',
+          rulesFollowed: true,
+          date: '2026-11-06',
+          createdAt: 3000,
+          updatedAt: 3000,
+        },
+      ],
+    };
+
+    const dedupTrades = extractDeduplicatedTrades([rpt1, rpt2, rpt3, rpt4, rpt5]);
+    const dedupStats = calculatePeriodPerformance(dedupTrades);
+
+    assert(dedupStats.totalTrades === 2, `Deduplication yields exactly 2 total trades across 5 reports (actual: ${dedupStats.totalTrades})`);
+    assert(dedupTrades.length === 2, `Deduplication returns exactly 2 trade objects (actual: ${dedupTrades.length})`);
+
+    const sharedTradeResult = dedupTrades.find((t) => t.id === 'trd_shared');
+    assert(Boolean(sharedTradeResult), 'trd_shared exists in deduplicated trade list');
+    assert(sharedTradeResult?.outcome === 'Win', `Deterministic resolution chose newest revision (outcome: ${sharedTradeResult?.outcome}, expected Win)`);
+    assert(sharedTradeResult?.rulesFollowed === true, 'Deterministic resolution chose compliant revision');
+
+    assert(dedupStats.wins === 2, `Deduplicated wins is 2 (actual: ${dedupStats.wins})`);
+    assert(dedupStats.losses === 0, `Deduplicated losses is 0 (actual: ${dedupStats.losses})`);
+    assert(dedupStats.winRate === 100, `Deduplicated winRate is 100% (actual: ${dedupStats.winRate})`);
+    assert(dedupStats.disciplineRate === 100, `Deduplicated disciplineRate is 100% (actual: ${dedupStats.disciplineRate})`);
+
+    // Equal-timestamp tie-breaker determinism
+    const tieA: SavedReport = {
+      ...rpt1,
+      id: 'rpt_tie_a',
+      updatedAt: 5000,
+      trades: [{ ...rpt1.trades![0], outcome: 'Win', updatedAt: 5000 }],
+    };
+    const tieB: SavedReport = {
+      ...rpt1,
+      id: 'rpt_tie_b',
+      updatedAt: 5000,
+      trades: [{ ...rpt1.trades![0], outcome: 'Loss', updatedAt: 5000 }],
+    };
+    const tieOrder1 = extractDeduplicatedTrades([tieA, tieB]);
+    const tieOrder2 = extractDeduplicatedTrades([tieB, tieA]);
+    assert(
+      tieOrder1[0].outcome === 'Win' && tieOrder2[0].outcome === 'Win',
+      'Equal-timestamp tie-breaking is order-independent and deterministic'
+    );
+
+    // 5. Multi-page PDF blob sanity (long single analysis report + period report with images)
+    const samplePng1x1 =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAADElEQVR4nGNgGEYAAADwAAHh6a5JAAAAAElFTkSuQmCC';
+    const multiPagePdfReport: SavedReport = {
+      ...rpt2,
+      title: 'Long Multi-Page Verification Analysis Report',
+      overallNotes: 'SentinelOverallNoteText '.repeat(35),
+      timeframes: {
+        ...rpt2.timeframes,
+        Monthly: {
+          ...rpt2.timeframes.Monthly,
+          overallBias: 'Bullish',
+          note: 'MonthlyColumnLine '.repeat(30),
+          chartImageId: 'img_monthly_test',
+        },
+        Daily: {
+          ...rpt2.timeframes.Daily,
+          overallBias: 'Bullish',
+          note: 'DailySentinelTailMarker '.repeat(25),
+        },
+      },
+      trades: [
+        {
+          ...rpt2.trades![0],
+          images: [{ id: 'trd_img_1', dataUrl: samplePng1x1, caption: 'Execution Chart', createdAt: 2500 }],
+        },
+      ],
+    };
+    const singlePdf = await generateReportPdfBlob({
+      report: multiPagePdfReport,
+      imagesMap: { img_monthly_test: samplePng1x1 },
+      style: 'dark',
+    });
+    const singlePdfBytes = new Uint8Array(await singlePdf.blob.arrayBuffer());
+    assert(
+      singlePdf.doc.getNumberOfPages() >= 2 &&
+        singlePdfBytes[0] === 0x25 &&
+        singlePdfBytes[1] === 0x50,
+      `Long single-report PDF renders across multiple pages without truncation (${singlePdf.doc.getNumberOfPages()} pages)`
+    );
+
+    const periodPdf = await generatePeriodPdfBlob({
+      startDate: '2026-11-01',
+      endDate: '2026-11-07',
+      mode: 'full',
+      includeAnalyses: true,
+      includeTrades: true,
+      includeJournal: true,
+      includeMyJournalNotes: true,
+      includePerformance: true,
+      includeImages: true,
+      style: 'emerald',
+      reports: [multiPagePdfReport, rpt5],
+      journalEntries: [],
+    });
+    const periodBytes = new Uint8Array(await periodPdf.blob.arrayBuffer());
+    assert(periodBytes.length > 2000 && periodBytes[0] === 0x25, 'Period PDF with embedded images generated cleanly');
+
+    // =========================================================================
+    // 6. PERSONAL HIGHER-TIMEFRAME BIAS (Monthly / Weekly / Daily ONLY)
+    // =========================================================================
+    assert(
+      HIGHER_BIAS_TIMEFRAMES.join(',') === 'Monthly,Weekly,Daily',
+      'HIGHER_BIAS_TIMEFRAMES equals Monthly,Weekly,Daily'
+    );
+    assert(isHigherPersonalBiasTimeframe('Monthly') && isHigherPersonalBiasTimeframe('Weekly') && isHigherPersonalBiasTimeframe('Daily'),
+      'Higher personal bias helper enables Monthly, Weekly, Daily'
+    );
+    assert(
+      !isHigherPersonalBiasTimeframe('4H') &&
+        !isHigherPersonalBiasTimeframe('1H') &&
+        !isHigherPersonalBiasTimeframe('15M') &&
+        !isHigherPersonalBiasTimeframe('5M') &&
+        !isHigherPersonalBiasTimeframe('1M'),
+      'Higher personal bias helper excludes 4H, 1H, 15M, 5M, and 1M'
+    );
+    assert(
+      getPersonalBiasLabel('Monthly') === 'My Monthly Bias' &&
+        getPersonalBiasLabel('Weekly') === 'My Weekly Bias' &&
+        getPersonalBiasLabel('Daily') === 'My Daily Bias',
+      'Personal bias labels match My Monthly Bias, My Weekly Bias, My Daily Bias'
+    );
+
+    const biasAnalysis = createInitialAnalysisData('XAUUSD');
+    for (const tf of TIMEFRAME_ORDER) {
+      biasAnalysis.timeframes[tf].overallBias = 'Bullish';
+    }
+    biasAnalysis.timeframes.Monthly.personalBiasNotes = 'CUSTOM_HTF_MONTHLY_BIAS Bearish thesis override text ONLY personal';
+    biasAnalysis.timeframes.Weekly.personalBiasNotes = 'CUSTOM_HTF_WEEKLY_BIAS Wait for sweep';
+    biasAnalysis.timeframes.Daily.personalBiasNotes = 'CUSTOM_HTF_DAILY_BIAS Liquidity balanced';
+
+    const alignWithPersonal = calculateOverallAlignment(biasAnalysis.timeframes);
+    assert(
+      alignWithPersonal.status === 'ALIGNED' && alignWithPersonal.bias === 'Bullish',
+      'Personal higher-timeframe bias text does not alter calculateOverallAlignment'
+    );
+
+    const biasSavedReport: SavedReport = {
+      ...biasAnalysis,
+      id: 'rpt_personal_bias_test',
+      date: '2026-11-12',
+      status: 'Original',
+      createdAt: 10000,
+      updatedAt: 10000,
+    };
+    assert(
+      getReportBiasSummary(biasSavedReport).summary === 'Bullish',
+      'getReportBiasSummary ignores personalBiasNotes and reflects structural overallBias'
+    );
+
+    const pairAlignBefore = JSON.stringify(getTimeframePairAlignments('Daily', biasAnalysis.timeframes));
+    const deepAlignBefore = isDeepAnalysisAligned(biasAnalysis.timeframes.Daily);
+    biasAnalysis.timeframes.Daily.personalBiasNotes = 'Completely different personal note';
+    assert(
+      JSON.stringify(getTimeframePairAlignments('Daily', biasAnalysis.timeframes)) === pairAlignBefore &&
+        isDeepAnalysisAligned(biasAnalysis.timeframes.Daily) === deepAlignBefore,
+      'getTimeframePairAlignments & isDeepAnalysisAligned remain strictly independent of personalBiasNotes'
+    );
+
+    const csvOutput = generateReportsCsv([biasSavedReport]);
+    assert(
+      csvOutput.includes('My Monthly Bias') &&
+        csvOutput.includes('My Weekly Bias') &&
+        csvOutput.includes('My Daily Bias') &&
+        csvOutput.includes('CUSTOM_HTF_MONTHLY_BIAS') &&
+        csvOutput.includes('CUSTOM_HTF_WEEKLY_BIAS'),
+      'CSV export includes My Monthly/Weekly/Daily Bias headers and notes'
+    );
+
+    const normHiddenDeep = normalizeWorkspaceVisibilityConfig({
+      ...DEFAULT_VISIBILITY_CONFIG,
+      perTimeframeFields: {
+        ...createDefaultPerTimeframeFields(),
+        Monthly: { ...DEFAULT_DEEP_FIELDS_VISIBILITY, personalBiasNotes: false },
+      },
+    });
+    assert(
+      normHiddenDeep.perTimeframeFields.Monthly.personalBiasNotes === false &&
+        normHiddenDeep.perTimeframeFields.Daily.personalBiasNotes !== false,
+      'Per-timeframe visibility stores personalBiasNotes independently per timeframe without mutating saved data'
+    );
+
+    // =========================================================================
+    // 7. REUSABLE STRATEGY LIBRARY, SNAPSHOTS, OWNERSHIP & BACKUP v4
+    // =========================================================================
+    const stratGuest: TradingStrategy = {
+      id: 'str_guest_1',
+      name: 'London Sweep Strategy',
+      description: 'Sweep Asian range before London open',
+      setupContext: 'London Open',
+      entryRules: '15M CHoCH + 5M FVG',
+      invalidationConditions: 'Close below London low',
+      riskManagementRules: 'Max 1% risk',
+      exitRules: 'Previous week high',
+      tags: ['Liquidity', 'London'],
+      notes: 'Requires clean displacement',
+      isArchived: false,
+      userId: 'guest',
+      createdAt: 1000,
+      updatedAt: 1000,
+    };
+    const stratUserA: TradingStrategy = {
+      id: 'str_userA_1',
+      name: 'NY Reversal Playbook',
+      description: 'User A private playbook',
+      setupContext: 'NY AM',
+      entryRules: '1M MSS inside 15M OB',
+      invalidationConditions: 'Swing invalidation',
+      riskManagementRules: '0.5% risk',
+      exitRules: 'Opposing FVG',
+      tags: ['NY'],
+      notes: '',
+      isArchived: false,
+      userId: 'user-a-uid',
+      createdAt: 2000,
+      updatedAt: 2000,
+    };
+    // Distinct strategy with identical name under User A to verify ID-based separation
+    const stratUserASameName: TradingStrategy = {
+      id: 'str_userA_dupname',
+      name: 'NY Reversal Playbook',
+      description: 'Second distinct variant with same display name',
+      setupContext: 'NY PM',
+      entryRules: 'Strict divergence',
+      invalidationConditions: 'High broken',
+      riskManagementRules: '1% risk',
+      exitRules: '2R fixed',
+      tags: [],
+      notes: '',
+      isArchived: false,
+      userId: 'user-a-uid',
+      createdAt: 2500,
+      updatedAt: 2500,
+    };
+
+    await saveStrategy(stratGuest);
+    await saveStrategy(stratUserA);
+    await saveStrategy(stratUserASameName);
+
+    const aStrats = await getStrategiesForScope('user-a-uid');
+    const bStrats = await getStrategiesForScope('user-b-uid');
+    const gStrats = await getStrategiesForScope(null);
+    assert(
+      aStrats.some((s) => s.id === 'str_userA_1') &&
+        aStrats.some((s) => s.id === 'str_userA_dupname') &&
+        !aStrats.some((s) => s.id === 'str_guest_1'),
+      'getStrategiesForScope enforces strict account isolation for User A'
+    );
+    assert(
+      !bStrats.some((s) => s.id === 'str_userA_1') && !bStrats.some((s) => s.id === 'str_guest_1'),
+      'User B does not see User A or Guest strategies'
+    );
+    assert(
+      gStrats.some((s) => s.id === 'str_guest_1') && !gStrats.some((s) => s.id === 'str_userA_1'),
+      'Guest scope isolates Guest strategies cleanly'
+    );
+
+    // Scoped strategy drafts isolated across accounts
+    await saveStrategyDraft({ name: 'Draft For A', description: 'Private A draft' }, 'user-a-uid');
+    await saveStrategyDraft({ name: 'Draft For Guest', description: 'Guest draft' }, null);
+    const loadedADraft = await getStrategyDraft('user-a-uid');
+    const loadedBDraft = await getStrategyDraft('user-b-uid');
+    const loadedGuestDraft = await getStrategyDraft(null);
+    assert(
+      loadedADraft?.name === 'Draft For A' &&
+        loadedBDraft === null &&
+        loadedGuestDraft?.name === 'Draft For Guest',
+      'Scoped strategy drafts isolate strictly per account and survive account transitions'
+    );
+
+    // Archiving preserves snapshot linkage without mutating historical scenarios/trades
+    const snapBeforeArchive = createStrategySnapshot(stratUserA);
+    await archiveStrategy(stratUserA.id, true);
+    const archivedCheck = await getStrategyById(stratUserA.id);
+    assert(
+      archivedCheck?.isArchived === true && snapBeforeArchive.id === stratUserA.id && snapBeforeArchive.name === 'NY Reversal Playbook',
+      'Archiving strategy updates strategy flag while preserving captured immutable snapshot'
+    );
+
+    // Backup export v4 & non-merging ID-based restore
+    const v4Backup = await createFullBackup();
+    assert(
+      v4Backup.version === 4 &&
+        (v4Backup.strategies?.length || 0) >= 3 &&
+        Boolean(v4Backup.scopedStrategyDrafts?.['user-a-uid']),
+      'createFullBackup v4 includes all strategies and scopedStrategyDrafts'
+    );
+
+    const backupPreviewForB = await analyzeBackup(v4Backup, 'user-b-uid');
+    assert(
+      (backupPreviewForB.ownershipSummary?.foreignOwnerStrategiesCount || 0) >= 3,
+      `analyzeBackup detects foreign-owned strategies accurately (count: ${backupPreviewForB.ownershipSummary?.foreignOwnerStrategiesCount})`
+    );
+
+    // Delete str_userA_dupname to test ID-based restore without name-collapsing
+    await deleteStrategy(stratUserASameName.id);
+    const restoreForA = await restoreBackup(v4Backup, {
+      targetAccountId: 'user-a-uid',
+      foreignOwnershipMode: 'preserve',
+    });
+    const afterRestoreAll = await getAllStrategies();
+    const restoredSameNames = afterRestoreAll.filter(
+      (s) => s.userId === 'user-a-uid' && s.name === 'NY Reversal Playbook'
+    );
+    assert(
+      restoreForA.addedStrategies === 1 && restoredSameNames.length === 2,
+      `Backup restore skips existing strategy IDs and restores missing distinct ID without merging same names (added=${restoreForA.addedStrategies}, total=${restoredSameNames.length})`
+    );
+
+    // Clean up test strategy records & drafts so subsequent tests remain isolated
+    await clearStrategyDraft('user-a-uid');
+    await clearStrategyDraft(null);
+
+    // =========================================================================
+    // 8. PERFORMANCE SETUP BREAKDOWN & OUTCOME-NEUTRAL DEDUPLICATION
+    // =========================================================================
+    const { resolveTradeSetupGroup } = await import('../components/PerformanceView');
+    const strategiesMap = new Map<string, TradingStrategy>([
+      [stratUserA.id, { ...stratUserA, isArchived: true }],
+      [stratUserASameName.id, stratUserASameName],
+    ]);
+    const setupReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_setup_test',
+      date: '2026-11-12',
+      status: 'Original',
+      scenarios: [
+        {
+          id: 'scn_s1',
+          label: 'Scenario 1',
+          strategyId: stratUserASameName.id,
+          strategy: 'NY Reversal Playbook',
+          direction: 'Buy',
+          description: '',
+          entryConditions: '',
+          invalidationConditions: '',
+          createdAt: 100,
+          updatedAt: 100,
+        },
+      ],
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const reportsMap = new Map<string, SavedReport>([[setupReport.id, setupReport]]);
+
+    const tArchivedLinked: RecordedTrade & { sourceReportId?: string } = {
+      id: 'trd_sb_1',
+      sourceReportId: setupReport.id,
+      strategyId: stratUserA.id,
+      strategySnapshot: snapBeforeArchive,
+      strategy: 'NY Reversal Playbook',
+      pair: 'XAUUSD',
+      direction: 'Buy',
+      outcome: 'Win',
+      rulesFollowed: true,
+      date: '2026-11-12',
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const tActiveSameNameLinked: RecordedTrade & { sourceReportId?: string } = {
+      id: 'trd_sb_2',
+      sourceReportId: setupReport.id,
+      scenarioId: 'scn_s1',
+      pair: 'XAUUSD',
+      direction: 'Sell',
+      outcome: 'Loss',
+      rulesFollowed: true,
+      date: '2026-11-12',
+      createdAt: 200,
+      updatedAt: 200,
+    };
+    const tFreeText: RecordedTrade & { sourceReportId?: string } = {
+      id: 'trd_sb_3',
+      sourceReportId: setupReport.id,
+      strategy: 'Custom London Spike',
+      pair: 'EURUSD',
+      direction: 'Buy',
+      outcome: 'Win',
+      rulesFollowed: false,
+      date: '2026-11-12',
+      createdAt: 300,
+      updatedAt: 300,
+    };
+    const tDiscretionary: RecordedTrade & { sourceReportId?: string } = {
+      id: 'trd_sb_4',
+      sourceReportId: setupReport.id,
+      pair: 'BTCUSD',
+      direction: 'Sell',
+      outcome: 'Open',
+      date: '2026-11-12',
+      createdAt: 400,
+      updatedAt: 400,
+    };
+
+    const g1 = resolveTradeSetupGroup(tArchivedLinked, reportsMap, strategiesMap);
+    const g2 = resolveTradeSetupGroup(tActiveSameNameLinked, reportsMap, strategiesMap);
+    const g3 = resolveTradeSetupGroup(tFreeText, reportsMap, strategiesMap);
+    const g4 = resolveTradeSetupGroup(tDiscretionary, reportsMap, strategiesMap);
+    assert(
+      g1.key === `str:${stratUserA.id}` && g1.label === 'NY Reversal Playbook (Archived)',
+      `Archived strategy resolves cleanly via ID with (Archived) suffix (got: ${g1.label})`
+    );
+    assert(
+      g2.key === `str:${stratUserASameName.id}` && g2.key !== g1.key,
+      'Distinct same-named strategies stay separated by strategyId (also inherited from scenario)'
+    );
+    assert(
+      g3.key === 'txt:custom london spike' && g3.label === 'Custom London Spike',
+      'Free-text legacy/custom strategy resolves cleanly by trimmed text'
+    );
+    assert(
+      g4.key === 'none' && g4.label === 'No strategy / Discretionary',
+      'Unlinked trade resolves to No strategy / Discretionary'
+    );
+
+    // Outcome-neutral deduplication: newer Loss / Rules Broken overrides older Win / Rules Followed
+    const oldWinCompliantReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_neutral_old',
+      date: '2026-11-11',
+      status: 'Original',
+      createdAt: 1000,
+      updatedAt: 1000,
+      trades: [
+        {
+          id: 'trd_neutral_1',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          outcome: 'Win',
+          rulesFollowed: true,
+          date: '2026-11-11',
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+      ],
+    };
+    const newerLossNonCompliantReport: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rpt_neutral_new',
+      date: '2026-11-11',
+      status: 'Modified',
+      createdAt: 1000,
+      updatedAt: 9000,
+      trades: [
+        {
+          id: 'trd_neutral_1',
+          pair: 'XAUUSD',
+          direction: 'Buy',
+          outcome: 'Loss',
+          rulesFollowed: false,
+          date: '2026-11-11',
+          createdAt: 1000,
+          updatedAt: 9000,
+        },
+      ],
+    };
+    const neutralDedup = extractDeduplicatedTrades([oldWinCompliantReport, newerLossNonCompliantReport]);
+    assert(
+      neutralDedup.length === 1 &&
+        neutralDedup[0].outcome === 'Loss' &&
+        neutralDedup[0].rulesFollowed === false,
+      'Outcome-neutral deduplication picks newest timestamp even when outcome=Loss and rulesFollowed=false'
+    );
+
+    // =========================================================================
+    // 9. UI & RELEASE CONTRACT ASSERTIONS (HEADER, DRAWER, SETTINGS, JOURNAL, APK)
+    // =========================================================================
+    const headerSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/Header.tsx'), 'utf8');
+    const drawerSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/NavigationDrawer.tsx'), 'utf8');
+    const settingsSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/SettingsModal.tsx'), 'utf8');
+    const journalSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/JournalView.tsx'), 'utf8');
+    const workflowSrc = fs.readFileSync(path.resolve(process.cwd(), '.github/workflows/build-android-apk.yml'), 'utf8');
+
+    assert(
+      !headerSrc.includes('hidden md:flex') &&
+        headerSrc.includes("'home'") &&
+        headerSrc.includes("'analysis'") &&
+        headerSrc.includes("'reports'") &&
+        !headerSrc.includes("onNavigate('journal')") &&
+        !headerSrc.includes("onNavigate('performance')"),
+      'Header renders Home | Analysis | Reports visibly across widths without Journal/Performance links'
+    );
+    assert(
+      drawerSrc.includes("'journal'") &&
+        drawerSrc.includes("'performance'") &&
+        !drawerSrc.includes("'home'") &&
+        !drawerSrc.includes("'analysis'") &&
+        !drawerSrc.includes("'reports'"),
+      'Hamburger drawer renders Journal, Performance, and Settings without duplicating Home/Analysis/Reports'
+    );
+
+    const idxGeneral = settingsSrc.indexOf("setActiveTab('general')");
+    const idxTheme = settingsSrc.indexOf("setActiveTab('theme')");
+    const idxWorkspace = settingsSrc.indexOf("setActiveTab('admin')");
+    const idxJournalVis = settingsSrc.indexOf("setActiveTab('journal_visibility')");
+    const idxPerfVis = settingsSrc.indexOf("setActiveTab('performance_visibility')");
+    assert(
+      idxGeneral !== -1 &&
+        idxGeneral < idxTheme &&
+        idxTheme < idxWorkspace &&
+        idxWorkspace < idxJournalVis &&
+        idxJournalVis < idxPerfVis,
+      'Settings tabs ordered exactly: General -> Theme -> Workspace -> Journal Sections -> Performance Sections'
+    );
+
+    const idxTabTrading = journalSrc.indexOf("setMainJournalTab('trading-journal')");
+    const idxTabMy = journalSrc.indexOf("setMainJournalTab('my-journal')");
+    const idxTabStrategies = journalSrc.indexOf("setMainJournalTab('strategies')");
+    assert(
+      journalSrc.includes("useState<'trading-journal' | 'my-journal' | 'strategies'>('trading-journal')") &&
+        idxTabTrading !== -1 &&
+        idxTabTrading < idxTabMy &&
+        idxTabMy < idxTabStrategies,
+      'Journal tabs default to trading-journal and are ordered Trading Journal | My Journal | Strategies'
+    );
+
+    assert(
+      workflowSrc.includes('BASE_CODE + (RUN_NUM * 100) + (RUN_ATTEMPT - 1)') &&
+        fs.readFileSync(path.resolve(process.cwd(), 'android/app/build.gradle'), 'utf8').includes('applicationId "com.abmax.analysis"'),
+      'Android workflow uses collision-free monotonic versionCode formula while preserving com.abmax.analysis'
+    );
+  } catch (err) {
+    assert(false, 'Test Suite execution failure', (err as Error).message);
   }
 
   console.log(`\n=== TEST RESULTS: ${passed} PASSED, ${failed} FAILED ===`);

@@ -1,19 +1,27 @@
 import {
   AnalysisData,
   BackupData,
+  DEFAULT_JOURNAL_VISIBILITY_CONFIG,
+  DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
   ImageAttachment,
+  JournalEntry,
+  JournalVisibilityConfig,
+  PerformanceVisibilityConfig,
   ReportPresentationConfig,
   SavedReport,
   SavedTemplate,
+  TradingStrategy,
   WorkspaceVisibilityConfig,
+  normalizeJournalVisibilityConfig,
+  normalizePerformanceVisibilityConfig,
   normalizeWorkspaceVisibilityConfig,
   normalizeReportVisibilityConfig,
 } from '../types/journal';
 
 const DB_NAME = 'abmax_analysis_db';
-const DB_VERSION = 2; // Version 2 guarantees onupgradeneeded runs for all existing installed app instances
+const DB_VERSION = 4; // Version 4 adds strategies store
 
 interface DBStores {
   reports: SavedReport;
@@ -21,6 +29,9 @@ interface DBStores {
   templates: SavedTemplate;
   images: ImageAttachment;
   preferences: { key: string; value: unknown };
+  journal: JournalEntry;
+  journal_draft: { id: string; data: Partial<JournalEntry> | Partial<TradingStrategy> };
+  strategies: TradingStrategy;
 }
 
 let cachedDB: IDBDatabase | null = null;
@@ -66,7 +77,7 @@ function openDB(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
       
-      // Ensure all 5 stores exist even if upgrading from an earlier version
+      // Ensure all stores exist even if upgrading from an earlier version
       if (!db.objectStoreNames.contains('reports')) {
         const reportStore = db.createObjectStore('reports', { keyPath: 'id' });
         reportStore.createIndex('date', 'date', { unique: false });
@@ -89,6 +100,24 @@ function openDB(): Promise<IDBDatabase> {
 
       if (!db.objectStoreNames.contains('preferences')) {
         db.createObjectStore('preferences', { keyPath: 'key' });
+      }
+
+      if (!db.objectStoreNames.contains('journal')) {
+        const jrnStore = db.createObjectStore('journal', { keyPath: 'id' });
+        jrnStore.createIndex('date', 'date', { unique: false });
+        jrnStore.createIndex('createdAt', 'createdAt', { unique: false });
+        jrnStore.createIndex('pair', 'pair', { unique: false });
+        jrnStore.createIndex('session', 'session', { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains('journal_draft')) {
+        db.createObjectStore('journal_draft', { keyPath: 'id' });
+      }
+
+      if (!db.objectStoreNames.contains('strategies')) {
+        const strStore = db.createObjectStore('strategies', { keyPath: 'id' });
+        strStore.createIndex('userId', 'userId', { unique: false });
+        strStore.createIndex('name', 'name', { unique: false });
       }
     };
 
@@ -621,6 +650,46 @@ export async function saveUserVisibilityConfig(config: any): Promise<void> {
   );
 }
 
+/* ================= JOURNAL & PERFORMANCE VISIBILITY PREFERENCES ================= */
+
+export async function getUserJournalVisibilityConfig(): Promise<JournalVisibilityConfig> {
+  try {
+    const record = await runTransaction<{ key: string; value: unknown } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get('journal_visibility')
+    );
+    return record?.value ? normalizeJournalVisibilityConfig(record.value) : DEFAULT_JOURNAL_VISIBILITY_CONFIG;
+  } catch {
+    return DEFAULT_JOURNAL_VISIBILITY_CONFIG;
+  }
+}
+
+export async function saveUserJournalVisibilityConfig(config: JournalVisibilityConfig): Promise<void> {
+  await runTransaction('preferences', 'readwrite', (store) =>
+    store.put({ key: 'journal_visibility', value: normalizeJournalVisibilityConfig(config) })
+  );
+}
+
+export async function getUserPerformanceVisibilityConfig(): Promise<PerformanceVisibilityConfig> {
+  try {
+    const record = await runTransaction<{ key: string; value: unknown } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get('performance_visibility')
+    );
+    return record?.value ? normalizePerformanceVisibilityConfig(record.value) : DEFAULT_PERFORMANCE_VISIBILITY_CONFIG;
+  } catch {
+    return DEFAULT_PERFORMANCE_VISIBILITY_CONFIG;
+  }
+}
+
+export async function saveUserPerformanceVisibilityConfig(config: PerformanceVisibilityConfig): Promise<void> {
+  await runTransaction('preferences', 'readwrite', (store) =>
+    store.put({ key: 'performance_visibility', value: normalizePerformanceVisibilityConfig(config) })
+  );
+}
+
 /* ================= USER REPORT PRESENTATION PREFERENCES ================= */
 
 export async function getUserReportPresentationConfig(): Promise<ReportPresentationConfig> {
@@ -771,16 +840,371 @@ export async function getAllImages(): Promise<ImageAttachment[]> {
   });
 }
 
+/* ================= JOURNAL CRUD ================= */
+
+export async function saveJournalEntry(entry: JournalEntry): Promise<JournalEntry> {
+  const cloned = safeClone(entry);
+  const now = Date.now();
+  if (!cloned.id) {
+    cloned.id = `jrn_${now}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+  if (!cloned.createdAt) {
+    cloned.createdAt = now;
+  }
+  cloned.updatedAt = now;
+
+  await runTransaction('journal', 'readwrite', (store) => store.put(cloned));
+  return cloned;
+}
+
+export async function getJournalEntryById(id: string): Promise<JournalEntry | null> {
+  try {
+    const item = await runTransaction<JournalEntry | undefined>('journal', 'readonly', (store) =>
+      store.get(id)
+    );
+    return item ? safeClone(item) : null;
+  } catch (err) {
+    console.error('Error fetching journal entry', err);
+    return null;
+  }
+}
+
+export async function getAllJournalEntries(): Promise<JournalEntry[]> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('journal', 'readonly');
+      const store = tx.objectStore('journal');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = (req.result as JournalEntry[]) || [];
+        // Sort descending by date, then by createdAt
+        list.sort((a, b) => {
+          if (a.date !== b.date) {
+            return b.date.localeCompare(a.date);
+          }
+          return (b.createdAt || 0) - (a.createdAt || 0);
+        });
+        resolve(list);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error('Error fetching all journal entries', err);
+    return [];
+  }
+}
+
+export async function deleteJournalEntry(id: string): Promise<void> {
+  try {
+    await runTransaction('journal', 'readwrite', (store) => store.delete(id));
+  } catch (err) {
+    console.error('Error deleting journal entry', err);
+  }
+}
+
+export function normalizeAccountScope(accountId?: string | null): string {
+  const trimmed = accountId?.trim();
+  if (!trimmed || trimmed === 'local' || trimmed === 'guest') {
+    return 'guest';
+  }
+  return trimmed;
+}
+
+export function isJournalEntryOwnedByScope(entry: JournalEntry, accountId?: string | null): boolean {
+  const scope = normalizeAccountScope(accountId);
+  const entryOwner = normalizeAccountScope(entry.userId);
+  return entryOwner === scope;
+}
+
+export function getJournalDraftKey(accountId?: string | null): string {
+  const scope = normalizeAccountScope(accountId);
+  return `active_journal_draft_${scope}`;
+}
+
+export function getMyJournalDraftKey(accountId?: string | null): string {
+  const scope = normalizeAccountScope(accountId);
+  return `active_my_journal_draft_${scope}`;
+}
+
+export async function saveJournalDraft(draft: Partial<JournalEntry>, accountId?: string | null): Promise<void> {
+  const cloned = safeClone(draft);
+  const key = getJournalDraftKey(accountId);
+  const scope = normalizeAccountScope(accountId);
+  await runTransaction('journal_draft', 'readwrite', (store) =>
+    store.put({ id: key, scope, data: cloned, updatedAt: Date.now() })
+  );
+}
+
+export async function getJournalDraft(accountId?: string | null): Promise<Partial<JournalEntry> | null> {
+  try {
+    const key = getJournalDraftKey(accountId);
+    const scope = normalizeAccountScope(accountId);
+    let item = await runTransaction<{ id: string; data: Partial<JournalEntry> } | undefined>(
+      'journal_draft',
+      'readonly',
+      (store) => store.get(key)
+    );
+    // Legacy fallback for unscoped draft if looking up guest scope
+    if (!item && scope === 'guest') {
+      item = await runTransaction<{ id: string; data: Partial<JournalEntry> } | undefined>(
+        'journal_draft',
+        'readonly',
+        (store) => store.get('active_journal_draft')
+      );
+    }
+    return item?.data ? safeClone(item.data) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearJournalDraft(accountId?: string | null): Promise<void> {
+  try {
+    const key = getJournalDraftKey(accountId);
+    const scope = normalizeAccountScope(accountId);
+    await runTransaction('journal_draft', 'readwrite', (store) => {
+      if (scope === 'guest') {
+        store.delete('active_journal_draft');
+      }
+      return store.delete(key);
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+export async function saveMyJournalDraft(draft: Partial<JournalEntry>, accountId?: string | null): Promise<void> {
+  const cloned = safeClone(draft);
+  const key = getMyJournalDraftKey(accountId);
+  const scope = normalizeAccountScope(accountId);
+  await runTransaction('journal_draft', 'readwrite', (store) =>
+    store.put({ id: key, scope, data: cloned, updatedAt: Date.now() })
+  );
+}
+
+export async function getMyJournalDraft(accountId?: string | null): Promise<Partial<JournalEntry> | null> {
+  try {
+    const key = getMyJournalDraftKey(accountId);
+    const scope = normalizeAccountScope(accountId);
+    let item = await runTransaction<{ id: string; data: Partial<JournalEntry> } | undefined>(
+      'journal_draft',
+      'readonly',
+      (store) => store.get(key)
+    );
+    // Legacy fallback for unscoped draft if looking up guest scope
+    if (!item && scope === 'guest') {
+      item = await runTransaction<{ id: string; data: Partial<JournalEntry> } | undefined>(
+        'journal_draft',
+        'readonly',
+        (store) => store.get('active_my_journal_draft')
+      );
+    }
+    return item?.data ? safeClone(item.data) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearMyJournalDraft(accountId?: string | null): Promise<void> {
+  try {
+    const key = getMyJournalDraftKey(accountId);
+    const scope = normalizeAccountScope(accountId);
+    await runTransaction('journal_draft', 'readwrite', (store) => {
+      if (scope === 'guest') {
+        store.delete('active_my_journal_draft');
+      }
+      return store.delete(key);
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+export async function getAllScopedJournalDrafts(): Promise<{
+  scopedJournalDrafts: Record<string, Partial<JournalEntry>>;
+  scopedMyJournalDrafts: Record<string, Partial<JournalEntry>>;
+  scopedStrategyDrafts: Record<string, Partial<TradingStrategy>>;
+}> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction('journal_draft', 'readonly');
+      const store = tx.objectStore('journal_draft');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const scopedJournalDrafts: Record<string, Partial<JournalEntry>> = {};
+        const scopedMyJournalDrafts: Record<string, Partial<JournalEntry>> = {};
+        const scopedStrategyDrafts: Record<string, Partial<TradingStrategy>> = {};
+        for (const item of req.result || []) {
+          if (!item?.id) continue;
+          if (item.id.startsWith('active_journal_draft_')) {
+            const scope = item.id.replace('active_journal_draft_', '');
+            scopedJournalDrafts[scope] = item.data;
+          } else if (item.id === 'active_journal_draft') {
+            scopedJournalDrafts['guest'] = item.data;
+          } else if (item.id.startsWith('active_my_journal_draft_')) {
+            const scope = item.id.replace('active_my_journal_draft_', '');
+            scopedMyJournalDrafts[scope] = item.data;
+          } else if (item.id === 'active_my_journal_draft') {
+            scopedMyJournalDrafts['guest'] = item.data;
+          } else if (item.id.startsWith('active_strategy_draft_')) {
+            const scope = item.id.replace('active_strategy_draft_', '');
+            scopedStrategyDrafts[scope] = item.data;
+          }
+        }
+        resolve({ scopedJournalDrafts, scopedMyJournalDrafts, scopedStrategyDrafts });
+      };
+      req.onerror = () => resolve({ scopedJournalDrafts: {}, scopedMyJournalDrafts: {}, scopedStrategyDrafts: {} });
+    });
+  } catch {
+    return { scopedJournalDrafts: {}, scopedMyJournalDrafts: {}, scopedStrategyDrafts: {} };
+  }
+}
+
+/* ================= STRATEGIES REPOSITORY (LOCAL-ONLY) ================= */
+
+export function isStrategyOwnedByScope(strategy: TradingStrategy, accountId?: string | null): boolean {
+  const scope = normalizeAccountScope(accountId);
+  const owner = normalizeAccountScope(strategy.userId);
+  return owner === scope;
+}
+
+export function getStrategyDraftKey(accountId?: string | null): string {
+  const scope = normalizeAccountScope(accountId);
+  return `active_strategy_draft_${scope}`;
+}
+
+export async function saveStrategyDraft(draft: Partial<TradingStrategy>, accountId?: string | null): Promise<void> {
+  const cloned = safeClone(draft);
+  const key = getStrategyDraftKey(accountId);
+  const scope = normalizeAccountScope(accountId);
+  await runTransaction('journal_draft', 'readwrite', (store) =>
+    store.put({ id: key, scope, data: cloned, updatedAt: Date.now() })
+  );
+}
+
+export async function getStrategyDraft(accountId?: string | null): Promise<Partial<TradingStrategy> | null> {
+  try {
+    const key = getStrategyDraftKey(accountId);
+    const item = await runTransaction<{ id: string; data: Partial<TradingStrategy> } | undefined>(
+      'journal_draft',
+      'readonly',
+      (store) => store.get(key)
+    );
+    return item?.data ? safeClone(item.data) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearStrategyDraft(accountId?: string | null): Promise<void> {
+  try {
+    const key = getStrategyDraftKey(accountId);
+    await runTransaction('journal_draft', 'readwrite', (store) => store.delete(key));
+  } catch {
+    // Ignore
+  }
+}
+
+export async function getAllStrategies(): Promise<TradingStrategy[]> {
+  try {
+    const items = await runTransaction<TradingStrategy[]>('strategies', 'readonly', (store) => store.getAll());
+    return (items || []).sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+  } catch {
+    return [];
+  }
+}
+
+export async function getStrategiesForScope(accountId?: string | null): Promise<TradingStrategy[]> {
+  const all = await getAllStrategies();
+  return all.filter((s) => isStrategyOwnedByScope(s, accountId));
+}
+
+export async function getStrategyById(id: string): Promise<TradingStrategy | null> {
+  if (!id) return null;
+  try {
+    const item = await runTransaction<TradingStrategy | undefined>('strategies', 'readonly', (store) => store.get(id));
+    return item ? safeClone(item) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveStrategy(strategy: TradingStrategy): Promise<TradingStrategy> {
+  const now = Date.now();
+  const normalized: TradingStrategy = safeClone({
+    ...strategy,
+    name: (strategy.name || '').trim(),
+    userId: normalizeAccountScope(strategy.userId),
+    createdAt: strategy.createdAt || now,
+    updatedAt: now,
+  });
+  await runTransaction('strategies', 'readwrite', (store) => store.put(normalized));
+  return normalized;
+}
+
+export async function archiveStrategy(id: string, isArchived = true): Promise<TradingStrategy | null> {
+  const existing = await getStrategyById(id);
+  if (!existing) return null;
+  return saveStrategy({
+    ...existing,
+    isArchived,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function deleteStrategy(id: string): Promise<void> {
+  await runTransaction('strategies', 'readwrite', (store) => store.delete(id));
+}
+
 /* ================= BACKUP & RESTORE ================= */
 
-export async function createFullBackup(): Promise<BackupData> {
-  const [reports, templates, draft, images, presentationConfig, visibilityConfig] = await Promise.all([
+export function getLastBackupMetadata(): { timestamp: number | null; status: string | null } {
+  if (typeof localStorage === 'undefined') {
+    return { timestamp: null, status: null };
+  }
+  try {
+    const ts = localStorage.getItem('abmax_last_backup_timestamp');
+    const status = localStorage.getItem('abmax_last_backup_status');
+    return {
+      timestamp: ts ? parseInt(ts, 10) : null,
+      status: status || null,
+    };
+  } catch {
+    return { timestamp: null, status: null };
+  }
+}
+
+export async function createFullBackup(accountId?: string | null): Promise<BackupData> {
+  const [
+    reports,
+    templates,
+    draft,
+    images,
+    journalEntries,
+    strategies,
+    journalDraft,
+    myJournalDraft,
+    scopedDrafts,
+    presentationConfig,
+    visibilityConfig,
+    journalVisibilityConfig,
+    performanceVisibilityConfig,
+  ] = await Promise.all([
     getAllReports(),
     getAllTemplates(),
     getDraft(),
     getAllImages(),
+    getAllJournalEntries(),
+    getAllStrategies(),
+    getJournalDraft(accountId),
+    getMyJournalDraft(accountId),
+    getAllScopedJournalDrafts(),
     getUserReportPresentationConfig(),
     getUserVisibilityConfig(),
+    getUserJournalVisibilityConfig(),
+    getUserPerformanceVisibilityConfig(),
   ]);
 
   const theme =
@@ -810,21 +1234,79 @@ export async function createFullBackup(): Promise<BackupData> {
     }
   }
 
-  return {
-    version: 2,
+  // Normalize entry & strategy ownership metadata so imports can identify source account cleanly
+  const normalizedJournalEntries = journalEntries.map((entry) => ({
+    ...entry,
+    userId: normalizeAccountScope(entry.userId),
+  }));
+
+  const normalizedStrategies = strategies.map((str) => ({
+    ...str,
+    userId: normalizeAccountScope(str.userId),
+  }));
+
+  const entryOwners: Record<string, number> = {};
+  for (const entry of normalizedJournalEntries) {
+    const owner = normalizeAccountScope(entry.userId);
+    entryOwners[owner] = (entryOwners[owner] || 0) + 1;
+  }
+
+  const strategyOwners: Record<string, number> = {};
+  for (const str of normalizedStrategies) {
+    const owner = normalizeAccountScope(str.userId);
+    strategyOwners[owner] = (strategyOwners[owner] || 0) + 1;
+  }
+
+  const scopedDraftAccountSet = new Set<string>([
+    ...Object.keys(scopedDrafts.scopedJournalDrafts || {}),
+    ...Object.keys(scopedDrafts.scopedMyJournalDrafts || {}),
+    ...Object.keys(scopedDrafts.scopedStrategyDrafts || {}),
+  ]);
+
+  const backup: BackupData = {
+    version: 4,
     exportedAt: new Date().toISOString(),
     app: 'ABMAX_ANALYSIS',
     reports,
     templates,
     draft,
     images,
+    journalEntries: normalizedJournalEntries,
+    strategies: normalizedStrategies,
+    journalDraft: journalDraft || undefined,
+    myJournalDraft: myJournalDraft || undefined,
+    scopedJournalDrafts: scopedDrafts.scopedJournalDrafts,
+    scopedMyJournalDrafts: scopedDrafts.scopedMyJournalDrafts,
+    scopedStrategyDrafts: scopedDrafts.scopedStrategyDrafts,
+    ownership: {
+      exportedByAccountId: normalizeAccountScope(accountId),
+      totalJournalEntries: normalizedJournalEntries.length,
+      entryOwners,
+      scopedDraftAccounts: Array.from(scopedDraftAccountSet),
+      totalStrategies: normalizedStrategies.length,
+      strategyOwners,
+    },
     preferences: {
       theme,
       presentationConfig,
       visibilityConfig: visibilityConfig || undefined,
+      journalVisibilityConfig: journalVisibilityConfig || undefined,
+      performanceVisibilityConfig: performanceVisibilityConfig || undefined,
     },
     workingSessions,
   };
+
+  // Record successful local backup metadata
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem('abmax_last_backup_timestamp', Date.now().toString());
+      localStorage.setItem('abmax_last_backup_status', 'success');
+    } catch {
+      // Ignore
+    }
+  }
+
+  return backup;
 }
 
 export interface RestorePreview {
@@ -836,15 +1318,40 @@ export interface RestorePreview {
   skippedTemplatesCount: number;
   hasDraft: boolean;
   imagesCount: number;
+  totalJournalEntriesInBackup: number;
+  newJournalEntriesCount: number;
+  skippedJournalEntriesCount: number;
+  totalStrategiesInBackup: number;
+  newStrategiesCount: number;
+  skippedStrategiesCount: number;
   hasWorkingSession?: boolean;
+  ownershipSummary?: {
+    currentScope: string;
+    exportedByAccountId: string | null;
+    matchingOwnerEntriesCount: number;
+    foreignOwnerEntriesCount: number;
+    foreignOwnerStrategiesCount: number;
+    foreignAccountIds: string[];
+    scopedDraftCount: number;
+    foreignScopedDraftCount: number;
+  };
 }
 
-export async function analyzeBackup(backup: BackupData): Promise<RestorePreview> {
-  const existingReports = await getAllReports();
-  const existingTemplates = await getAllTemplates();
+export async function analyzeBackup(
+  backup: BackupData,
+  currentAccountId?: string | null
+): Promise<RestorePreview> {
+  const [existingReports, existingTemplates, existingJournal, existingStrategies] = await Promise.all([
+    getAllReports(),
+    getAllTemplates(),
+    getAllJournalEntries(),
+    getAllStrategies(),
+  ]);
 
   const existingReportIds = new Set(existingReports.map((r) => r.id));
   const existingTemplateIds = new Set(existingTemplates.map((t) => t.id));
+  const existingJournalIds = new Set(existingJournal.map((j) => j.id));
+  const existingStrategyIds = new Set(existingStrategies.map((s) => s.id));
 
   let newReportsCount = 0;
   let skippedReportsCount = 0;
@@ -866,6 +1373,57 @@ export async function analyzeBackup(backup: BackupData): Promise<RestorePreview>
     }
   }
 
+  const currentScope = normalizeAccountScope(currentAccountId);
+  let newJournalEntriesCount = 0;
+  let skippedJournalEntriesCount = 0;
+  let matchingOwnerEntriesCount = 0;
+  let foreignOwnerEntriesCount = 0;
+  const foreignAccountsSet = new Set<string>();
+
+  for (const j of backup.journalEntries || []) {
+    if (existingJournalIds.has(j.id)) {
+      skippedJournalEntriesCount++;
+    } else {
+      newJournalEntriesCount++;
+    }
+    const owner = normalizeAccountScope(j.userId);
+    if (owner === currentScope) {
+      matchingOwnerEntriesCount++;
+    } else {
+      foreignOwnerEntriesCount++;
+      foreignAccountsSet.add(owner);
+    }
+  }
+
+  let newStrategiesCount = 0;
+  let skippedStrategiesCount = 0;
+  let foreignOwnerStrategiesCount = 0;
+  for (const s of backup.strategies || []) {
+    if (existingStrategyIds.has(s.id)) {
+      skippedStrategiesCount++;
+    } else {
+      newStrategiesCount++;
+    }
+    const owner = normalizeAccountScope(s.userId);
+    if (owner !== currentScope) {
+      foreignOwnerStrategiesCount++;
+      foreignAccountsSet.add(owner);
+    }
+  }
+
+  const draftScopes = new Set<string>([
+    ...Object.keys(backup.scopedJournalDrafts || {}),
+    ...Object.keys(backup.scopedMyJournalDrafts || {}),
+    ...Object.keys(backup.scopedStrategyDrafts || {}),
+  ]);
+  let foreignScopedDraftCount = 0;
+  for (const sc of draftScopes) {
+    if (normalizeAccountScope(sc) !== currentScope) {
+      foreignScopedDraftCount++;
+      foreignAccountsSet.add(normalizeAccountScope(sc));
+    }
+  }
+
   return {
     totalReportsInBackup: backup.reports?.length || 0,
     newReportsCount,
@@ -875,24 +1433,68 @@ export async function analyzeBackup(backup: BackupData): Promise<RestorePreview>
     skippedTemplatesCount,
     hasDraft: Boolean(backup.draft),
     imagesCount: backup.images?.length || 0,
+    totalJournalEntriesInBackup: backup.journalEntries?.length || 0,
+    newJournalEntriesCount,
+    skippedJournalEntriesCount,
+    totalStrategiesInBackup: backup.strategies?.length || 0,
+    newStrategiesCount,
+    skippedStrategiesCount,
     hasWorkingSession: Boolean(backup.workingSessions && Object.keys(backup.workingSessions).length > 0),
+    ownershipSummary: {
+      currentScope,
+      exportedByAccountId: backup.ownership?.exportedByAccountId || null,
+      matchingOwnerEntriesCount,
+      foreignOwnerEntriesCount,
+      foreignOwnerStrategiesCount,
+      foreignAccountIds: Array.from(foreignAccountsSet),
+      scopedDraftCount: draftScopes.size,
+      foreignScopedDraftCount,
+    },
   };
+}
+
+export interface RestoreBackupOptions {
+  restoreDraft?: boolean;
+  targetAccountId?: string | null;
+  foreignOwnershipMode?: 'preserve' | 'claim' | 'skip';
+  overwriteDrafts?: boolean;
 }
 
 export async function restoreBackup(
   backup: BackupData,
-  options: { restoreDraft?: boolean } = {}
-): Promise<{ addedReports: number; addedTemplates: number; addedImages: number }> {
+  options: RestoreBackupOptions = {}
+): Promise<{
+  addedReports: number;
+  addedTemplates: number;
+  addedImages: number;
+  addedJournalEntries: number;
+  skippedForeignJournalEntries: number;
+  addedStrategies: number;
+  skippedForeignStrategies: number;
+}> {
   const db = await openDB();
-  const existingReports = await getAllReports();
-  const existingTemplates = await getAllTemplates();
+  const [existingReports, existingTemplates, existingJournal, existingStrategies] = await Promise.all([
+    getAllReports(),
+    getAllTemplates(),
+    getAllJournalEntries(),
+    getAllStrategies(),
+  ]);
 
   const existingReportIds = new Set(existingReports.map((r) => r.id));
   const existingTemplateIds = new Set(existingTemplates.map((t) => t.id));
+  const existingJournalIds = new Set(existingJournal.map((j) => j.id));
+  const existingStrategyIds = new Set(existingStrategies.map((s) => s.id));
+
+  const targetScope = normalizeAccountScope(options.targetAccountId);
+  const ownershipMode = options.foreignOwnershipMode || 'preserve';
 
   let addedReports = 0;
   let addedTemplates = 0;
   let addedImages = 0;
+  let addedJournalEntries = 0;
+  let skippedForeignJournalEntries = 0;
+  let addedStrategies = 0;
+  let skippedForeignStrategies = 0;
 
   // Add reports that don't already exist
   const reportTx = db.transaction('reports', 'readwrite');
@@ -934,10 +1536,107 @@ export async function restoreBackup(
     imgTx.onerror = () => rej(imgTx.error);
   });
 
+  // Restore journal entries deliberately honoring ownership policy
+  if (backup.journalEntries && backup.journalEntries.length > 0) {
+    const jrnTx = db.transaction('journal', 'readwrite');
+    const jrnStore = jrnTx.objectStore('journal');
+    for (const j of backup.journalEntries) {
+      if (existingJournalIds.has(j.id)) continue;
+      const entryOwner = normalizeAccountScope(j.userId);
+      if (ownershipMode === 'skip' && entryOwner !== targetScope) {
+        skippedForeignJournalEntries++;
+        continue;
+      }
+      const entryToStore: JournalEntry =
+        ownershipMode === 'claim'
+          ? { ...j, userId: targetScope }
+          : { ...j, userId: entryOwner };
+      jrnStore.put(entryToStore);
+      addedJournalEntries++;
+    }
+    await new Promise<void>((res, rej) => {
+      jrnTx.oncomplete = () => res();
+      jrnTx.onerror = () => rej(jrnTx.error);
+    });
+  }
+
+  // Restore saved trading strategies strictly by ID (never merge by name) & ownership policy
+  if (backup.strategies && backup.strategies.length > 0) {
+    const strTx = db.transaction('strategies', 'readwrite');
+    const strStore = strTx.objectStore('strategies');
+    for (const s of backup.strategies) {
+      if (!s?.id || existingStrategyIds.has(s.id)) continue;
+      const owner = normalizeAccountScope(s.userId);
+      if (ownershipMode === 'skip' && owner !== targetScope) {
+        skippedForeignStrategies++;
+        continue;
+      }
+      const strToStore: TradingStrategy =
+        ownershipMode === 'claim'
+          ? { ...s, userId: targetScope }
+          : { ...s, userId: owner };
+      strStore.put(strToStore);
+      addedStrategies++;
+    }
+    await new Promise<void>((res, rej) => {
+      strTx.oncomplete = () => res();
+      strTx.onerror = () => rej(strTx.error);
+    });
+  }
+
   // Restore draft: default to true whenever backup.draft is present unless explicitly set to false
   const shouldRestoreDraft = options.restoreDraft !== false && Boolean(backup.draft);
   if (shouldRestoreDraft && backup.draft) {
     await saveDraft(backup.draft);
+  }
+
+  // Helper to restore scoped draft honoring ownership policy & non-clobbering merge
+  const restoreScopedDraftEntry = async (
+    scope: string,
+    draftData: any,
+    getter: (id?: string | null) => Promise<any>,
+    saver: (d: any, id?: string | null) => Promise<void>
+  ) => {
+    if (!draftData) return;
+    const normalizedScope = normalizeAccountScope(scope);
+    if (ownershipMode === 'skip' && normalizedScope !== targetScope) {
+      return;
+    }
+    const destScope = ownershipMode === 'claim' ? targetScope : normalizedScope;
+    if (!options.overwriteDrafts) {
+      const existing = await getter(destScope);
+      if (existing && Object.keys(existing).length > 0) {
+        return; // Preserve existing active draft in destination scope
+      }
+    }
+    await saver(draftData, destScope);
+  };
+
+  // Restore scoped journal drafts or legacy single draft
+  if (backup.scopedJournalDrafts && Object.keys(backup.scopedJournalDrafts).length > 0) {
+    for (const [scope, draftData] of Object.entries(backup.scopedJournalDrafts)) {
+      await restoreScopedDraftEntry(scope, draftData, getJournalDraft, saveJournalDraft);
+    }
+  } else if (backup.journalDraft) {
+    const legacyOwner = backup.ownership?.exportedByAccountId || 'guest';
+    await restoreScopedDraftEntry(legacyOwner, backup.journalDraft, getJournalDraft, saveJournalDraft);
+  }
+
+  // Restore scoped personal drafts or legacy single draft
+  if (backup.scopedMyJournalDrafts && Object.keys(backup.scopedMyJournalDrafts).length > 0) {
+    for (const [scope, draftData] of Object.entries(backup.scopedMyJournalDrafts)) {
+      await restoreScopedDraftEntry(scope, draftData, getMyJournalDraft, saveMyJournalDraft);
+    }
+  } else if (backup.myJournalDraft) {
+    const legacyOwner = backup.ownership?.exportedByAccountId || 'guest';
+    await restoreScopedDraftEntry(legacyOwner, backup.myJournalDraft, getMyJournalDraft, saveMyJournalDraft);
+  }
+
+  // Restore scoped strategy drafts
+  if (backup.scopedStrategyDrafts && Object.keys(backup.scopedStrategyDrafts).length > 0) {
+    for (const [scope, draftData] of Object.entries(backup.scopedStrategyDrafts)) {
+      await restoreScopedDraftEntry(scope, draftData, getStrategyDraft, saveStrategyDraft);
+    }
   }
 
   // Restore working sessions and unfinished forms into localStorage
@@ -969,5 +1668,23 @@ export async function restoreBackup(
     await saveUserVisibilityConfig(backup.preferences.visibilityConfig);
   }
 
-  return { addedReports, addedTemplates, addedImages };
+  // Restore journal visibility config if present
+  if (backup.preferences?.journalVisibilityConfig) {
+    await saveUserJournalVisibilityConfig(backup.preferences.journalVisibilityConfig);
+  }
+
+  // Restore performance visibility config if present
+  if (backup.preferences?.performanceVisibilityConfig) {
+    await saveUserPerformanceVisibilityConfig(backup.preferences.performanceVisibilityConfig);
+  }
+
+  return {
+    addedReports,
+    addedTemplates,
+    addedImages,
+    addedJournalEntries,
+    skippedForeignJournalEntries,
+    addedStrategies,
+    skippedForeignStrategies,
+  };
 }

@@ -5,12 +5,14 @@ import {
   PlannedScenario,
   RecordedTrade,
   SavedReport,
+  StrategySnapshot,
   TimeframeId,
   TradingSession,
   TradeOutcome,
 } from '../types/journal';
 import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
+import { StrategySelector } from './StrategySelector';
 
 interface TakeTradeModalProps {
   isOpen: boolean;
@@ -18,6 +20,7 @@ interface TakeTradeModalProps {
   report: SavedReport;
   tradeToEdit?: RecordedTrade | null;
   onSaveTrade: (trade: RecordedTrade) => Promise<void>;
+  userId?: string | null;
   initialTradeDraft?: {
     selectedScenarioId: string;
     direction: 'Buy' | 'Sell';
@@ -33,6 +36,9 @@ interface TakeTradeModalProps {
     notes: string;
     tradeDate: string;
     tradeTime: string;
+    strategy?: string;
+    strategyId?: string;
+    strategySnapshot?: StrategySnapshot;
   } | null;
   onTradeDraftChange?: (draft: any) => void;
 }
@@ -43,6 +49,7 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   report,
   tradeToEdit = null,
   onSaveTrade,
+  userId,
   initialTradeDraft,
   onTradeDraftChange,
 }) => {
@@ -80,6 +87,12 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   const [tradeTime, setTradeTime] = useState(() => {
     return initialTradeDraft?.tradeTime || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   });
+  const [strategy, setStrategy] = useState<string>(initialTradeDraft?.strategy || '');
+  const [strategyId, setStrategyId] = useState<string | undefined>(initialTradeDraft?.strategyId);
+  const [strategySnapshot, setStrategySnapshot] = useState<StrategySnapshot | undefined>(
+    initialTradeDraft?.strategySnapshot
+  );
+  const hasManualStrategyRef = useRef(false);
 
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +123,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         notes,
         tradeDate,
         tradeTime,
+        strategy,
+        strategyId,
+        strategySnapshot,
       });
     }
   }, [
@@ -130,11 +146,15 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
     notes,
     tradeDate,
     tradeTime,
+    strategy,
+    strategyId,
+    strategySnapshot,
   ]);
 
   // Prepopulate form when modal opens or tradeToEdit changes
   useEffect(() => {
     if (!isOpen) return;
+    hasManualStrategyRef.current = false;
 
     if (tradeToEdit) {
       // Editing existing trade: load tradeToEdit directly
@@ -153,6 +173,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       setImages(tradeToEdit.images ? JSON.parse(JSON.stringify(tradeToEdit.images)) : []);
       setTradeDate(tradeToEdit.date || report.date || new Date().toISOString().slice(0, 10));
       setTradeTime(tradeToEdit.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+      setStrategy(tradeToEdit.strategy || tradeToEdit.strategySnapshot?.name || '');
+      setStrategyId(tradeToEdit.strategyId);
+      setStrategySnapshot(tradeToEdit.strategySnapshot);
     } else if (initialTradeDraft) {
       // New trade mode with active in-memory draft
       return;
@@ -164,6 +187,15 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         setDirection(scenarios[0].direction as 'Buy' | 'Sell');
       } else {
         setDirection('Buy');
+      }
+      if (scenarios.length > 0) {
+        setStrategy(scenarios[0].strategy || scenarios[0].strategySnapshot?.name || '');
+        setStrategyId(scenarios[0].strategyId);
+        setStrategySnapshot(scenarios[0].strategySnapshot);
+      } else {
+        setStrategy('');
+        setStrategyId(undefined);
+        setStrategySnapshot(undefined);
       }
       setSession(report.session || 'London');
       setTimeframeTaken('5M');
@@ -204,10 +236,20 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         notes !== (tradeToEdit.notes || '') ||
         tradeDate !== (tradeToEdit.date || '') ||
         tradeTime !== (tradeToEdit.time || '') ||
+        strategy !== (tradeToEdit.strategy || tradeToEdit.strategySnapshot?.name || '') ||
+        strategyId !== tradeToEdit.strategyId ||
         curImagesJson !== origImagesJson
       );
     }
-    return Boolean(entryPrice || stopLoss || takeProfit || exitPrice || notes || images.length > 0);
+    return Boolean(
+      entryPrice ||
+        stopLoss ||
+        takeProfit ||
+        exitPrice ||
+        notes ||
+        images.length > 0 ||
+        hasManualStrategyRef.current
+    );
   };
 
   const handleAttemptClose = () => {
@@ -219,15 +261,26 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
     onClose();
   };
 
-  // When scenario changes in New Trade mode, auto-fill direction if the scenario has one
+  // When scenario changes in New Trade mode, auto-fill direction & strategy (unless user manually picked one)
   const handleScenarioChange = (scnId: string) => {
     if (isEditing) return; // Keep scenario selection read-only in Edit mode
     setSelectedScenarioId(scnId);
     if (scnId !== 'manual') {
       const found = scenarios.find((s) => s.id === scnId);
-      if (found && found.direction) {
-        setDirection(found.direction as 'Buy' | 'Sell');
+      if (found) {
+        if (found.direction) {
+          setDirection(found.direction as 'Buy' | 'Sell');
+        }
+        if (!hasManualStrategyRef.current) {
+          setStrategy(found.strategy || found.strategySnapshot?.name || '');
+          setStrategyId(found.strategyId);
+          setStrategySnapshot(found.strategySnapshot);
+        }
       }
+    } else if (!hasManualStrategyRef.current) {
+      setStrategy('');
+      setStrategyId(undefined);
+      setStrategySnapshot(undefined);
     }
   };
 
@@ -244,6 +297,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         // Save Changes: Update existing trade with original ID and preserved timestamps/snapshots
         const updatedTrade: RecordedTrade = {
           ...tradeToEdit,
+          strategy: strategy.trim() || undefined,
+          strategyId,
+          strategySnapshot,
           direction,
           session,
           timeframeTaken,
@@ -285,6 +341,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
               ? selectedScenario.label || 'Planned Scenario'
               : 'Discretionary / No Scenario',
           scenarioSnapshot: capturedSnapshot,
+          strategy: strategy.trim() || undefined,
+          strategyId,
+          strategySnapshot,
           pair: report.pair,
           direction,
           session,
@@ -524,6 +583,24 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
                 No planned scenarios in this report. This trade will be recorded as a discretionary execution.
               </div>
             )}
+          </div>
+
+          {/* Strategy Used Selector (linked Strategy Library or custom text) */}
+          <div className="p-3.5 rounded border border-app bg-app-secondary/30">
+            <StrategySelector
+              compact
+              label="Strategy Used"
+              userId={userId}
+              strategyId={strategyId}
+              strategy={strategy}
+              strategySnapshot={strategySnapshot}
+              onChange={({ strategyId: nextId, strategy: nextStr, strategySnapshot: nextSnap }) => {
+                hasManualStrategyRef.current = true;
+                setStrategyId(nextId);
+                setStrategy(nextStr);
+                setStrategySnapshot(nextSnap);
+              }}
+            />
           </div>
 
           {/* Execution Timing & Direction */}

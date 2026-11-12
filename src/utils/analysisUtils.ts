@@ -386,8 +386,11 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     'Analysis Made',
     'Overall Alignment',
     'Monthly Bias',
+    'My Monthly Bias',
     'Weekly Bias',
+    'My Weekly Bias',
     'Daily Bias',
+    'My Daily Bias',
     '4H Bias',
     '1H Bias',
     '15M Bias',
@@ -431,7 +434,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     const tradesText = (r.trades || [])
       .map(
         (t) =>
-          `[${t.direction || '-'} (${t.scenarioLabel || 'Trade'}) | Entry: ${t.entryPrice || '-'} SL: ${t.stopLoss || '-'} TP: ${t.takeProfit || '-'} Outcome: ${t.outcome || '-'} Rules: ${t.rulesFollowed ? 'Followed' : 'Broken'}]`
+          `[${t.direction || '-'} (${t.scenarioLabel || 'Trade'}${t.strategy || t.strategySnapshot?.name || t.scenarioSnapshot?.strategy ? ` | Strategy: ${t.strategy || t.strategySnapshot?.name || t.scenarioSnapshot?.strategy}` : ''}) | Entry: ${t.entryPrice || '-'} SL: ${t.stopLoss || '-'} TP: ${t.takeProfit || '-'} Outcome: ${t.outcome || '-'} Rules: ${t.rulesFollowed ? 'Followed' : 'Broken'}]`
       )
       .join('; ');
 
@@ -446,8 +449,11 @@ export function generateReportsCsv(reports: SavedReport[]): string {
       escapeCsvCell(r.analysisTiming),
       escapeCsvCell(alignment.label),
       escapeCsvCell(r.timeframes?.['Monthly']?.overallBias || ''),
+      escapeCsvCell(r.timeframes?.['Monthly']?.personalBiasNotes || ''),
       escapeCsvCell(r.timeframes?.['Weekly']?.overallBias || ''),
+      escapeCsvCell(r.timeframes?.['Weekly']?.personalBiasNotes || ''),
       escapeCsvCell(r.timeframes?.['Daily']?.overallBias || ''),
+      escapeCsvCell(r.timeframes?.['Daily']?.personalBiasNotes || ''),
       escapeCsvCell(r.timeframes?.['4H']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['1H']?.overallBias || ''),
       escapeCsvCell(r.timeframes?.['15M']?.overallBias || ''),

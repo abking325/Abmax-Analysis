@@ -3,12 +3,14 @@ import { X, Plus, Trash2, CheckCircle2 } from 'lucide-react';
 import { PlannedScenario } from '../types/journal';
 import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
+import { StrategySelector } from './StrategySelector';
 
 interface EditScenariosModalProps {
   isOpen: boolean;
   onClose: () => void;
   scenarios: PlannedScenario[];
   onSave: (scenarios: PlannedScenario[]) => Promise<void>;
+  userId?: string | null;
 }
 
 export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
@@ -16,6 +18,7 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
   onClose,
   scenarios: initialScenarios,
   onSave,
+  userId,
 }) => {
   const [scenarios, setScenarios] = useState<PlannedScenario[]>(() =>
     JSON.parse(JSON.stringify(initialScenarios || []))
@@ -173,15 +176,45 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                        Strategy Used
-                      </label>
-                      <input
-                        type="text"
-                        value={s.strategy}
-                        onChange={(e) => handleUpdate(s.id, { strategy: e.target.value })}
-                        placeholder="e.g. 15M CHoCH + 5M FVG..."
-                        className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                      <StrategySelector
+                        compact
+                        userId={userId}
+                        strategyId={s.strategyId}
+                        strategy={s.strategy}
+                        strategySnapshot={s.strategySnapshot}
+                        onChange={({ strategyId, strategy, strategySnapshot }) =>
+                          handleUpdate(s.id, { strategyId, strategy, strategySnapshot })
+                        }
+                        hasExistingTargetContent={Boolean(
+                          s.description.trim() ||
+                            s.entryConditions.trim() ||
+                            s.invalidationConditions.trim()
+                        )}
+                        onApplyStrategyRules={(selectedStrat, mode) => {
+                          const nextDescription =
+                            mode === 'replace'
+                              ? selectedStrat.description || s.description
+                              : s.description.trim()
+                                ? s.description
+                                : selectedStrat.description || '';
+                          const nextEntry =
+                            mode === 'replace'
+                              ? selectedStrat.entryRules || s.entryConditions
+                              : s.entryConditions.trim()
+                                ? s.entryConditions
+                                : selectedStrat.entryRules || '';
+                          const nextInvalidation =
+                            mode === 'replace'
+                              ? selectedStrat.invalidationConditions || s.invalidationConditions
+                              : s.invalidationConditions.trim()
+                                ? s.invalidationConditions
+                                : selectedStrat.invalidationConditions || '';
+                          handleUpdate(s.id, {
+                            description: nextDescription,
+                            entryConditions: nextEntry,
+                            invalidationConditions: nextInvalidation,
+                          });
+                        }}
                       />
                     </div>
                     <div>

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Settings as SettingsIcon } from 'lucide-react';
+import { NavigationDrawer } from './NavigationDrawer';
 
-export type ActiveView = 'home' | 'analysis' | 'reports';
+export type ActiveView = 'home' | 'analysis' | 'reports' | 'journal' | 'performance';
 
 interface HeaderProps {
   activeView: ActiveView;
@@ -22,6 +22,7 @@ export const Header: React.FC<HeaderProps> = ({
   // Local state tracking whether header is visible (only when on top of page <= 80px)
   const [isVisible, setIsVisible] = useState(true);
   const [headerHeight, setHeaderHeight] = useState(58);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
 
   // Measure header height for layout spacer to prevent page content jumps
@@ -125,13 +126,13 @@ export const Header: React.FC<HeaderProps> = ({
             </span>
           </button>
 
-          {/* Center / Navigation */}
-          <nav className="flex items-center gap-1 sm:gap-1.5 shrink-0" aria-label="Main Navigation">
+          {/* Center: Compact Navigation Bar (Always visible: Home | Analysis | Reports) */}
+          <nav className="flex items-center gap-0.5 sm:gap-1.5 shrink-0" aria-label="Main Navigation">
             <button
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('home')}
-              className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              className={`px-2 sm:px-3 py-1.5 min-h-[36px] text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
                 activeView === 'home'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -144,7 +145,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('analysis')}
-              className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              className={`px-2 sm:px-3 py-1.5 min-h-[36px] text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
                 activeView === 'analysis'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -157,7 +158,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('reports')}
-              className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              className={`px-2 sm:px-3 py-1.5 min-h-[36px] text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
                 activeView === 'reports'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -167,35 +168,45 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </nav>
 
-          {/* Right: High-contrast 19px SVG Settings Gear Button with >=44x44px Tap Target */}
+          {/* Right: Three-line Hamburger Menu Button with >=44x44px Tap Target */}
           <div className="flex items-center shrink-0 z-20">
             <button
               type="button"
               tabIndex={buttonTabIndex}
-              onClick={onOpenSettings}
-              aria-label="Open settings"
-              title="Settings"
+              onClick={() => setIsMenuOpen(true)}
+              aria-label="Open navigation menu"
+              title="Menu"
               className="w-11 h-11 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 relative pointer-events-auto shadow-2xs"
             >
               <svg
-                width="19"
-                height="19"
+                width="20"
+                height="20"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth="2.25"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className="w-[19px] h-[19px] shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none"
+                className="w-5 h-5 shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none"
                 aria-hidden="true"
               >
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-                <circle cx="12" cy="12" r="3" />
+                <line x1="4" y1="6" x2="20" y2="6" />
+                <line x1="4" y1="12" x2="20" y2="12" />
+                <line x1="4" y1="18" x2="20" y2="18" />
               </svg>
             </button>
           </div>
         </div>
       </header>
+
+      {/* Slide-in Navigation Drawer */}
+      <NavigationDrawer
+        isOpen={isMenuOpen}
+        onClose={() => setIsMenuOpen(false)}
+        activeView={activeView}
+        onNavigate={onNavigate}
+        onOpenSettings={onOpenSettings}
+      />
     </>
   );
 };

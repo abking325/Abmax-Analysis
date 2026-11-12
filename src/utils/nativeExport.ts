@@ -49,6 +49,9 @@ export async function exportBlobOrDownload(
   }
 
   // Standard Web Download fallback
+  if (typeof document === 'undefined') {
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

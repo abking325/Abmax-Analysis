@@ -27,6 +27,8 @@ import {
   WorkspaceVisibilityConfig,
   MajorLiquidityItem,
   OpeningCandleEntry,
+  getPersonalBiasLabel,
+  isHigherPersonalBiasTimeframe,
 } from '../types/journal';
 import {
   isDeepAnalysisAligned,
@@ -704,6 +706,24 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                 }
                 placeholder={`Specific ${timeframe} contextual bias, order flow notes, or HTF intent...`}
                 className="w-full px-3 py-2 text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors"
+              />
+            </div>
+          )}
+
+          {/* 1B. Personal Higher-Timeframe Bias (Monthly, Weekly, Daily ONLY) */}
+          {isHigherPersonalBiasTimeframe(timeframe) && deepVis?.personalBiasNotes !== false && (
+            <div className="py-4">
+              <label className="block text-xs font-bold text-app-main uppercase tracking-wider mb-1">
+                {getPersonalBiasLabel(timeframe)}
+              </label>
+              <textarea
+                rows={3}
+                value={data.personalBiasNotes || ''}
+                onChange={(e) =>
+                  onUpdateField((prev) => ({ ...prev, personalBiasNotes: e.target.value }))
+                }
+                placeholder={`Optional — write your personal ${timeframe.toLowerCase()} bias thesis in your own words...`}
+                className="w-full px-3 py-2 text-sm font-bold bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors resize-y leading-relaxed"
               />
             </div>
           )}

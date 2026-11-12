@@ -4,6 +4,8 @@ import { ActiveView, Header } from './components/Header';
 import { HomeView } from './components/HomeView';
 import { AnalysisView } from './components/AnalysisView';
 import { ReportsView } from './components/ReportsView';
+import { JournalView } from './components/JournalView';
+import { PerformanceView } from './components/PerformanceView';
 import { AuthModal } from './components/AuthModal';
 import { MigrationModal } from './components/MigrationModal';
 import { SettingsModal } from './components/SettingsModal';
@@ -17,7 +19,11 @@ import {
 } from './services/pwaService';
 import {
   AnalysisData,
+  DEFAULT_JOURNAL_VISIBILITY_CONFIG,
+  DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_VISIBILITY_CONFIG,
+  JournalVisibilityConfig,
+  PerformanceVisibilityConfig,
   SavedReport,
   WorkspaceVisibilityConfig,
   createInitialAnalysisData,
@@ -27,10 +33,14 @@ import {
   deleteReport,
   getAllReports,
   getDraft,
+  getUserJournalVisibilityConfig,
+  getUserPerformanceVisibilityConfig,
   getUserVisibilityConfig,
   saveDraft,
   saveReport,
   saveTemplate,
+  saveUserJournalVisibilityConfig,
+  saveUserPerformanceVisibilityConfig,
   saveUserVisibilityConfig,
 } from './services/db';
 import {
@@ -67,6 +77,16 @@ function MainApp() {
   const [visibilityConfig, setVisibilityConfig] = useState<WorkspaceVisibilityConfig>(() => {
     return JSON.parse(JSON.stringify(DEFAULT_VISIBILITY_CONFIG));
   });
+
+  const [journalVisibilityConfig, setJournalVisibilityConfig] = useState<JournalVisibilityConfig>(() => {
+    return JSON.parse(JSON.stringify(DEFAULT_JOURNAL_VISIBILITY_CONFIG));
+  });
+
+  const [performanceVisibilityConfig, setPerformanceVisibilityConfig] = useState<PerformanceVisibilityConfig>(() => {
+    return JSON.parse(JSON.stringify(DEFAULT_PERFORMANCE_VISIBILITY_CONFIG));
+  });
+
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility'>('general');
 
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData>(() =>
     createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG)
@@ -148,9 +168,11 @@ function MainApp() {
     };
   }, []);
 
-  // Update session account ID when user changes
+  // Update session account ID when user changes; account-scoped drafts remain isolated without deletion
+  const prevAccountIdRef = useRef<string | null>(null);
   useEffect(() => {
     const currentAccountId = user?.id || 'local';
+    prevAccountIdRef.current = currentAccountId;
     sessionStateRef.current.accountId = currentAccountId;
   }, [user?.id]);
 
@@ -299,10 +321,17 @@ function MainApp() {
 
     (async () => {
       try {
-        const [draft, reports] = await Promise.all([getDraft(), getAllReports()]);
+        const [draft, reports, userJournalVis, userPerfVis] = await Promise.all([
+          getDraft(),
+          getAllReports(),
+          getUserJournalVisibilityConfig(),
+          getUserPerformanceVisibilityConfig(),
+        ]);
         if (!isMounted) return;
         setSavedDraft(draft);
         setReportsList(reports);
+        if (userJournalVis) setJournalVisibilityConfig(userJournalVis);
+        if (userPerfVis) setPerformanceVisibilityConfig(userPerfVis);
 
         const sess = sessionStateRef.current;
         if (sess.isEditingExistingReport && sess.activeReportId) {
@@ -419,6 +448,14 @@ function MainApp() {
           setVisibilityConfig(cloudPref.preferences.visibilityConfig);
           saveUserVisibilityConfig(cloudPref.preferences.visibilityConfig);
         }
+        if (cloudPref?.preferences?.journalVisibilityConfig) {
+          setJournalVisibilityConfig(cloudPref.preferences.journalVisibilityConfig);
+          saveUserJournalVisibilityConfig(cloudPref.preferences.journalVisibilityConfig);
+        }
+        if (cloudPref?.preferences?.performanceVisibilityConfig) {
+          setPerformanceVisibilityConfig(cloudPref.preferences.performanceVisibilityConfig);
+          saveUserPerformanceVisibilityConfig(cloudPref.preferences.performanceVisibilityConfig);
+        }
       });
     }
   }, [user?.id]);
@@ -431,8 +468,43 @@ function MainApp() {
       visibilityConfig: JSON.parse(JSON.stringify(newCfg)),
     }));
     if (user) {
-      uploadPreferencesToCloud(user.id, theme, { visibilityConfig: newCfg });
+      uploadPreferencesToCloud(user.id, theme, {
+        visibilityConfig: newCfg,
+        journalVisibilityConfig,
+        performanceVisibilityConfig,
+      });
     }
+  };
+
+  const handleUpdateJournalVisibilityConfig = (newCfg: JournalVisibilityConfig) => {
+    setJournalVisibilityConfig(newCfg);
+    saveUserJournalVisibilityConfig(newCfg);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, {
+        visibilityConfig,
+        journalVisibilityConfig: newCfg,
+        performanceVisibilityConfig,
+      });
+    }
+  };
+
+  const handleUpdatePerformanceVisibilityConfig = (newCfg: PerformanceVisibilityConfig) => {
+    setPerformanceVisibilityConfig(newCfg);
+    saveUserPerformanceVisibilityConfig(newCfg);
+    if (user) {
+      uploadPreferencesToCloud(user.id, theme, {
+        visibilityConfig,
+        journalVisibilityConfig,
+        performanceVisibilityConfig: newCfg,
+      });
+    }
+  };
+
+  const handleOpenSettingsWithTab = (
+    tab: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' = 'general'
+  ) => {
+    setSettingsInitialTab(tab);
+    setIsSettingsModalOpen(true);
   };
 
   const handleApplyVisibilityToCurrentAnalysis = () => {
@@ -720,6 +792,44 @@ function MainApp() {
               setIsReportDetailsOpen(isOpen);
               setIsOrganizedReportViewActive(isOrganized);
             }}
+            onNavigateToJournal={() => navigateTo('journal')}
+            onNavigateToPerformance={() => navigateTo('performance')}
+          />
+        )}
+
+        {activeView === 'journal' && (
+          <JournalView
+            reportsList={reportsList}
+            onOpenReport={(reportId) => {
+              const matched = reportsList.find((r) => r.id === reportId);
+              sessionStateRef.current.reportsUI = {
+                selectedPair: matched?.pair || 'All',
+                searchQuery: '',
+                activeReportDetailsId: reportId,
+              };
+              navigateTo('reports');
+            }}
+            userId={user?.id}
+            journalVisibilityConfig={journalVisibilityConfig}
+            onOpenSettings={handleOpenSettingsWithTab}
+          />
+        )}
+
+        {activeView === 'performance' && (
+          <PerformanceView
+            reportsList={reportsList}
+            onOpenReport={(reportId) => {
+              const matched = reportsList.find((r) => r.id === reportId);
+              sessionStateRef.current.reportsUI = {
+                selectedPair: matched?.pair || 'All',
+                searchQuery: '',
+                activeReportDetailsId: reportId,
+              };
+              navigateTo('reports');
+            }}
+            userId={user?.id}
+            performanceVisibilityConfig={performanceVisibilityConfig}
+            onOpenSettings={handleOpenSettingsWithTab}
           />
         )}
       </div>
@@ -782,6 +892,11 @@ function MainApp() {
         onChangeVisibilityConfig={handleUpdateVisibilityConfig}
         onApplyVisibilityToCurrentAnalysis={handleApplyVisibilityToCurrentAnalysis}
         hasActiveAnalysis={Boolean(currentAnalysis)}
+        journalVisibilityConfig={journalVisibilityConfig}
+        onChangeJournalVisibilityConfig={handleUpdateJournalVisibilityConfig}
+        performanceVisibilityConfig={performanceVisibilityConfig}
+        onChangePerformanceVisibilityConfig={handleUpdatePerformanceVisibilityConfig}
+        initialTab={settingsInitialTab}
       />
 
       {/* Local to Cloud Journal Migration Modal */}

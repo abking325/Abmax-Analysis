@@ -4,6 +4,8 @@ import {
   SavedReport,
   TIMEFRAME_ORDER,
   TimeframeId,
+  getPersonalBiasLabel,
+  isHigherPersonalBiasTimeframe,
 } from '../types/journal';
 import {
   calculateOverallAlignment,
@@ -100,6 +102,34 @@ const TIMEFRAME_DISPLAY_NAMES: Record<TimeframeId, string> = {
 };
 
 /**
+ * Resolves accessible, high-contrast status colors across Minimal, Emerald, and Dark Trading Desk.
+ * Bullish/Buy/Win: Emerald Green
+ * Bearish/Sell/Loss: Crimson/Coral Red
+ * Neutral/Breakeven: Slate Gray
+ * Waiting/Not Sure/Open: Warm Amber
+ */
+export function getPdfStatusColor(
+  status: string | undefined | null,
+  isDark: boolean
+): [number, number, number] {
+  if (!status) return isDark ? [148, 163, 184] : [71, 85, 105];
+  const s = status.trim().toLowerCase();
+  if (s.includes('bull') || s === 'buy' || s === 'win') {
+    return isDark ? [52, 211, 153] : [16, 128, 67];
+  }
+  if (s.includes('bear') || s === 'sell' || s === 'loss') {
+    return isDark ? [248, 113, 113] : [197, 34, 31];
+  }
+  if (s.includes('neut') || s === 'breakeven') {
+    return isDark ? [148, 163, 184] : [71, 85, 105];
+  }
+  if (s.includes('wait') || s.includes('not sure') || s === 'open' || s.includes('incomplet')) {
+    return isDark ? [251, 191, 36] : [180, 83, 9];
+  }
+  return isDark ? [248, 250, 252] : [15, 23, 42];
+}
+
+/**
  * Pre-fetches and resolves all chart images attached to the report.
  * Checks imagesMap, IndexedDB, and Supabase cloud signed URLs.
  */
@@ -169,16 +199,94 @@ export async function resolveAllReportImages(
 }
 
 /**
+ * Detects the jsPDF image format from a data URL or filename.
+ */
+export function detectPdfImageFormat(src: string): 'PNG' | 'WEBP' | 'JPEG' {
+  const lower = src.slice(0, 40).toLowerCase();
+  if (lower.startsWith('data:image/png') || lower.endsWith('.png')) return 'PNG';
+  if (lower.startsWith('data:image/webp') || lower.endsWith('.webp')) return 'WEBP';
+  return 'JPEG';
+}
+
+/**
+ * Decodes natural pixel width/height from base64 PNG or JPEG headers when DOM Image is unavailable.
+ */
+function parseRasterDimensionsFromDataUrl(src: string): { width: number; height: number } | null {
+  try {
+    const commaIdx = src.indexOf(',');
+    if (commaIdx === -1 || !src.slice(0, commaIdx).includes('base64')) return null;
+    const b64 = src.slice(commaIdx + 1, commaIdx + 4096);
+    const binStr = atob(b64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) {
+      bytes[i] = binStr.charCodeAt(i);
+    }
+
+    // PNG signature: 89 50 4E 47 0D 0A 1A 0A, IHDR width@16..19, height@20..23
+    if (
+      bytes.length >= 24 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    ) {
+      const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+      const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+      if (width > 0 && height > 0) return { width, height };
+    }
+
+    // JPEG signature: FF D8
+    if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < bytes.length) {
+        if (bytes[i] !== 0xff) {
+          i++;
+          continue;
+        }
+        const marker = bytes[i + 1];
+        // SOF0 (0xC0) or SOF2 (0xC2)
+        if (marker === 0xc0 || marker === 0xc2) {
+          const height = (bytes[i + 5] << 8) | bytes[i + 6];
+          const width = (bytes[i + 7] << 8) | bytes[i + 8];
+          if (width > 0 && height > 0) return { width, height };
+          break;
+        }
+        if (marker === 0xd9 || marker === 0xda) break;
+        const segLen = (bytes[i + 2] << 8) | bytes[i + 3];
+        if (segLen < 2) break;
+        i += 2 + segLen;
+      }
+    }
+  } catch {
+    // Fallback below
+  }
+  return null;
+}
+
+/**
  * Calculates natural dimensions of an image in mm preserving aspect ratio.
  */
-function getImageDimensions(
+export function getPdfImageDimensions(
   src: string,
   maxW: number,
   maxH: number
 ): Promise<{ width: number; height: number; error: boolean }> {
   return new Promise((resolve) => {
     if (typeof window === 'undefined' || !window.Image) {
-      resolve({ width: maxW, height: maxH, error: false });
+      const parsed = parseRasterDimensionsFromDataUrl(src);
+      if (parsed) {
+        const aspect = parsed.width / parsed.height;
+        let renderW = maxW;
+        let renderH = renderW / aspect;
+        if (renderH > maxH) {
+          renderH = maxH;
+          renderW = renderH * aspect;
+        }
+        resolve({ width: renderW, height: renderH, error: false });
+      } else {
+        const fallbackH = Math.min(maxH, maxW * 0.5625);
+        resolve({ width: maxW, height: fallbackH, error: false });
+      }
       return;
     }
     const img = new Image();
@@ -257,24 +365,25 @@ export async function generateReportPdfBlob({
   const drawPageHeader = () => {
     let curY = marginY + 4;
 
-    // Optional Report Title or standard document title
-    if (report.title) {
+    // Optional Report Title or standard document title with text wrapping to prevent overflow
+    if (report.title && report.title.trim()) {
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
+      doc.setFontSize(15);
       doc.setTextColor(...theme.primaryText);
-      doc.text(report.title, marginX, curY);
-      curY += 5.5;
+      const titleLines = doc.splitTextToSize(report.title.trim(), usableWidth);
+      doc.text(titleLines, marginX, curY);
+      curY += titleLines.length * 4.8 + 1;
 
-      doc.setFontSize(10.5);
+      doc.setFontSize(9.5);
       doc.setTextColor(...theme.headingText);
       doc.text(`ABMAX | ${report.pair} ANALYSIS  •  ${theme.displayName.toUpperCase()}`, marginX, curY);
-      curY += 5;
+      curY += 4.5;
     } else {
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(17);
+      doc.setFontSize(16);
       doc.setTextColor(...theme.headingText);
       doc.text(`ABMAX | ${report.pair} ANALYSIS`, marginX, curY);
-      curY += 6;
+      curY += 5.5;
     }
 
     // Metadata line 1
@@ -293,8 +402,9 @@ export async function generateReportPdfBlob({
       `Overall Alignment: ${alignment.label}`,
     ].filter(Boolean);
 
-    doc.text(metaParts.join('   •   '), marginX, curY);
-    curY += 4.5;
+    const metaLines = doc.splitTextToSize(metaParts.join('   •   '), usableWidth);
+    doc.text(metaLines, marginX, curY);
+    curY += metaLines.length * 3.8 + 0.8;
 
     // Provenance line
     doc.setFontSize(7.5);
@@ -316,8 +426,63 @@ export async function generateReportPdfBlob({
     }
     provParts.push(`Export Style: ${theme.displayName}`);
 
-    doc.text(provParts.join('   ·   '), marginX, curY);
-    curY += 3.5;
+    const provLines = doc.splitTextToSize(provParts.join('   ·   '), usableWidth);
+    doc.text(provLines, marginX, curY);
+    curY += provLines.length * 3.4 + 0.8;
+
+    // Compact Timeframe Alignment Boxes Matching Report Page View:
+    // Monthly, Weekly, Daily, 4H, 1H, 15M, 5M, 1M
+    const boxGutter = 1.6;
+    const boxWidth = (usableWidth - (TIMEFRAME_ORDER.length - 1) * boxGutter) / TIMEFRAME_ORDER.length;
+    const boxHeight = 11.2;
+
+    TIMEFRAME_ORDER.forEach((tf, idx) => {
+      const bx = marginX + idx * (boxWidth + boxGutter);
+      const tfData = report.timeframes[tf];
+      const bias = tfData?.overallBias || '';
+      const biasColor = getPdfStatusColor(bias, theme.isDark);
+
+      // Box background
+      doc.setFillColor(...theme.sectionFill);
+      doc.setDrawColor(...theme.cardBorder);
+      doc.setLineWidth(0.25);
+      doc.roundedRect(bx, curY, boxWidth, boxHeight, 0.8, 0.8, 'FD');
+
+      // Top bar in status color
+      doc.setFillColor(...biasColor);
+      doc.rect(bx, curY, boxWidth, 0.8, 'F');
+
+      // Timeframe label
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(...theme.headingText);
+      doc.text(tf, bx + 1.2, curY + 3.4);
+
+      // Bias label with explicit text and status color
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.2);
+      doc.setTextColor(...biasColor);
+      const shortBias = bias ? (bias === 'Not sure' ? 'Unset' : bias) : '—';
+      doc.text(shortBias, bx + 1.2, curY + 6.8);
+
+      // Deep structure indicator if available: S / I / F
+      const sDir = tfData?.swing?.direction;
+      const iDir = tfData?.internal?.direction;
+      const fDir = tfData?.fractal?.direction;
+      const sText = sDir ? `S:${sDir.slice(0, 1)}` : '';
+      const iText = iDir ? `I:${iDir.slice(0, 1)}` : '';
+      const fText = fDir ? `F:${fDir.slice(0, 1)}` : '';
+      const deepTags = [sText, iText, fText].filter(Boolean).join(' ');
+
+      if (deepTags) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(5.2);
+        doc.setTextColor(...theme.secondaryText);
+        doc.text(deepTags, bx + 1.2, curY + 9.8);
+      }
+    });
+
+    curY += boxHeight + 3.5;
 
     // Separator rule
     doc.setDrawColor(...theme.headerRuleColor);
@@ -342,7 +507,9 @@ export async function generateReportPdfBlob({
   const hasTimeframeDetail = (tf: TimeframeId) => {
     const d = report.timeframes[tf];
     if (!d) return false;
-    const hasBias = Boolean(d.overallBias || d.biasSpecific);
+    const hasPersonalBias =
+      isHigherPersonalBiasTimeframe(tf) && Boolean(d.personalBiasNotes && d.personalBiasNotes.trim());
+    const hasBias = Boolean(d.overallBias || d.biasSpecific || hasPersonalBias);
     const hasPriceLoc = Boolean(d.priceLocation?.location || d.priceLocation?.levelRange);
     const hasSwing = Boolean(d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt);
     const hasInternal = Boolean(
@@ -372,11 +539,13 @@ export async function generateReportPdfBlob({
     );
   };
 
+  type ColItem =
+    | { type: 'heading' | 'body' | 'rule'; text: string }
+    | { type: 'personal_bias'; label: string; text: string };
+
   // Helper to compile timeframe content lines (identical across all styles)
-  const getTimeframeLines = (
-    tf: TimeframeId
-  ): Array<{ type: 'heading' | 'body' | 'rule'; text: string }> => {
-    const items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
+  const getTimeframeLines = (tf: TimeframeId): ColItem[] => {
+    const items: ColItem[] = [];
     const d = report.timeframes[tf];
     const tfLabel = TIMEFRAME_DISPLAY_NAMES[tf] || tf.toUpperCase();
     const biasStr = d?.overallBias ? d.overallBias : '—';
@@ -399,6 +568,15 @@ export async function generateReportPdfBlob({
       items.push({ type: 'body', text: `Bias: ${d.overallBias}` });
     } else {
       items.push({ type: 'body', text: 'Bias: —' });
+    }
+
+    // 1B. Personal Higher-Timeframe Bias (Monthly, Weekly, Daily ONLY, bold)
+    if (isHigherPersonalBiasTimeframe(tf) && d.personalBiasNotes && d.personalBiasNotes.trim()) {
+      items.push({
+        type: 'personal_bias',
+        label: getPersonalBiasLabel(tf) || 'Personal Bias',
+        text: d.personalBiasNotes.trim(),
+      });
     }
 
     // 2. Price Location
@@ -552,7 +730,7 @@ export async function generateReportPdfBlob({
   };
 
   // Compile Column 1: External Liquidity, Watchlist, Monthly, Weekly, Daily
-  const col1Items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
+  const col1Items: ColItem[] = [];
   col1Items.push({ type: 'heading', text: 'EXTERNAL LIQUIDITY' });
   const liq = report.crossedLiquidity || [];
   if (liq.length > 0) {
@@ -573,13 +751,13 @@ export async function generateReportPdfBlob({
   col1Items.push(...getTimeframeLines('Daily'));
 
   // Compile Column 2: 4-Hour, 1-Hour, 15-Minute
-  const col2Items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
+  const col2Items: ColItem[] = [];
   col2Items.push(...getTimeframeLines('4H'));
   col2Items.push(...getTimeframeLines('1H'));
   col2Items.push(...getTimeframeLines('15M'));
 
   // Compile Column 3: 5-Minute, 1-Minute, Opening Candle Levels, Overall Notes
-  const col3Items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }> = [];
+  const col3Items: ColItem[] = [];
   col3Items.push(...getTimeframeLines('5M'));
   col3Items.push(...getTimeframeLines('1M'));
 
@@ -600,57 +778,175 @@ export async function generateReportPdfBlob({
   }
   col3Items.push({ type: 'rule', text: '' });
 
-  // Render a column's items within bounds with themed fonts and colors
+  // Render a column's items cleanly across as many pages as needed without clipping
+  const colStartPage = doc.getCurrentPageInfo().pageNumber;
+  const colBottomLimit = usableBottom - 4;
+  const colPageBottomY: Record<number, number> = {};
+
   const renderColumnItems = (
-    items: Array<{ type: 'heading' | 'body' | 'rule'; text: string }>,
+    items: ColItem[],
     x: number,
+    startPage: number,
     startY: number
-  ): number => {
+  ): { endPage: number; endY: number } => {
+    let curPage = startPage;
     let y = startY;
+    doc.setPage(curPage);
+
+    const recordPageY = (pageNum: number, valY: number) => {
+      colPageBottomY[pageNum] = Math.max(colPageBottomY[pageNum] || 0, valY);
+    };
+
+    const advanceColumnPage = () => {
+      recordPageY(curPage, y);
+      curPage += 1;
+      if (curPage > doc.getNumberOfPages()) {
+        addNewPage();
+      } else {
+        doc.setPage(curPage);
+      }
+      y = marginY + 6;
+    };
+
+    const ensureColSpace = (neededH: number) => {
+      if (y + neededH > colBottomLimit) {
+        advanceColumnPage();
+      }
+    };
 
     for (const item of items) {
       if (item.type === 'heading') {
+        ensureColSpace(10);
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8.5);
-        doc.setTextColor(...theme.headingText);
-        const lines = doc.splitTextToSize(item.text, colWidth);
-        doc.text(lines, x, y);
-        y += lines.length * 3.6 + 1.2;
+
+        if (item.text.includes(' | ')) {
+          const [labelPart, statusPart] = item.text.split(' | ');
+          const statusColor = getPdfStatusColor(statusPart, theme.isDark);
+          const prefix = `${labelPart} | `;
+          const labelWidth = doc.getTextWidth(prefix);
+          const statusWidth = doc.getTextWidth(statusPart);
+          if (labelWidth + statusWidth <= colWidth) {
+            doc.setTextColor(...theme.headingText);
+            doc.text(prefix, x, y);
+            doc.setTextColor(...statusColor);
+            doc.text(statusPart, x + labelWidth, y);
+            y += 4.5;
+          } else {
+            doc.setTextColor(...theme.headingText);
+            const lLines = doc.splitTextToSize(labelPart, colWidth);
+            doc.text(lLines, x, y);
+            y += lLines.length * 3.6;
+            doc.setTextColor(...statusColor);
+            doc.text(statusPart, x, y);
+            y += 4.2;
+          }
+        } else {
+          doc.setTextColor(...theme.headingText);
+          const lines = doc.splitTextToSize(item.text, colWidth);
+          doc.text(lines, x, y);
+          y += lines.length * 3.6 + 1.2;
+        }
       } else if (item.type === 'body') {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7.5);
+
+        if (item.text.startsWith('Bias:')) {
+          const biasVal = item.text.replace('Bias:', '').trim();
+          const bLabelWidth = doc.getTextWidth('Bias: ');
+          const biasLines = doc.splitTextToSize(biasVal, Math.max(12, colWidth - bLabelWidth));
+          ensureColSpace(biasLines.length * 3.2 + 1);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(...theme.primaryText);
+          doc.text('Bias: ', x, y);
+          doc.setTextColor(...getPdfStatusColor(biasVal, theme.isDark));
+          doc.setFont('helvetica', 'bold');
+          doc.text(biasLines, x + bLabelWidth, y);
+          doc.setFont('helvetica', 'normal');
+          y += biasLines.length * 3.2 + 0.8;
+        } else {
+          doc.setTextColor(...theme.primaryText);
+          const lines = doc.splitTextToSize(item.text, colWidth);
+          for (const line of lines) {
+            ensureColSpace(3.4);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7.5);
+            doc.setTextColor(...theme.primaryText);
+            doc.text(line, x, y);
+            y += 3.1;
+          }
+          y += 1.2;
+        }
+      } else if (item.type === 'personal_bias') {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(...theme.headingText);
+        const labelLines = doc.splitTextToSize(`${item.label}:`, colWidth);
+        for (const lblLine of labelLines) {
+          ensureColSpace(3.4);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7.5);
+          doc.setTextColor(...theme.headingText);
+          doc.text(lblLine, x, y);
+          y += 3.1;
+        }
         doc.setTextColor(...theme.primaryText);
-        const lines = doc.splitTextToSize(item.text, colWidth);
-        doc.text(lines, x, y);
-        y += lines.length * 3.1 + 1.2;
+        const bodyLines = doc.splitTextToSize(item.text, colWidth);
+        for (const bLine of bodyLines) {
+          ensureColSpace(3.4);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7.5);
+          doc.setTextColor(...theme.primaryText);
+          doc.text(bLine, x, y);
+          y += 3.2;
+        }
+        doc.setFont('helvetica', 'normal');
+        y += 1.0;
       } else if (item.type === 'rule') {
-        doc.setDrawColor(...theme.dividerColor);
-        doc.setLineWidth(0.2);
-        doc.line(x, y, x + colWidth, y);
-        y += 2.8;
+        if (y + 3 <= colBottomLimit) {
+          doc.setDrawColor(...theme.dividerColor);
+          doc.setLineWidth(0.2);
+          doc.line(x, y, x + colWidth, y);
+          y += 2.8;
+        }
       }
     }
 
-    return y;
+    recordPageY(curPage, y);
+    return { endPage: curPage, endY: y };
   };
 
-  const endY1 = renderColumnItems(col1Items, colX[0], bodyStartY);
-  const endY2 = renderColumnItems(col2Items, colX[1], bodyStartY);
-  const endY3 = renderColumnItems(col3Items, colX[2], bodyStartY);
+  const col1End = renderColumnItems(col1Items, colX[0], colStartPage, bodyStartY);
+  const col2End = renderColumnItems(col2Items, colX[1], colStartPage, bodyStartY);
+  const col3End = renderColumnItems(col3Items, colX[2], colStartPage, bodyStartY);
 
-  const maxColumnY = Math.max(endY1, endY2, endY3);
+  const maxColumnPage = Math.max(col1End.endPage, col2End.endPage, col3End.endPage);
 
-  // Draw subtle vertical column separators
-  doc.setDrawColor(...theme.dividerColor);
-  doc.setLineWidth(0.2);
-  const separatorTop = bodyStartY - 2;
-  const separatorBottom = Math.min(maxColumnY, usableBottom - 25);
-  doc.line(colX[1] - gutter / 2, separatorTop, colX[1] - gutter / 2, separatorBottom);
-  doc.line(colX[2] - gutter / 2, separatorTop, colX[2] - gutter / 2, separatorBottom);
+  // Draw subtle vertical column separators on every page spanned by columns
+  for (let p = colStartPage; p <= maxColumnPage; p++) {
+    doc.setPage(p);
+    doc.setDrawColor(...theme.dividerColor);
+    doc.setLineWidth(0.2);
+    const separatorTop = p === colStartPage ? bodyStartY - 2 : marginY + 4;
+    const separatorBottom = p < maxColumnPage
+      ? colBottomLimit
+      : Math.min(colPageBottomY[p] || colBottomLimit, colBottomLimit);
+    if (separatorBottom > separatorTop + 2) {
+      doc.line(colX[1] - gutter / 2, separatorTop, colX[1] - gutter / 2, separatorBottom);
+      doc.line(colX[2] - gutter / 2, separatorTop, colX[2] - gutter / 2, separatorBottom);
+    }
+  }
 
-  // Full-width ending: Matching Values and Footer
-  let endingY = maxColumnY + 4;
-  if (endingY > usableBottom - 25) {
+  doc.setPage(maxColumnPage);
+  const maxPageColumnY = Math.max(
+    col1End.endPage === maxColumnPage ? col1End.endY : marginY + 6,
+    col2End.endPage === maxColumnPage ? col2End.endY : marginY + 6,
+    col3End.endPage === maxColumnPage ? col3End.endY : marginY + 6
+  );
+
+  // Full-width ending: Matching Values, Scenarios, Trades, Attachments, and Footer
+  let endingY = maxPageColumnY + 4;
+  if (endingY > usableBottom - 20) {
     addNewPage();
     endingY = marginY + 6;
   }
@@ -661,7 +957,16 @@ export async function generateReportPdfBlob({
   doc.line(marginX, endingY, marginX + usableWidth, endingY);
   endingY += 4;
 
+  // Helper to ensure enough vertical room or start a new page
+  const ensureSpace = (neededHeight: number) => {
+    if (endingY + neededHeight > usableBottom) {
+      addNewPage();
+      endingY = marginY + 6;
+    }
+  };
+
   // Matching Values section
+  ensureSpace(18);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(...theme.headingText);
@@ -679,26 +984,19 @@ export async function generateReportPdfBlob({
         .join(', ');
       const matchLine = `• Price ${group.displayPrice}: ${occText}`;
       const lines = doc.splitTextToSize(matchLine, usableWidth);
+      ensureSpace(lines.length * 3.2 + 1.5);
       doc.text(lines, marginX, endingY);
-      endingY += lines.length * 3.2;
+      endingY += lines.length * 3.2 + 0.8;
     }
   } else {
     doc.text('None detected', marginX, endingY);
     endingY += 4;
   }
 
-  endingY += 4;
-
-  // Helper to ensure enough vertical room or start a new page
-  const ensureSpace = (neededHeight: number) => {
-    if (endingY + neededHeight > usableBottom) {
-      addNewPage();
-      endingY = marginY + 6;
-    }
-  };
+  endingY += 3;
 
   // PLANNED SCENARIOS SECTION
-  ensureSpace(16);
+  ensureSpace(28);
   doc.setDrawColor(...theme.dividerColor);
   doc.setLineWidth(0.3);
   doc.line(marginX, endingY, marginX + usableWidth, endingY);
@@ -716,13 +1014,44 @@ export async function generateReportPdfBlob({
       ensureSpace(18);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
-      doc.setTextColor(...theme.primaryText);
-      const imgCountText = sc.images && sc.images.length > 0 ? ` [${sc.images.length} chart(s)]` : '';
-      const scHeader = `${sc.label || 'Scenario'}${sc.direction ? ` [${sc.direction.toUpperCase()}]` : ''}${
-        sc.strategy ? ` — ${sc.strategy}` : ''
-      }${imgCountText}`;
-      doc.text(scHeader, marginX, endingY);
-      endingY += 3.5;
+      const scDir = sc.direction || '';
+      const scDirColor = getPdfStatusColor(scDir, theme.isDark);
+      
+      const drawInlineToken = (token: string, color: [number, number, number], curOffset: number): number => {
+        doc.setTextColor(...color);
+        const w = doc.getTextWidth(token);
+        if (curOffset > marginX && curOffset + w > marginX + usableWidth) {
+          endingY += 3.6;
+          ensureSpace(6);
+          curOffset = marginX;
+        }
+        if (w > usableWidth) {
+          const wrapped = doc.splitTextToSize(token, usableWidth);
+          for (let wi = 0; wi < wrapped.length; wi++) {
+            ensureSpace(4);
+            doc.text(wrapped[wi], marginX, endingY);
+            if (wi < wrapped.length - 1) endingY += 3.6;
+          }
+          return marginX + doc.getTextWidth(wrapped[wrapped.length - 1]) + 2;
+        }
+        doc.text(token, curOffset, endingY);
+        return curOffset + w + 2;
+      };
+
+      let offset = marginX;
+      offset = drawInlineToken(sc.label || 'Scenario', theme.primaryText, offset);
+      if (sc.direction) {
+        offset = drawInlineToken(`[${sc.direction.toUpperCase()}]`, scDirColor, offset);
+      }
+      const scStrategy = sc.strategy || sc.strategySnapshot?.name;
+      if (scStrategy) {
+        offset = drawInlineToken(`— ${scStrategy}`, theme.headingText, offset);
+      }
+      if (sc.images && sc.images.length > 0) {
+        drawInlineToken(`[${sc.images.length} chart(s)]`, theme.secondaryText, offset);
+      }
+
+      endingY += 3.8;
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
@@ -730,27 +1059,33 @@ export async function generateReportPdfBlob({
 
       if (sc.description) {
         const descLines = doc.splitTextToSize(`Description: ${sc.description}`, usableWidth);
-        ensureSpace(descLines.length * 3.2);
-        doc.text(descLines, marginX, endingY);
-        endingY += descLines.length * 3.2 + 1;
+        for (const line of descLines) {
+          ensureSpace(3.5);
+          doc.text(line, marginX, endingY);
+          endingY += 3.2;
+        }
+        endingY += 0.8;
       }
 
       if (sc.entryConditions) {
         const entryLines = doc.splitTextToSize(`Entry Rules: ${sc.entryConditions}`, usableWidth);
-        ensureSpace(entryLines.length * 3.2);
-        doc.text(entryLines, marginX, endingY);
-        endingY += entryLines.length * 3.2 + 1;
+        for (const line of entryLines) {
+          ensureSpace(3.5);
+          doc.text(line, marginX, endingY);
+          endingY += 3.2;
+        }
+        endingY += 0.8;
       }
 
       if (sc.invalidationConditions) {
         doc.setTextColor(...theme.warningText);
-        const invLines = doc.splitTextToSize(
-          `Invalidation: ${sc.invalidationConditions}`,
-          usableWidth
-        );
-        ensureSpace(invLines.length * 3.2);
-        doc.text(invLines, marginX, endingY);
-        endingY += invLines.length * 3.2 + 2;
+        const invLines = doc.splitTextToSize(`Invalidation: ${sc.invalidationConditions}`, usableWidth);
+        for (const line of invLines) {
+          ensureSpace(3.5);
+          doc.text(line, marginX, endingY);
+          endingY += 3.2;
+        }
+        endingY += 1.5;
         doc.setTextColor(...theme.primaryText);
       } else {
         endingY += 1;
@@ -765,7 +1100,7 @@ export async function generateReportPdfBlob({
   }
 
   // TRADES TAKEN SECTION
-  ensureSpace(16);
+  ensureSpace(28);
   doc.setDrawColor(...theme.dividerColor);
   doc.setLineWidth(0.3);
   doc.line(marginX, endingY, marginX + usableWidth, endingY);
@@ -783,19 +1118,60 @@ export async function generateReportPdfBlob({
       ensureSpace(16);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
-      doc.setTextColor(...theme.primaryText);
-      const outcomeText = trd.outcome ? ` | Outcome: ${trd.outcome}` : '';
-      const rulesText = trd.rulesFollowed !== false ? ' [Rules Followed]' : ' [Rules Broken]';
-      const imgText = trd.images && trd.images.length > 0 ? ` [${trd.images.length} screenshot(s)]` : '';
-      const trdHeader = `• ${trd.direction || 'Trade'} — ${trd.scenarioLabel || 'Execution'}${outcomeText}${rulesText}${imgText}`;
-      doc.text(trdHeader, marginX, endingY);
-      endingY += 3.5;
+
+      const trdDir = trd.direction || 'Trade';
+      const dirColor = getPdfStatusColor(trdDir, theme.isDark);
+      const outcomeColor = getPdfStatusColor(trd.outcome, theme.isDark);
+      const rulesColor = trd.rulesFollowed !== false
+        ? getPdfStatusColor('Bullish', theme.isDark)
+        : getPdfStatusColor('Bearish', theme.isDark);
+
+      const drawTradeToken = (token: string, color: [number, number, number], curOffset: number): number => {
+        doc.setTextColor(...color);
+        const w = doc.getTextWidth(token);
+        if (curOffset > marginX && curOffset + w > marginX + usableWidth) {
+          endingY += 3.6;
+          ensureSpace(6);
+          curOffset = marginX + 2;
+        }
+        if (curOffset + w > marginX + usableWidth) {
+          const availW = Math.max(20, marginX + usableWidth - curOffset);
+          const wrapped = doc.splitTextToSize(token, availW);
+          for (let wi = 0; wi < wrapped.length; wi++) {
+            ensureSpace(4);
+            doc.text(wrapped[wi], curOffset, endingY);
+            if (wi < wrapped.length - 1) {
+              endingY += 3.6;
+              curOffset = marginX + 2;
+            }
+          }
+          return curOffset + doc.getTextWidth(wrapped[wrapped.length - 1]) + 2;
+        }
+        doc.text(token, curOffset, endingY);
+        return curOffset + w + 2;
+      };
+
+      let trdOffset = marginX;
+      trdOffset = drawTradeToken(`• ${trdDir.toUpperCase()}`, dirColor, trdOffset);
+      trdOffset = drawTradeToken(`— ${trd.scenarioLabel || 'Execution'}`, theme.primaryText, trdOffset);
+      if (trd.outcome) {
+        trdOffset = drawTradeToken(`[${trd.outcome}]`, outcomeColor, trdOffset);
+      }
+      const rulesBadge = trd.rulesFollowed !== false ? '[Rules Followed]' : '[Rules Broken]';
+      trdOffset = drawTradeToken(rulesBadge, rulesColor, trdOffset);
+      if (trd.images && trd.images.length > 0) {
+        drawTradeToken(`[${trd.images.length} screenshot(s)]`, theme.secondaryText, trdOffset);
+      }
+
+      endingY += 3.8;
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(...theme.primaryText);
 
       const priceParts: string[] = [];
+      const trdStrategy = trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy;
+      if (trdStrategy) priceParts.push(`Strategy: ${trdStrategy}`);
       if (trd.timeframeTaken) priceParts.push(`TF: ${trd.timeframeTaken}`);
       if (trd.session) priceParts.push(`Session: ${trd.session}`);
       if (trd.entryPrice) priceParts.push(`Entry: ${trd.entryPrice}`);
@@ -805,17 +1181,25 @@ export async function generateReportPdfBlob({
       if (trd.riskReward) priceParts.push(`R:R: ${trd.riskReward}`);
 
       if (priceParts.length > 0) {
-        doc.text(priceParts.join('  •  '), marginX + 3, endingY);
-        endingY += 3.5;
+        const priceLines = doc.splitTextToSize(priceParts.join('  •  '), usableWidth - 3);
+        for (const pLine of priceLines) {
+          ensureSpace(3.5);
+          doc.text(pLine, marginX + 3, endingY);
+          endingY += 3.2;
+        }
+        endingY += 0.5;
       }
 
       if (trd.notes) {
         const noteLines = doc.splitTextToSize(`Notes: "${trd.notes}"`, usableWidth - 3);
-        ensureSpace(noteLines.length * 3.2);
         doc.setFont('helvetica', 'italic');
         doc.setTextColor(...theme.secondaryText);
-        doc.text(noteLines, marginX + 3, endingY);
-        endingY += noteLines.length * 3.2 + 2;
+        for (const line of noteLines) {
+          ensureSpace(3.5);
+          doc.text(line, marginX + 3, endingY);
+          endingY += 3.2;
+        }
+        endingY += 1;
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(...theme.primaryText);
       } else {
@@ -897,7 +1281,30 @@ export async function generateReportPdfBlob({
   }
 
   if (allAttachedCharts.length > 0) {
-    ensureSpace(24);
+    // Render compact 2-column thumbnail cards
+    const thumbGutter = 5;
+    const thumbCardWidth = (usableWidth - thumbGutter) / 2; // ~91.5 mm
+    const maxImgW = thumbCardWidth - 6; // ~85.5 mm
+    const maxImgH = 50; // max 50mm height to avoid tall screenshots consuming a full page
+    const cardPaddingTop = 8;
+    const cardPaddingBottom = 6;
+
+    // Pre-measure first row so section heading never orphans at bottom of previous page
+    const firstItem = allAttachedCharts[0];
+    const secondItem = allAttachedCharts[1] as AttachedChartItem | undefined;
+    const firstDims1 = firstItem.imgUrl
+      ? await getPdfImageDimensions(firstItem.imgUrl, maxImgW, maxImgH)
+      : { width: maxImgW, height: 45, error: true };
+    const firstDims2 = secondItem?.imgUrl
+      ? await getPdfImageDimensions(secondItem.imgUrl, maxImgW, maxImgH)
+      : { width: maxImgW, height: 45, error: Boolean(secondItem) };
+    const firstRowH =
+      Math.max(firstDims1.height, secondItem ? firstDims2.height : 0) +
+      cardPaddingTop +
+      cardPaddingBottom +
+      (firstItem.caption || secondItem?.caption ? 5 : 0);
+
+    ensureSpace(14 + firstRowH);
     doc.setDrawColor(...theme.dividerColor);
     doc.setLineWidth(0.3);
     doc.line(marginX, endingY, marginX + usableWidth, endingY);
@@ -909,30 +1316,26 @@ export async function generateReportPdfBlob({
     doc.text(`ATTACHED CHARTS & SCREENSHOTS (${allAttachedCharts.length})`, marginX, endingY);
     endingY += 5;
 
-    // Render compact 2-column thumbnail cards
-    const thumbGutter = 5;
-    const thumbCardWidth = (usableWidth - thumbGutter) / 2; // ~91.5 mm
-    const maxImgW = thumbCardWidth - 6; // ~85.5 mm
-    const maxImgH = 50; // max 50mm height to avoid tall screenshots consuming a full page
-    const cardPaddingTop = 8;
-    const cardPaddingBottom = 6;
-
     for (let i = 0; i < allAttachedCharts.length; i += 2) {
       const item1 = allAttachedCharts[i];
       const item2 = allAttachedCharts[i + 1] as AttachedChartItem | undefined;
 
       // Measure dimensions for item1
       let dims1 = { width: maxImgW, height: 45, error: false };
-      if (item1.imgUrl) {
-        dims1 = await getImageDimensions(item1.imgUrl, maxImgW, maxImgH);
+      if (i === 0) {
+        dims1 = firstDims1;
+      } else if (item1.imgUrl) {
+        dims1 = await getPdfImageDimensions(item1.imgUrl, maxImgW, maxImgH);
       } else {
         dims1.error = true;
       }
 
       // Measure dimensions for item2 if present
       let dims2 = { width: maxImgW, height: 45, error: false };
-      if (item2?.imgUrl) {
-        dims2 = await getImageDimensions(item2.imgUrl, maxImgW, maxImgH);
+      if (i === 0 && secondItem) {
+        dims2 = firstDims2;
+      } else if (item2?.imgUrl) {
+        dims2 = await getPdfImageDimensions(item2.imgUrl, maxImgW, maxImgH);
       } else if (item2) {
         dims2.error = true;
       }
@@ -956,12 +1359,12 @@ export async function generateReportPdfBlob({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.5);
       doc.setTextColor(...theme.headingText);
-      doc.text(item1.label, card1X + 3, card1Y + 4);
+      doc.text(doc.splitTextToSize(item1.label, maxImgW - 2)[0] || item1.label, card1X + 3, card1Y + 4);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(6.5);
       doc.setTextColor(...theme.secondaryText);
-      doc.text(item1.sublabel, card1X + 3, card1Y + 7);
+      doc.text(doc.splitTextToSize(item1.sublabel, maxImgW - 2)[0] || item1.sublabel, card1X + 3, card1Y + 7);
 
       // Image or Honest Error Message
       if (item1.imgUrl && !dims1.error) {
@@ -970,7 +1373,7 @@ export async function generateReportPdfBlob({
           const imgY = card1Y + cardPaddingTop;
           doc.addImage(
             item1.imgUrl,
-            'JPEG',
+            detectPdfImageFormat(item1.imgUrl),
             imgX,
             imgY,
             dims1.width,
@@ -986,7 +1389,7 @@ export async function generateReportPdfBlob({
       } else {
         doc.setFontSize(7);
         doc.setTextColor(...theme.warningText);
-        doc.text('⚠️ Chart image could not be loaded from storage.', card1X + 4, card1Y + 20);
+        doc.text('[!] Chart image could not be loaded from storage.', card1X + 4, card1Y + 20);
         doc.setFontSize(6);
         doc.setTextColor(...theme.secondaryText);
         doc.text('(Tap Retry in export dialog to reload)', card1X + 4, card1Y + 24);
@@ -1013,12 +1416,12 @@ export async function generateReportPdfBlob({
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.5);
         doc.setTextColor(...theme.headingText);
-        doc.text(item2.label, card2X + 3, card2Y + 4);
+        doc.text(doc.splitTextToSize(item2.label, maxImgW)[0] || item2.label, card2X + 3, card2Y + 4);
 
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(6.5);
         doc.setTextColor(...theme.secondaryText);
-        doc.text(item2.sublabel, card2X + 3, card2Y + 7);
+        doc.text(doc.splitTextToSize(item2.sublabel, maxImgW)[0] || item2.sublabel, card2X + 3, card2Y + 7);
 
         if (item2.imgUrl && !dims2.error) {
           try {
@@ -1026,7 +1429,7 @@ export async function generateReportPdfBlob({
             const imgY = card2Y + cardPaddingTop;
             doc.addImage(
               item2.imgUrl,
-              'JPEG',
+              detectPdfImageFormat(item2.imgUrl),
               imgX,
               imgY,
               dims2.width,
@@ -1042,7 +1445,7 @@ export async function generateReportPdfBlob({
         } else {
           doc.setFontSize(7);
           doc.setTextColor(...theme.warningText);
-          doc.text('⚠️ Chart image could not be loaded from storage.', card2X + 4, card2Y + 20);
+          doc.text('[!] Chart image could not be loaded from storage.', card2X + 4, card2Y + 20);
           doc.setFontSize(6);
           doc.setTextColor(...theme.secondaryText);
           doc.text('(Tap Retry in export dialog to reload)', card2X + 4, card2Y + 24);

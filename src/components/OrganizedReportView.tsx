@@ -4,6 +4,8 @@ import {
   SavedReport,
   TimeframeId,
   TIMEFRAME_ORDER,
+  getPersonalBiasLabel,
+  isHigherPersonalBiasTimeframe,
 } from '../types/journal';
 import {
   calculateOverallAlignment,
@@ -156,6 +158,10 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     const tfVis = secVis?.perTimeframeFields?.[tfId] || secVis?.timeframeFields;
 
     const hasInterpretation = Boolean(tf.biasSpecific && tf.biasSpecific.trim()) && tfVis?.overallInterpretation !== false;
+    const hasPersonalBias =
+      isHigherPersonalBiasTimeframe(tfId) &&
+      Boolean(tf.personalBiasNotes && tf.personalBiasNotes.trim()) &&
+      tfVis?.personalBiasNotes !== false;
     const hasPriceLoc = Boolean(tf.priceLocation?.location || tf.priceLocation?.levelRange) && tfVis?.priceLocation !== false;
     const hasSwing = Boolean(
       tf.swing.direction ||
@@ -190,6 +196,7 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
     const hasAnyDetail =
       Boolean(tf.overallBias) ||
       hasInterpretation ||
+      hasPersonalBias ||
       hasPriceLoc ||
       hasPrevPeriod ||
       hasSwing ||
@@ -276,6 +283,16 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                   Overall Interpretation
                 </span>
                 <p className="text-gray-900 whitespace-pre-wrap">{tf.biasSpecific}</p>
+              </div>
+            )}
+
+            {/* Personal Higher-Timeframe Bias (Monthly, Weekly, Daily ONLY) */}
+            {hasPersonalBias && (
+              <div className="bg-gray-50/70 p-2 rounded border border-gray-200/70">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-gray-600 block mb-0.5">
+                  {getPersonalBiasLabel(tfId)}
+                </span>
+                <p className="text-gray-900 font-bold whitespace-pre-wrap">{tf.personalBiasNotes}</p>
               </div>
             )}
 
@@ -832,8 +849,10 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                       <span className="font-bold text-gray-900">
                         {sc.label || `Scenario ${idx + 1}`}
                       </span>
-                      {sc.strategy && (
-                        <span className="text-gray-600 font-medium">— {sc.strategy}</span>
+                      {(sc.strategy || sc.strategySnapshot?.name) && (
+                        <span className="text-gray-600 font-medium">
+                          — {sc.strategy || sc.strategySnapshot?.name}
+                        </span>
                       )}
                     </div>
                     {sc.direction && (
@@ -959,6 +978,11 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                       <span className="font-bold text-gray-900">
                         {trd.scenarioLabel || 'Planned Execution'}
                       </span>
+                      {(trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy) && (
+                        <span className="text-gray-600 font-medium text-[10px]">
+                          — {trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy}
+                        </span>
+                      )}
                       {trd.timeframeTaken && (
                         <span className="text-gray-500 font-mono text-[10px]">
                           [{trd.timeframeTaken}]

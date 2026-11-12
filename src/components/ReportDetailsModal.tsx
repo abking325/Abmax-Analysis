@@ -30,6 +30,8 @@ import {
   SavedReport,
   TIMEFRAME_ORDER,
   TimeframeId,
+  getPersonalBiasLabel,
+  isHigherPersonalBiasTimeframe,
 } from '../types/journal';
 import {
   getUserReportPresentationConfig,
@@ -1073,6 +1075,26 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                               ))}
                             </div>
 
+                            {/* Overall Interpretation & Personal Higher-Timeframe Bias */}
+                            {(tfFields?.overallInterpretation !== false && Boolean(data.biasSpecific?.trim())) && (
+                              <div className="text-app-main text-xs pt-1">
+                                <span className="font-semibold text-app-secondary">Overall Interpretation: </span>
+                                <span>{data.biasSpecific}</span>
+                              </div>
+                            )}
+                            {isHigherPersonalBiasTimeframe(tf) &&
+                              tfFields?.personalBiasNotes !== false &&
+                              Boolean(data.personalBiasNotes?.trim()) && (
+                                <div className="p-2 rounded bg-app-main border border-app/60 text-xs">
+                                  <span className="font-bold text-app-secondary block text-[10px] uppercase tracking-wider mb-0.5">
+                                    {getPersonalBiasLabel(tf)}
+                                  </span>
+                                  <p className="font-bold text-app-main whitespace-pre-wrap leading-relaxed">
+                                    {data.personalBiasNotes}
+                                  </p>
+                                </div>
+                              )}
+
                             {/* Timeframe analytical details */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-[11px] text-app-secondary pt-1">
                               {tfFields?.swingStructure !== false && (data.swing?.high || data.swing?.low) && (
@@ -1224,8 +1246,10 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   <span className="font-bold text-app-main text-sm">
                                     {sc.label || `Scenario ${idx + 1}`}
                                   </span>
-                                  {sc.strategy && (
-                                    <span className="text-app-secondary">— {sc.strategy}</span>
+                                  {(sc.strategy || sc.strategySnapshot?.name) && (
+                                    <span className="text-app-secondary">
+                                      — {sc.strategy || sc.strategySnapshot?.name}
+                                    </span>
                                   )}
                                   {(sc.isInvalid || sc.status === 'Invalid') && (
                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-300 dark:border-rose-700">
@@ -1432,6 +1456,11 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   <span className="font-bold text-app-main">
                                     {trd.scenarioLabel || 'Planned Execution'}
                                   </span>
+                                  {(trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy) && (
+                                    <span className="text-app-secondary text-[11px]">
+                                      — {trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy}
+                                    </span>
+                                  )}
                                   {trd.timeframeTaken && (
                                     <span className="text-app-secondary font-mono text-[11px]">
                                       [{trd.timeframeTaken}]
@@ -1602,6 +1631,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
             onSaveTrade={handleSaveTrade}
             initialTradeDraft={scenarioTradeDraft || initialTradeDraft}
             onTradeDraftChange={onTradeDraftChange}
+            userId={user?.id}
           />
         )}
 
@@ -1610,6 +1640,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
             isOpen={isEditScenariosOpen}
             onClose={() => setIsEditScenariosOpen(false)}
             scenarios={report.scenarios || []}
+            userId={user?.id}
             onSave={async (scns) => {
               if (onUpdateReport) {
                 await onUpdateReport({
