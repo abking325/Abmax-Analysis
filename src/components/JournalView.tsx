@@ -28,8 +28,12 @@ import {
   BookMarked,
 } from 'lucide-react';
 import {
+  DEFAULT_INSTRUMENTS_CONFIG,
   DEFAULT_JOURNAL_VISIBILITY_CONFIG,
   EmotionalReadiness,
+  getEnabledInstrumentSymbols,
+  getSelectorInstrumentOptions,
+  InstrumentsConfig,
   JournalDailyReflection,
   JournalEntry,
   JournalEntryType,
@@ -38,10 +42,12 @@ import {
   JournalPreTrade,
   JournalPrep,
   JournalVisibilityConfig,
+  normalizeInstrumentSymbol,
   SavedReport,
   TradingPair,
   TradingSession,
 } from '../types/journal';
+import { registerBackHandler } from '../utils/backNavigation';
 import {
   clearJournalDraft,
   deleteJournalEntry,
@@ -101,7 +107,8 @@ interface JournalViewProps {
   onOpenReport?: (reportId: string) => void;
   userId?: string | null;
   journalVisibilityConfig?: JournalVisibilityConfig;
-  onOpenSettings?: (tab?: 'general' | 'theme' | 'journal_visibility' | 'performance_visibility' | 'admin') => void;
+  onOpenSettings?: (tab?: 'general' | 'theme' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
+  instrumentsConfig?: InstrumentsConfig;
 }
 
 export const JournalView: React.FC<JournalViewProps> = ({
@@ -110,6 +117,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
   userId,
   journalVisibilityConfig = DEFAULT_JOURNAL_VISIBILITY_CONFIG,
   onOpenSettings,
+  instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
 }) => {
   const [mainJournalTab, setMainJournalTab] = useState<'trading-journal' | 'my-journal' | 'strategies'>('trading-journal');
 
@@ -127,6 +135,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
   const [loading, setLoading] = useState(true);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [confirmDeleteEntryId, setConfirmDeleteEntryId] = useState<string | null>(null);
+  const originalSnapshotRef = useRef<string>('');
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -135,12 +146,29 @@ export const JournalView: React.FC<JournalViewProps> = ({
   const [selectedRuleStatus, setSelectedRuleStatus] = useState<string>('all');
   const [selectedDateFilter, setSelectedDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
 
+  const filterInstrumentOptions = useMemo(() => {
+    const enabled = getEnabledInstrumentSymbols(instrumentsConfig);
+    const seen = new Set(enabled);
+    const extra: string[] = [];
+    for (const e of entries) {
+      const sym = normalizeInstrumentSymbol(e.pair || '');
+      if (sym && !seen.has(sym)) {
+        seen.add(sym);
+        extra.push(sym);
+      }
+    }
+    return [
+      ...enabled.map((sym) => ({ symbol: sym, label: sym })),
+      ...extra.map((sym) => ({ symbol: sym, label: `${sym} (Historical)` })),
+    ];
+  }, [instrumentsConfig, entries]);
+
   // Form State
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [time, setTime] = useState(() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
   const [session, setSession] = useState<TradingSession>('London');
-  const [pair, setPair] = useState<TradingPair>('XAUUSD');
+  const [pair, setPair] = useState<TradingPair>(() => getEnabledInstrumentSymbols(instrumentsConfig)[0] || 'XAUUSD');
   const [entryType, setEntryType] = useState<JournalEntryType>('general');
 
   // Sections
@@ -292,9 +320,10 @@ export const JournalView: React.FC<JournalViewProps> = ({
     };
   }, [userId]);
 
-  // Auto-save draft when editor is open, bound strictly to the active account scope
+  // Auto-save draft when creating a new entry, bound strictly to the active account scope
+  // Do NOT clobber new-entry draft when editing an existing saved entry.
   useEffect(() => {
-    if (!isEditorOpen) return;
+    if (!isEditorOpen || editingEntryId) return;
 
     if (draftDebounceRef.current) {
       clearTimeout(draftDebounceRef.current);
@@ -333,6 +362,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
     };
   }, [
     isEditorOpen,
+    editingEntryId,
     title,
     date,
     time,
@@ -348,20 +378,31 @@ export const JournalView: React.FC<JournalViewProps> = ({
     userId,
   ]);
 
+  const serializeEditorState = (vals: {
+    title: string;
+    date: string;
+    time: string;
+    session: TradingSession;
+    pair: TradingPair;
+    entryType: JournalEntryType;
+    prep: JournalPrep;
+    preTrade: JournalPreTrade;
+    inTrade: JournalInTrade;
+    postTrade: JournalPostTrade;
+    reflection: JournalDailyReflection;
+    generalNotes: string;
+  }) => JSON.stringify(vals);
+
   const resetForm = () => {
-    setTitle('');
-    setDate(new Date().toISOString().slice(0, 10));
-    setTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
-    setSession('London');
-    setPair('XAUUSD');
-    setEntryType('general');
-    setPrep({
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    const defaultPrep: JournalPrep = {
       sessionIntention: '',
       readinessState: 'Optimal / Calm',
       prioritizedRules: [],
       dailyPlanNotes: '',
-    });
-    setPreTrade({
+    };
+    const defaultPreTrade: JournalPreTrade = {
       reasonForTrade: '',
       setupTag: '',
       confirmationChecklist: [
@@ -372,74 +413,263 @@ export const JournalView: React.FC<JournalViewProps> = ({
       ],
       plannedRiskR: '1R',
       linkedReportId: '',
-    });
-    setInTrade({
+    };
+    const defaultInTrade: JournalInTrade = {
       managementDecisions: '',
       planAdjustments: '',
       emotionalObservations: '',
       timelineNotes: [],
-    });
-    setPostTrade({
+    };
+    const defaultPostTrade: JournalPostTrade = {
       executionReview: '',
       rulesFollowedStatus: 'Followed',
       mistakeTags: [],
       lessonTags: [],
       repeatOrImprove: '',
-    });
-    setReflection({
+    };
+    const defaultReflection: JournalDailyReflection = {
       whatWorked: '',
       whatDidNot: '',
       keyLessons: '',
       nextSessionCommitment: '',
       noTradesDay: false,
-    });
+    };
+    const defaultPair = getEnabledInstrumentSymbols(instrumentsConfig)[0] || 'XAUUSD';
+    setTitle('');
+    setDate(todayStr);
+    setTime(timeStr);
+    setSession('London');
+    setPair(defaultPair);
+    setEntryType('general');
+    setPrep(defaultPrep);
+    setPreTrade(defaultPreTrade);
+    setInTrade(defaultInTrade);
+    setPostTrade(defaultPostTrade);
+    setReflection(defaultReflection);
     setGeneralNotes('');
     setEditingEntryId(null);
     setActiveTab('prep');
+    setShowDiscardConfirm(false);
+    return {
+      title: '',
+      date: todayStr,
+      time: timeStr,
+      session: 'London' as TradingSession,
+      pair: defaultPair as TradingPair,
+      entryType: 'general' as JournalEntryType,
+      prep: defaultPrep,
+      preTrade: defaultPreTrade,
+      inTrade: defaultInTrade,
+      postTrade: defaultPostTrade,
+      reflection: defaultReflection,
+      generalNotes: '',
+    };
   };
 
   const openNewEntry = () => {
-    resetForm();
+    const initialVals = resetForm();
+    originalSnapshotRef.current = serializeEditorState(initialVals);
     setIsEditorOpen(true);
   };
 
   const openEditEntry = (entry: JournalEntry) => {
-    setEditingEntryId(entry.id);
-    setTitle(entry.title || '');
-    setDate(entry.date || new Date().toISOString().slice(0, 10));
-    setTime(entry.time || '');
-    setSession(entry.session || 'London');
-    setPair(entry.pair || 'XAUUSD');
-    setEntryType(entry.entryType || 'general');
-    if (entry.prep) setPrep(entry.prep);
-    if (entry.preTrade) setPreTrade(entry.preTrade);
-    if (entry.inTrade) setInTrade(entry.inTrade);
-    if (entry.postTrade) setPostTrade(entry.postTrade);
-    if (entry.reflection) setReflection(entry.reflection);
-    setGeneralNotes(entry.generalNotes || '');
+    const clonedEntry: JournalEntry = JSON.parse(JSON.stringify(entry));
+    const entryPrep = clonedEntry.prep || {
+      sessionIntention: '',
+      readinessState: 'Optimal / Calm',
+      prioritizedRules: [],
+      dailyPlanNotes: '',
+    };
+    const entryPreTrade = clonedEntry.preTrade || {
+      reasonForTrade: '',
+      setupTag: '',
+      confirmationChecklist: [
+        { item: 'HTF liquidity swept / tapped', checked: false },
+        { item: 'Clear 15M / 5M MSS confirmation', checked: false },
+        { item: 'Aligned with overall bias', checked: false },
+        { item: 'Acceptable risk-to-reward ratio', checked: false },
+      ],
+      plannedRiskR: '1R',
+      linkedReportId: '',
+    };
+    const entryInTrade = clonedEntry.inTrade || {
+      managementDecisions: '',
+      planAdjustments: '',
+      emotionalObservations: '',
+      timelineNotes: [],
+    };
+    const entryPostTrade = clonedEntry.postTrade || {
+      executionReview: '',
+      rulesFollowedStatus: 'Followed',
+      mistakeTags: [],
+      lessonTags: [],
+      repeatOrImprove: '',
+    };
+    const entryReflection = clonedEntry.reflection || {
+      whatWorked: '',
+      whatDidNot: '',
+      keyLessons: '',
+      nextSessionCommitment: '',
+      noTradesDay: false,
+    };
+    const entryDate = clonedEntry.date || new Date().toISOString().slice(0, 10);
+    const entryTime = clonedEntry.time || '';
+    const entrySession = clonedEntry.session || 'London';
+    const entryPair = clonedEntry.pair || 'XAUUSD';
+    const entryTypeVal = clonedEntry.entryType || 'general';
+    const entryTitle = clonedEntry.title || '';
+    const entryNotes = clonedEntry.generalNotes || '';
+
+    setEditingEntryId(clonedEntry.id);
+    setTitle(entryTitle);
+    setDate(entryDate);
+    setTime(entryTime);
+    setSession(entrySession);
+    setPair(entryPair);
+    setEntryType(entryTypeVal);
+    setPrep(entryPrep);
+    setPreTrade(entryPreTrade);
+    setInTrade(entryInTrade);
+    setPostTrade(entryPostTrade);
+    setReflection(entryReflection);
+    setGeneralNotes(entryNotes);
+    setShowDiscardConfirm(false);
+    originalSnapshotRef.current = serializeEditorState({
+      title: entryTitle,
+      date: entryDate,
+      time: entryTime,
+      session: entrySession,
+      pair: entryPair,
+      entryType: entryTypeVal,
+      prep: entryPrep,
+      preTrade: entryPreTrade,
+      inTrade: entryInTrade,
+      postTrade: entryPostTrade,
+      reflection: entryReflection,
+      generalNotes: entryNotes,
+    });
     setIsEditorOpen(true);
   };
 
   const handleApplyDraft = async () => {
     const draft = await getJournalDraft(userId);
     if (!draft) return;
-    if (draft.title) setTitle(draft.title);
-    if (draft.date) setDate(draft.date);
-    if (draft.time) setTime(draft.time);
-    if (draft.session) setSession(draft.session);
-    if (draft.pair) setPair(draft.pair);
-    if (draft.entryType) setEntryType(draft.entryType);
-    if (draft.prep) setPrep(draft.prep);
-    if (draft.preTrade) setPreTrade(draft.preTrade);
-    if (draft.inTrade) setInTrade(draft.inTrade);
-    if (draft.postTrade) setPostTrade(draft.postTrade);
-    if (draft.reflection) setReflection(draft.reflection);
-    if (draft.generalNotes) setGeneralNotes(draft.generalNotes);
+    const clonedDraft: Partial<JournalEntry> = JSON.parse(JSON.stringify(draft));
+    const base = resetForm();
+    const nextTitle = clonedDraft.title ?? base.title;
+    const nextDate = clonedDraft.date ?? base.date;
+    const nextTime = clonedDraft.time ?? base.time;
+    const nextSession = clonedDraft.session ?? base.session;
+    const nextPair = clonedDraft.pair ?? base.pair;
+    const nextType = clonedDraft.entryType ?? base.entryType;
+    const nextPrep = clonedDraft.prep ?? base.prep;
+    const nextPreTrade = clonedDraft.preTrade ?? base.preTrade;
+    const nextInTrade = clonedDraft.inTrade ?? base.inTrade;
+    const nextPostTrade = clonedDraft.postTrade ?? base.postTrade;
+    const nextReflection = clonedDraft.reflection ?? base.reflection;
+    const nextNotes = clonedDraft.generalNotes ?? base.generalNotes;
+
+    setTitle(nextTitle);
+    setDate(nextDate);
+    setTime(nextTime);
+    setSession(nextSession);
+    setPair(nextPair);
+    setEntryType(nextType);
+    setPrep(nextPrep);
+    setPreTrade(nextPreTrade);
+    setInTrade(nextInTrade);
+    setPostTrade(nextPostTrade);
+    setReflection(nextReflection);
+    setGeneralNotes(nextNotes);
+    originalSnapshotRef.current = serializeEditorState({
+      title: nextTitle,
+      date: nextDate,
+      time: nextTime,
+      session: nextSession,
+      pair: nextPair,
+      entryType: nextType,
+      prep: nextPrep,
+      preTrade: nextPreTrade,
+      inTrade: nextInTrade,
+      postTrade: nextPostTrade,
+      reflection: nextReflection,
+      generalNotes: nextNotes,
+    });
     setHasDraftNotice(false);
     setIsEditorOpen(true);
   };
 
+  const isEditorDirty = () => {
+    const current = serializeEditorState({
+      title,
+      date,
+      time,
+      session,
+      pair,
+      entryType,
+      prep,
+      preTrade,
+      inTrade,
+      postTrade,
+      reflection,
+      generalNotes,
+    });
+    return current !== originalSnapshotRef.current;
+  };
+
+  const executeDiscardAndCloseEditor = async () => {
+    if (draftDebounceRef.current) {
+      clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = null;
+    }
+    hasPendingDebounceRef.current = false;
+    if (!editingEntryId) {
+      await clearJournalDraft(userId).catch(() => {});
+      setHasDraftNotice(false);
+    }
+    setShowDiscardConfirm(false);
+    setIsEditorOpen(false);
+    resetForm();
+  };
+
+  const handleRequestCloseEditor = () => {
+    if (isEditorDirty()) {
+      setShowDiscardConfirm(true);
+    } else {
+      executeDiscardAndCloseEditor();
+    }
+  };
+
+  const editorBackRef = useRef<() => void>(() => {});
+  editorBackRef.current = () => {
+    if (showDiscardConfirm) {
+      setShowDiscardConfirm(false);
+    } else {
+      handleRequestCloseEditor();
+    }
+  };
+
+  useEffect(() => {
+    if (!isEditorOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        editorBackRef.current();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const unregBack = registerBackHandler(() => editorBackRef.current());
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      unregBack();
+    };
+  }, [isEditorOpen]);
+
   const handleSaveEntry = async () => {
+    if (draftDebounceRef.current) {
+      clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = null;
+    }
     const defaultTitle = reflection.noTradesDay
       ? `No Trades — ${date} (${session})`
       : title.trim() || `${pair} ${session} Session Reflection (${date})`;
@@ -469,18 +699,19 @@ export const JournalView: React.FC<JournalViewProps> = ({
 
     hasPendingDebounceRef.current = false;
     await saveJournalEntry(payload);
-    await clearJournalDraft(userId);
-    setHasDraftNotice(false);
+    if (!editingEntryId) {
+      await clearJournalDraft(userId);
+      setHasDraftNotice(false);
+    }
     setIsEditorOpen(false);
     resetForm();
     await refreshEntries();
   };
 
-  const handleDeleteEntry = async (id: string) => {
-    if (window.confirm('Are you sure you want to delete this journal entry?')) {
-      await deleteJournalEntry(id);
-      await refreshEntries();
-    }
+  const handleConfirmDeleteEntry = async (id: string) => {
+    await deleteJournalEntry(id);
+    setConfirmDeleteEntryId(null);
+    await refreshEntries();
   };
 
   const tradingJournalEntries = useMemo(() => {
@@ -761,12 +992,15 @@ export const JournalView: React.FC<JournalViewProps> = ({
           <select
             value={selectedPair}
             onChange={(e) => setSelectedPair(e.target.value)}
+            aria-label="Filter journal by instrument"
             className="w-full px-2.5 py-2 rounded-md bg-app-main border border-app text-xs text-app-main cursor-pointer"
           >
             <option value="all">All Instruments</option>
-            <option value="XAUUSD">XAUUSD</option>
-            <option value="BTCUSD">BTCUSD</option>
-            <option value="EURUSD">EURUSD</option>
+            {filterInstrumentOptions.map((opt) => (
+              <option key={opt.symbol} value={opt.symbol}>
+                {opt.label}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -872,14 +1106,33 @@ export const JournalView: React.FC<JournalViewProps> = ({
                     >
                       <Edit3 className="w-4 h-4" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteEntry(entry.id)}
-                      className="p-1.5 rounded text-app-secondary hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors cursor-pointer"
-                      title="Delete journal entry"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {confirmDeleteEntryId === entry.id ? (
+                      <div className="inline-flex items-center gap-1 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 rounded px-1.5 py-0.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmDeleteEntry(entry.id)}
+                          className="px-2 py-0.5 bg-rose-600 text-white font-bold rounded cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteEntryId(null)}
+                          className="px-1.5 py-0.5 text-app-secondary hover:text-app-main cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteEntryId(entry.id)}
+                        className="p-1.5 rounded text-app-secondary hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors cursor-pointer"
+                        title="Delete journal entry"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1032,6 +1285,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Journal Entry Editor"
+          onClick={handleRequestCloseEditor}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 sm:p-4 backdrop-blur-xs"
         >
           <div
@@ -1048,7 +1302,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setIsEditorOpen(false)}
+                onClick={handleRequestCloseEditor}
                 className="p-1 rounded text-app-secondary hover:text-app-main cursor-pointer"
                 aria-label="Close editor"
               >
@@ -1107,11 +1361,14 @@ export const JournalView: React.FC<JournalViewProps> = ({
                   <select
                     value={pair}
                     onChange={(e) => setPair(e.target.value as TradingPair)}
+                    aria-label="Journal entry instrument"
                     className="w-full px-2.5 py-1.5 rounded border border-app bg-app-field text-app-main text-xs cursor-pointer"
                   >
-                    <option value="XAUUSD">XAUUSD</option>
-                    <option value="BTCUSD">BTCUSD</option>
-                    <option value="EURUSD">EURUSD</option>
+                    {getSelectorInstrumentOptions(instrumentsConfig, [pair]).map((opt) => (
+                      <option key={opt.symbol} value={opt.symbol}>
+                        {opt.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -1590,11 +1847,36 @@ export const JournalView: React.FC<JournalViewProps> = ({
               )}
             </div>
 
+            {/* Discard confirmation */}
+            {showDiscardConfirm && (
+              <div className="px-5 py-2.5 bg-amber-50 dark:bg-amber-950/40 border-t border-amber-300 dark:border-amber-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="font-medium text-amber-900 dark:text-amber-200">
+                  Discard unsaved journal changes?
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowDiscardConfirm(false)}
+                    className="px-3 py-1.5 text-xs font-medium text-app-main bg-app-main border border-app rounded hover:bg-app-field cursor-pointer"
+                  >
+                    Keep editing
+                  </button>
+                  <button
+                    type="button"
+                    onClick={executeDiscardAndCloseEditor}
+                    className="px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded cursor-pointer"
+                  >
+                    Discard changes
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Modal Footer */}
             <div className="flex items-center justify-between px-5 py-3 border-t border-app bg-app-secondary/60">
               <button
                 type="button"
-                onClick={() => setIsEditorOpen(false)}
+                onClick={handleRequestCloseEditor}
                 className="px-4 py-2 text-xs font-semibold text-app-secondary hover:text-app-main cursor-pointer"
               >
                 Cancel
@@ -1606,7 +1888,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-bold text-white bg-emerald-theme hover:bg-emerald-theme-hover shadow-2xs transition-colors cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                <span>Save Journal Entry</span>
+                <span>{editingEntryId ? 'Save Changes' : 'Save Journal Entry'}</span>
               </button>
             </div>
           </div>

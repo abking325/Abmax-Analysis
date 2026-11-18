@@ -20,6 +20,7 @@ import {
 import { BackupData } from '../types/journal';
 import { exportTextOrDownload } from '../utils/nativeExport';
 import { useAuth } from '../context/AuthContext';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface BackupModalProps {
   isOpen: boolean;
@@ -53,6 +54,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
     skippedForeignJournalEntries: number;
     addedStrategies?: number;
     skippedForeignStrategies?: number;
+    restoredLiveWorkspaces?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -64,6 +66,22 @@ export const BackupModal: React.FC<BackupModalProps> = ({
       setParseError(null);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => onClose());
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -179,7 +197,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                 <span>Local Backup (Offline &amp; Private)</span>
               </div>
               <p className="text-[11px] text-app-secondary leading-relaxed">
-                Stores your entire database (analyses, trades, Journal, My Journal, Strategies, attachments, and drafts) inside local IndexedDB on this device. Journal, My Journal, and Strategies are local-only — export a JSON file to back up or transfer them.
+                Stores your entire database (analyses, trades, Live workspace, Journal, My Journal, Strategies, attachments, and drafts) inside local IndexedDB on this device. Live, Journal, My Journal, and Strategies are local-only — export a JSON file to back up or transfer them.
               </p>
             </div>
 
@@ -189,7 +207,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                 <span>Cloud Synchronization</span>
               </div>
               <p className="text-[11px] text-app-secondary leading-relaxed">
-                When signed in to your Supabase account, analyses, templates, chart screenshots, and preferences sync across your authorized devices. Signing in does not back up Journal, My Journal, or Strategies.
+                When signed in to your Supabase account, analyses, templates, chart screenshots, and preferences sync across your authorized devices. Signing in does not back up Live workspace data, Journal, My Journal, or Strategies.
               </p>
             </div>
           </div>
@@ -264,7 +282,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                     <span>Itemized Backup Preview:</span>
                   </div>
                   <span className="text-[10px] text-app-secondary">
-                    Format: {parsedBackup?.version && parsedBackup.version >= 4 ? `Version ${parsedBackup.version} (Strategies & Journal Ready)` : parsedBackup?.version === 3 ? 'Version 3 (Journal Ready)' : `Version ${parsedBackup?.version || 1} (Compatible)`}
+                    Format: {parsedBackup?.version && parsedBackup.version >= 5 ? `Version ${parsedBackup.version} (Live + Strategies + Journal)` : parsedBackup?.version && parsedBackup.version >= 4 ? `Version ${parsedBackup.version} (Strategies & Journal Ready)` : parsedBackup?.version === 3 ? 'Version 3 (Journal Ready)' : `Version ${parsedBackup?.version || 1} (Compatible)`}
                   </span>
                 </div>
 
@@ -307,6 +325,11 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                   </div>
 
                   <div className="p-2 rounded bg-app-main border border-app">
+                    <span className="text-app-secondary block">Live Workspaces</span>
+                    <strong className="text-app-main text-xs">{preview.totalLiveWorkspacesInBackup || 0} scope(s)</strong>
+                  </div>
+
+                  <div className="p-2 rounded bg-app-main border border-app col-span-2 sm:col-span-3">
                     <span className="text-app-secondary block">Active Draft &amp; Sessions</span>
                     <strong className="text-app-main text-xs">
                       {preview.hasDraft ? 'Draft Preserved' : 'None'}
@@ -321,10 +344,11 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                 {preview.ownershipSummary &&
                   (preview.ownershipSummary.foreignOwnerEntriesCount > 0 ||
                     preview.ownershipSummary.foreignOwnerStrategiesCount > 0 ||
+                    preview.ownershipSummary.foreignOwnerLiveWorkspacesCount > 0 ||
                     preview.ownershipSummary.foreignScopedDraftCount > 0) && (
                     <div className="p-2.5 rounded border border-amber-500/40 bg-amber-50/30 dark:bg-amber-950/20 space-y-2 text-[11px]">
                       <div className="font-bold text-amber-800 dark:text-amber-300">
-                        Account Ownership Detected in Backup ({preview.ownershipSummary.foreignOwnerEntriesCount} journal entry(ies), {preview.ownershipSummary.foreignOwnerStrategiesCount} strategy(ies), {preview.ownershipSummary.foreignScopedDraftCount} draft scope(s) from another scope)
+                        Account Ownership Detected in Backup ({preview.ownershipSummary.foreignOwnerEntriesCount} journal entry(ies), {preview.ownershipSummary.foreignOwnerStrategiesCount} strategy(ies), {preview.ownershipSummary.foreignOwnerLiveWorkspacesCount} live workspace(s), {preview.ownershipSummary.foreignScopedDraftCount} draft scope(s) from another scope)
                       </div>
                       <p className="text-app-secondary leading-relaxed">
                         Choose how imported journal records belonging to another account/guest scope should be handled:
@@ -402,7 +426,7 @@ export const BackupModal: React.FC<BackupModalProps> = ({
                 <div>
                   <div className="font-bold text-xs">Restore Completed Successfully!</div>
                   <div className="text-[11px] mt-1 text-app-main leading-relaxed">
-                    Added <strong>{restoreResult.addedReports}</strong> report(s), <strong>{restoreResult.addedJournalEntries}</strong> journal entry(ies), <strong>{restoreResult.addedStrategies || 0}</strong> strategy(ies), <strong>{restoreResult.addedTemplates}</strong> template(s), and <strong>{restoreResult.addedImages}</strong> chart screenshot(s).
+                    Added <strong>{restoreResult.addedReports}</strong> report(s), <strong>{restoreResult.addedJournalEntries}</strong> journal entry(ies), <strong>{restoreResult.addedStrategies || 0}</strong> strategy(ies), <strong>{restoreResult.addedTemplates}</strong> template(s), <strong>{restoreResult.restoredLiveWorkspaces || 0}</strong> live workspace(s), and <strong>{restoreResult.addedImages}</strong> chart screenshot(s).
                     {(restoreResult.skippedForeignJournalEntries > 0 || (restoreResult.skippedForeignStrategies || 0) > 0)
                       ? ` Skipped ${restoreResult.skippedForeignJournalEntries} foreign-owned journal entry(ies) and ${restoreResult.skippedForeignStrategies || 0} foreign-owned strategy(ies).`
                       : ' Existing local records were fully preserved.'}

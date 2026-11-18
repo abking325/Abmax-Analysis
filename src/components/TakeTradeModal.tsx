@@ -13,6 +13,8 @@ import {
 import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
 import { StrategySelector } from './StrategySelector';
+import { registerBackHandler } from '../utils/backNavigation';
+import { deepClone } from '../utils/analysisUtils';
 
 interface TakeTradeModalProps {
   isOpen: boolean;
@@ -89,8 +91,8 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   });
   const [strategy, setStrategy] = useState<string>(initialTradeDraft?.strategy || '');
   const [strategyId, setStrategyId] = useState<string | undefined>(initialTradeDraft?.strategyId);
-  const [strategySnapshot, setStrategySnapshot] = useState<StrategySnapshot | undefined>(
-    initialTradeDraft?.strategySnapshot
+  const [strategySnapshot, setStrategySnapshot] = useState<StrategySnapshot | undefined>(() =>
+    initialTradeDraft?.strategySnapshot ? deepClone(initialTradeDraft.strategySnapshot) : undefined
   );
   const hasManualStrategyRef = useRef(false);
 
@@ -175,7 +177,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       setTradeTime(tradeToEdit.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
       setStrategy(tradeToEdit.strategy || tradeToEdit.strategySnapshot?.name || '');
       setStrategyId(tradeToEdit.strategyId);
-      setStrategySnapshot(tradeToEdit.strategySnapshot);
+      setStrategySnapshot(
+        tradeToEdit.strategySnapshot ? deepClone(tradeToEdit.strategySnapshot) : undefined
+      );
     } else if (initialTradeDraft) {
       // New trade mode with active in-memory draft
       return;
@@ -191,7 +195,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       if (scenarios.length > 0) {
         setStrategy(scenarios[0].strategy || scenarios[0].strategySnapshot?.name || '');
         setStrategyId(scenarios[0].strategyId);
-        setStrategySnapshot(scenarios[0].strategySnapshot);
+        setStrategySnapshot(
+          scenarios[0].strategySnapshot ? deepClone(scenarios[0].strategySnapshot) : undefined
+        );
       } else {
         setStrategy('');
         setStrategyId(undefined);
@@ -258,8 +264,34 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       return;
     }
     setShowUnsavedWarning(false);
+    onTradeDraftChangeRef.current?.(null);
     onClose();
   };
+
+  const handleAttemptCloseRef = useRef<() => void>(() => {});
+  handleAttemptCloseRef.current = () => {
+    if (activeViewerImage) {
+      setActiveViewerImage(null);
+      return;
+    }
+    handleAttemptClose();
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleAttemptCloseRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => handleAttemptCloseRef.current());
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen]);
 
   // When scenario changes in New Trade mode, auto-fill direction & strategy (unless user manually picked one)
   const handleScenarioChange = (scnId: string) => {
@@ -430,17 +462,21 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() => {
+                  setShowUnsavedWarning(false);
+                  onTradeDraftChangeRef.current?.(null);
+                  onClose();
+                }}
                 className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-semibold text-[11px] cursor-pointer"
               >
-                Discard
+                Discard changes
               </button>
               <button
                 type="button"
                 onClick={() => setShowUnsavedWarning(false)}
                 className="px-2 py-1 text-app-secondary hover:text-app-main text-[11px] cursor-pointer"
               >
-                Keep Editing
+                Keep editing
               </button>
             </div>
           </div>

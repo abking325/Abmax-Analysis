@@ -15,6 +15,7 @@ import {
   migrateLocalDataToCloud,
   MigrationPreview,
 } from '../services/cloudSync';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface MigrationModalProps {
   isOpen: boolean;
@@ -58,6 +59,24 @@ export const MigrationModal: React.FC<MigrationModalProps> = ({
         });
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !user) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !migrating) {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => {
+      if (!migrating) onClose();
+    });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen, user, migrating, onClose]);
 
   if (!isOpen || !user) return null;
 

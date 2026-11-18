@@ -39,6 +39,8 @@ import {
   saveJournalEntry,
   saveMyJournalDraft,
 } from '../services/db';
+import { ImageViewerModal } from './ImageViewerModal';
+import { registerBackHandler } from '../utils/backNavigation';
 
 const MY_JOURNAL_CONTEXTS: { value: MyJournalContext; label: string; color: string }[] = [
   { value: 'Before Trading', label: 'Before Trading', color: 'bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-700' },
@@ -109,8 +111,13 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
   const [savingStatus, setSavingStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [hasDraftNotice, setHasDraftNotice] = useState(false);
   const [activeDraft, setActiveDraft] = useState<Partial<JournalEntry> | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [confirmDeleteNoteId, setConfirmDeleteNoteId] = useState<string | null>(null);
+  const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(null);
   const isSavingRef = useRef(false);
   const draftDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const originalSnapshotRef = useRef<string>('');
   const currentUserIdRef = useRef<string | null | undefined>(userId);
   currentUserIdRef.current = userId;
 
@@ -207,9 +214,9 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
     };
   }, [userId]);
 
-  // Autosave draft when editor is open, bound strictly to the active user's scope
+  // Autosave draft when writing a new note, bound strictly to active user's scope
   useEffect(() => {
-    if (!isEditorOpen) return;
+    if (!isEditorOpen || editingEntryId) return;
 
     if (draftDebounceRef.current) {
       clearTimeout(draftDebounceRef.current);
@@ -253,6 +260,7 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
     };
   }, [
     isEditorOpen,
+    editingEntryId,
     title,
     content,
     date,
@@ -265,11 +273,25 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
     userId,
   ]);
 
+  const serializeNoteState = (vals: {
+    title: string;
+    content: string;
+    date: string;
+    time: string;
+    contextTag: MyJournalContext;
+    mood: EmotionalReadiness | '';
+    selectedTags: string[];
+    imageUrl: string | null;
+    linkedReportId: string;
+  }) => JSON.stringify(vals);
+
   const resetForm = () => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
     setTitle('');
     setContent('');
-    setDate(new Date().toISOString().slice(0, 10));
-    setTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+    setDate(todayStr);
+    setTime(timeStr);
     setContextTag('General');
     setMood('');
     setSelectedTags([]);
@@ -278,24 +300,61 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
     setLinkedReportId('');
     setEditingEntryId(null);
     setSavingStatus('idle');
+    setFormError(null);
+    setShowDiscardConfirm(false);
+    return {
+      title: '',
+      content: '',
+      date: todayStr,
+      time: timeStr,
+      contextTag: 'General' as MyJournalContext,
+      mood: '' as EmotionalReadiness | '',
+      selectedTags: [] as string[],
+      imageUrl: null as string | null,
+      linkedReportId: '',
+    };
   };
 
   const handleOpenNewNote = () => {
-    resetForm();
+    const base = resetForm();
+    originalSnapshotRef.current = serializeNoteState(base);
     setIsEditorOpen(true);
   };
 
   const handleApplyDraft = () => {
     if (!activeDraft) return;
-    if (activeDraft.title) setTitle(activeDraft.title);
-    if (activeDraft.generalNotes) setContent(activeDraft.generalNotes);
-    if (activeDraft.date) setDate(activeDraft.date);
-    if (activeDraft.time) setTime(activeDraft.time);
-    if (activeDraft.myJournalContext) setContextTag(activeDraft.myJournalContext);
-    if (activeDraft.prep?.readinessState) setMood(activeDraft.prep.readinessState);
-    if (activeDraft.tags) setSelectedTags(activeDraft.tags);
-    if (activeDraft.imageUrl) setImageUrl(activeDraft.imageUrl);
-    if (activeDraft.linkedReportId) setLinkedReportId(activeDraft.linkedReportId);
+    const cloned = JSON.parse(JSON.stringify(activeDraft)) as Partial<JournalEntry>;
+    const base = resetForm();
+    const nextTitle = cloned.title ?? base.title;
+    const nextContent = cloned.generalNotes ?? base.content;
+    const nextDate = cloned.date ?? base.date;
+    const nextTime = cloned.time ?? base.time;
+    const nextCtx = cloned.myJournalContext ?? base.contextTag;
+    const nextMood = cloned.prep?.readinessState ?? base.mood;
+    const nextTags = cloned.tags ? [...cloned.tags] : base.selectedTags;
+    const nextImg = cloned.imageUrl ?? base.imageUrl;
+    const nextLinked = cloned.linkedReportId ?? base.linkedReportId;
+
+    setTitle(nextTitle);
+    setContent(nextContent);
+    setDate(nextDate);
+    setTime(nextTime);
+    setContextTag(nextCtx);
+    setMood(nextMood);
+    setSelectedTags(nextTags);
+    setImageUrl(nextImg);
+    setLinkedReportId(nextLinked);
+    originalSnapshotRef.current = serializeNoteState({
+      title: nextTitle,
+      content: nextContent,
+      date: nextDate,
+      time: nextTime,
+      contextTag: nextCtx,
+      mood: nextMood,
+      selectedTags: nextTags,
+      imageUrl: nextImg,
+      linkedReportId: nextLinked,
+    });
     setHasDraftNotice(false);
     setIsEditorOpen(true);
   };
@@ -307,24 +366,119 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
   };
 
   const handleEditNote = (entry: JournalEntry) => {
-    setEditingEntryId(entry.id);
-    setTitle(entry.title || '');
-    setContent(entry.generalNotes || '');
-    setDate(entry.date || new Date().toISOString().slice(0, 10));
-    setTime(entry.time || '');
-    setContextTag(entry.myJournalContext || 'General');
-    setMood(entry.prep?.readinessState || '');
-    setSelectedTags(entry.tags || []);
-    setImageUrl(entry.imageUrl || null);
-    setLinkedReportId(entry.linkedReportId || '');
+    const cloned = JSON.parse(JSON.stringify(entry)) as JournalEntry;
+    const nextTitle = cloned.title || '';
+    const nextContent = cloned.generalNotes || '';
+    const nextDate = cloned.date || new Date().toISOString().slice(0, 10);
+    const nextTime = cloned.time || '';
+    const nextCtx = cloned.myJournalContext || 'General';
+    const nextMood = cloned.prep?.readinessState || '';
+    const nextTags = cloned.tags ? [...cloned.tags] : [];
+    const nextImg = cloned.imageUrl || null;
+    const nextLinked = cloned.linkedReportId || '';
+
+    setEditingEntryId(cloned.id);
+    setTitle(nextTitle);
+    setContent(nextContent);
+    setDate(nextDate);
+    setTime(nextTime);
+    setContextTag(nextCtx);
+    setMood(nextMood);
+    setSelectedTags(nextTags);
+    setImageUrl(nextImg);
+    setLinkedReportId(nextLinked);
+    setFormError(null);
+    setShowDiscardConfirm(false);
+    originalSnapshotRef.current = serializeNoteState({
+      title: nextTitle,
+      content: nextContent,
+      date: nextDate,
+      time: nextTime,
+      contextTag: nextCtx,
+      mood: nextMood,
+      selectedTags: nextTags,
+      imageUrl: nextImg,
+      linkedReportId: nextLinked,
+    });
     setIsEditorOpen(true);
   };
 
+  const isEditorDirty = () => {
+    return (
+      serializeNoteState({
+        title,
+        content,
+        date,
+        time,
+        contextTag,
+        mood,
+        selectedTags,
+        imageUrl,
+        linkedReportId,
+      }) !== originalSnapshotRef.current
+    );
+  };
+
+  const executeDiscardAndCloseEditor = async () => {
+    if (draftDebounceRef.current) {
+      clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = null;
+    }
+    hasPendingDebounceRef.current = false;
+    if (!editingEntryId) {
+      await clearMyJournalDraft(userId).catch(() => {});
+      setActiveDraft(null);
+      setHasDraftNotice(false);
+    }
+    setShowDiscardConfirm(false);
+    setIsEditorOpen(false);
+    resetForm();
+  };
+
+  const handleRequestCloseEditor = () => {
+    if (isEditorDirty()) {
+      setShowDiscardConfirm(true);
+    } else {
+      executeDiscardAndCloseEditor();
+    }
+  };
+
+  const editorBackRef = useRef<() => void>(() => {});
+  editorBackRef.current = () => {
+    if (showDiscardConfirm) {
+      setShowDiscardConfirm(false);
+    } else {
+      handleRequestCloseEditor();
+    }
+  };
+
+  useEffect(() => {
+    if (!isEditorOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        editorBackRef.current();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const unregBack = registerBackHandler(() => editorBackRef.current());
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      unregBack();
+    };
+  }, [isEditorOpen]);
+
   const handleSaveNote = async () => {
     if (isSavingRef.current) return;
+    setFormError(null);
     if (!content.trim() && !title.trim()) {
-      alert('Please enter a note title or reflection content before saving.');
+      setFormError('Please enter a note title or reflection content before saving.');
       return;
+    }
+
+    if (draftDebounceRef.current) {
+      clearTimeout(draftDebounceRef.current);
+      draftDebounceRef.current = null;
     }
 
     isSavingRef.current = true;
@@ -369,9 +523,11 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
 
       hasPendingDebounceRef.current = false;
       await saveJournalEntry(payload);
-      await clearMyJournalDraft(userId);
-      setHasDraftNotice(false);
-      setActiveDraft(null);
+      if (!editingEntryId) {
+        await clearMyJournalDraft(userId);
+        setHasDraftNotice(false);
+        setActiveDraft(null);
+      }
       setIsEditorOpen(false);
       resetForm();
       await onRefresh();
@@ -383,11 +539,10 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
     }
   };
 
-  const handleDeleteNote = async (id: string) => {
-    if (window.confirm('Are you sure you want to delete this personal reflection note?')) {
-      await deleteJournalEntry(id);
-      await onRefresh();
-    }
+  const handleConfirmDeleteNote = async (id: string) => {
+    await deleteJournalEntry(id);
+    setConfirmDeleteNoteId(null);
+    await onRefresh();
   };
 
   const handleAddCustomTag = () => {
@@ -619,12 +774,20 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
 
             <button
               type="button"
-              onClick={() => setIsEditorOpen(false)}
+              onClick={handleRequestCloseEditor}
+              aria-label="Close personal note editor"
               className="p-1 rounded text-app-secondary hover:text-app-main hover:bg-app-field transition-colors cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          {formError && (
+            <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>{formError}</span>
+            </div>
+          )}
 
           <div className="space-y-3.5">
             {/* Title & Context */}
@@ -833,11 +996,35 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
             )}
           </div>
 
+          {showDiscardConfirm && (
+            <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-medium text-amber-900 dark:text-amber-200">
+                Discard unsaved note changes?
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDiscardConfirm(false)}
+                  className="px-3 py-1.5 text-xs font-medium text-app-main bg-app-main border border-app rounded hover:bg-app-field cursor-pointer"
+                >
+                  Keep editing
+                </button>
+                <button
+                  type="button"
+                  onClick={executeDiscardAndCloseEditor}
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded cursor-pointer"
+                >
+                  Discard changes
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Form Actions */}
           <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-app">
             <button
               type="button"
-              onClick={() => setIsEditorOpen(false)}
+              onClick={handleRequestCloseEditor}
               className="px-3.5 py-2 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field rounded-lg transition-colors cursor-pointer"
             >
               Cancel
@@ -849,7 +1036,7 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-theme hover:bg-emerald-theme-hover rounded-lg shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
             >
               <Save className="w-4 h-4" />
-              <span>{editingEntryId ? 'Update Note' : 'Save Note'}</span>
+              <span>{editingEntryId ? 'Save Changes' : 'Save Note'}</span>
             </button>
           </div>
         </div>
@@ -922,14 +1109,33 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
                     >
                       <Edit3 className="w-4 h-4" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteNote(note.id)}
-                      className="p-1.5 rounded text-app-secondary hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors cursor-pointer"
-                      title="Delete note"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {confirmDeleteNoteId === note.id ? (
+                      <div className="inline-flex items-center gap-1 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 rounded px-1.5 py-0.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmDeleteNote(note.id)}
+                          className="px-2 py-0.5 bg-rose-600 text-white font-bold rounded cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteNoteId(null)}
+                          className="px-1.5 py-0.5 text-app-secondary hover:text-app-main cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteNoteId(note.id)}
+                        className="p-1.5 rounded text-app-secondary hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors cursor-pointer"
+                        title="Delete note"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -947,7 +1153,7 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
                       src={note.imageUrl}
                       alt="Attached note proof"
                       className="rounded-lg border border-app max-h-56 object-cover cursor-pointer hover:opacity-95 transition-opacity"
-                      onClick={() => window.open(note.imageUrl, '_blank')}
+                      onClick={() => setActiveViewerImage({ url: note.imageUrl!, title: note.title || 'My Journal Attachment' })}
                     />
                   </div>
                 )}
@@ -992,6 +1198,15 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
             );
           })}
         </div>
+      )}
+
+      {activeViewerImage && (
+        <ImageViewerModal
+          isOpen={true}
+          onClose={() => setActiveViewerImage(null)}
+          imageUrl={activeViewerImage.url}
+          title={activeViewerImage.title}
+        />
       )}
     </div>
   );

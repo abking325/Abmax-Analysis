@@ -114,7 +114,7 @@ ABMAX ANALYSIS supports exporting and dispatching PDF analysis reports directly 
 
 ## 🧪 Verification & Testing
 
-Run all 13 persistence and workflow test suites locally:
+Run unit and persistence verification tests (`fake-indexeddb`, PDF checks, and mock-tested Supabase conditional draft deletion):
 ```bash
 npm test
 ```
@@ -123,3 +123,23 @@ Run TypeScript verification:
 ```bash
 npm run lint
 ```
+
+Run the repeatable headless Chromium lifecycle & upgrade regression suite (`scripts/e2e-browser-regression.mjs`):
+```bash
+npm run build && npm run test:e2e
+```
+
+What `npm run test:e2e` verifies against a real Chromium browser + real `IndexedDB` (`abmax_analysis_db`):
+- Untouched blank Analysis form does not produce a false `Continue Analysis` button across Back or cold reload
+- `New Save`, `Update Save`, rapid double-tap deduplication, `Save as New Report`, and `Retry Save` after simulated `QuotaExceededError`
+- `Back` → `Home` → cold reload → `Continue Analysis` preserving bound report ID and unsaved edits
+- Nested Scenario `Edit` → `Cancel` → `Discard changes` with a `1200ms` post-debounce non-resurrection check
+- LIFO modal/drawer `Escape` dismissal stack (`NavigationMenu` → `Settings` → `BackupModal`)
+- `Live` workspace independence (`Copy into Live`, `Reset` isolation, zero `Convert to Report / Trade`) and honest `Coinbase BTC-USD` / `Manual EURUSD` quote labeling
+- Populated IndexedDB `V1` → `V5` upgrade preserving reports, drafts, templates, and images
+
+Optional environment overrides for `npm run test:e2e`:
+- `E2E_BASE_URL` — target an already running server instead of starting an ephemeral `vite preview` server on `127.0.0.1:4179`
+- `PLAYWRIGHT_CORE_PATH` — path to `playwright-core` or `playwright` package
+- `PLAYWRIGHT_CHROMIUM_PATH` — explicit Chromium / `chrome-headless-shell` binary path
+

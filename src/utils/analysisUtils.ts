@@ -939,3 +939,132 @@ export function formatReadableAnalysisDate(dateStr?: string | null): {
   return { primary: str, secondary: '', full: str };
 }
 
+/**
+ * Isolated deep clone helper so nested arrays, objects, structure history, and strategy snapshots
+ * never share mutable references across edit buffers or saved snapshots.
+ */
+export function deepClone<T>(value: T): T {
+  if (value === null || value === undefined || typeof value !== 'object') {
+    return value;
+  }
+  try {
+    if (typeof structuredClone === 'function') {
+      return structuredClone(value);
+    }
+  } catch {
+    // Fallback below if non-cloneable property present
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Formats a Date into YYYY-MM-DD in the supplied IANA timezone (avoiding UTC day shift).
+ */
+export function formatDateInTimezone(date: Date = new Date(), timeZone?: string): string {
+  const tz = (timeZone || '').trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Formats a Date into HH:MM:SS (24-hour) in the supplied IANA timezone.
+ */
+export function formatTimeInTimezone(date: Date = new Date(), timeZone?: string): string {
+  const tz = (timeZone || '').trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(date);
+  } catch {
+    return date.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+  }
+}
+
+/**
+ * Determines whether an AnalysisData session contains meaningful user work or is bound to
+ * an existing report so untouched blank new forms do not trigger false "Continue Analysis" prompts.
+ */
+export function hasMeaningfulAnalysisWork(
+  data?: AnalysisData | null,
+  isEditingExistingOrBound = false
+): boolean {
+  if (!data) return false;
+  if (isEditingExistingOrBound) return true;
+  if (
+    Boolean(data.originalId && data.originalId !== 'active_draft' && data.originalId !== 'draft') ||
+    data.isModified === true ||
+    Boolean(data.copiedFromId) ||
+    Boolean(data.templateId)
+  ) {
+    return true;
+  }
+  if ((data.title || '').trim().length > 0) return true;
+  if ((data.overallNotes || '').trim().length > 0) return true;
+  if ((data.majorLiquidityWatchlist || '').trim().length > 0) return true;
+  if ((data.crossedLiquidity || []).length > 0) return true;
+  if ((data.openingCandles || []).length > 0) return true;
+  if ((data.supplyDemandLevels || []).length > 0) return true;
+  if ((data.scenarios || []).length > 0) return true;
+  if ((data.trades || []).length > 0) return true;
+
+  for (const tf of TIMEFRAME_ORDER) {
+    const tfd = data.timeframes?.[tf];
+    if (!tfd) continue;
+    if (
+      tfd.overallBias ||
+      (tfd.biasSpecific || '').trim().length > 0 ||
+      (tfd.personalBiasNotes || '').trim().length > 0 ||
+      (tfd.note || '').trim().length > 0 ||
+      Boolean(tfd.chartImageId) ||
+      tfd.isSaved === true ||
+      Boolean(tfd.priceLocation?.location) ||
+      Boolean((tfd.priceLocation?.levelRange || '').trim()) ||
+      Boolean(tfd.swing?.direction) ||
+      Boolean((tfd.swing?.high || '').trim()) ||
+      Boolean((tfd.swing?.low || '').trim()) ||
+      Boolean((tfd.swing?.bosAt || '').trim()) ||
+      (tfd.swing?.history || []).length > 0 ||
+      Boolean(tfd.internal?.direction) ||
+      Boolean((tfd.internal?.high || '').trim()) ||
+      Boolean((tfd.internal?.low || '').trim()) ||
+      Boolean((tfd.internal?.ibosAt || '').trim()) ||
+      (tfd.internal?.history || []).length > 0 ||
+      Boolean(tfd.fractal?.direction) ||
+      Boolean((tfd.fractal?.fractalBosAt || '').trim()) ||
+      (tfd.fractal?.history || []).length > 0 ||
+      (tfd.supplyLevels || []).length > 0 ||
+      (tfd.demandLevels || []).length > 0 ||
+      (tfd.supportLevels || []).length > 0 ||
+      (tfd.resistanceLevels || []).length > 0 ||
+      (tfd.liquidityLevels || []).length > 0 ||
+      Boolean((tfd.pmh || '').trim()) ||
+      Boolean((tfd.pml || '').trim()) ||
+      Boolean((tfd.pwh || '').trim()) ||
+      Boolean((tfd.pwl || '').trim()) ||
+      Boolean((tfd.pdh || '').trim()) ||
+      Boolean((tfd.pdl || '').trim())
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+

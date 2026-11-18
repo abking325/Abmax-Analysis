@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
-import { X, Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { X, Plus, Trash2, AlertCircle } from 'lucide-react';
 import { PlannedScenario } from '../types/journal';
+import { deepClone } from '../utils/analysisUtils';
 import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
 import { StrategySelector } from './StrategySelector';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface EditScenariosModalProps {
   isOpen: boolean;
@@ -21,14 +23,67 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
   userId,
 }) => {
   const [scenarios, setScenarios] = useState<PlannedScenario[]>(() =>
-    JSON.parse(JSON.stringify(initialScenarios || []))
+    deepClone(initialScenarios || [])
   );
+  const baselineJsonRef = useRef<string>(JSON.stringify(initialScenarios || []));
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
     null
   );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const cloned = deepClone(initialScenarios || []);
+    setScenarios(cloned);
+    baselineJsonRef.current = JSON.stringify(cloned);
+    setDeleteConfirmId(null);
+    setShowUnsavedWarning(false);
+    setError(null);
+  }, [isOpen, initialScenarios]);
+
+  const isDirty = useCallback(() => {
+    return JSON.stringify(scenarios) !== baselineJsonRef.current;
+  }, [scenarios]);
+
+  const handleAttemptClose = useCallback(() => {
+    if (isSaving) return;
+    if (isDirty() && !showUnsavedWarning) {
+      setShowUnsavedWarning(true);
+      return;
+    }
+    setShowUnsavedWarning(false);
+    onClose();
+  }, [isSaving, isDirty, showUnsavedWarning, onClose]);
+
+  const backActionRef = useRef<() => void>(() => {});
+  backActionRef.current = () => {
+    if (activeViewerImage) {
+      setActiveViewerImage(null);
+    } else if (showUnsavedWarning) {
+      setShowUnsavedWarning(false);
+    } else {
+      handleAttemptClose();
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        backActionRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => backActionRef.current());
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -69,7 +124,8 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
     setIsSaving(true);
     setError(null);
     try {
-      await onSave(scenarios);
+      await onSave(deepClone(scenarios));
+      setShowUnsavedWarning(false);
       onClose();
     } catch (err) {
       setError((err as Error).message || 'Failed to update scenarios');
@@ -84,7 +140,7 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
       aria-modal="true"
       aria-label="Edit Planned Scenarios"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-      onClick={onClose}
+      onClick={handleAttemptClose}
     >
       <div
         className="w-full max-w-2xl bg-app-main border border-app rounded-lg shadow-xl overflow-hidden max-h-[90vh] flex flex-col"
@@ -100,12 +156,40 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="p-1 text-app-secondary hover:text-app-main rounded"
+            onClick={handleAttemptClose}
+            className="p-1 text-app-secondary hover:text-app-main rounded cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {showUnsavedWarning && (
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 text-xs flex flex-wrap items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+              <span>Discard unsaved scenario changes?</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowUnsavedWarning(false)}
+                className="px-2.5 py-1 bg-app-main border border-app text-app-main rounded text-[11px] font-medium cursor-pointer"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUnsavedWarning(false);
+                  onClose();
+                }}
+                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-semibold text-[11px] cursor-pointer"
+              >
+                Discard changes
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Content body */}
         <div className="p-4 sm:p-6 overflow-y-auto space-y-4 text-xs text-app-main flex-1">
@@ -313,8 +397,8 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
         <div className="flex items-center justify-end gap-2 px-4 sm:px-6 py-3 border-t border-app bg-app-secondary">
           <button
             type="button"
-            onClick={onClose}
-            className="px-3.5 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded"
+            onClick={handleAttemptClose}
+            className="px-3.5 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded cursor-pointer"
           >
             Cancel
           </button>

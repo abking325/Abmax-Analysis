@@ -19,7 +19,14 @@ import {
   Link as LinkIcon,
   Plus,
 } from 'lucide-react';
-import { JournalEntry, SavedReport } from '../types/journal';
+import {
+  DEFAULT_INSTRUMENTS_CONFIG,
+  getEnabledInstrumentSymbols,
+  InstrumentsConfig,
+  JournalEntry,
+  normalizeInstrumentSymbol,
+  SavedReport,
+} from '../types/journal';
 import {
   calculateOverallAlignment,
   formatReadableAnalysisDate,
@@ -57,6 +64,7 @@ interface ReportsViewProps {
   onReportDetailsStateChange?: (isOpen: boolean, isOrganized: boolean) => void;
   onNavigateToJournal?: () => void;
   onNavigateToPerformance?: () => void;
+  instrumentsConfig?: InstrumentsConfig;
 }
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
@@ -74,6 +82,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   onReportDetailsStateChange,
   onNavigateToJournal,
   onNavigateToPerformance,
+  instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
 }) => {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'analysis' | 'journal' | 'performance'>('analysis');
@@ -97,6 +106,37 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   useEffect(() => {
     onReportDetailsStateChangeRef.current = onReportDetailsStateChange;
   }, [onReportDetailsStateChange]);
+
+  const filterPairOptions = useMemo(() => {
+    const enabled = getEnabledInstrumentSymbols(instrumentsConfig);
+    const seen = new Set(enabled);
+    const extra: string[] = [];
+    for (const r of reports) {
+      const sym = normalizeInstrumentSymbol(r.pair || '');
+      if (sym && !seen.has(sym)) {
+        seen.add(sym);
+        extra.push(sym);
+      }
+    }
+    for (const j of journalEntries) {
+      const sym = normalizeInstrumentSymbol(j.pair || '');
+      if (sym && !seen.has(sym)) {
+        seen.add(sym);
+        extra.push(sym);
+      }
+    }
+    if (selectedPair && selectedPair !== 'All') {
+      const cur = normalizeInstrumentSymbol(selectedPair);
+      if (cur && !seen.has(cur)) {
+        seen.add(cur);
+        extra.push(cur);
+      }
+    }
+    return [
+      ...enabled.map((sym) => ({ symbol: sym, label: sym })),
+      ...extra.map((sym) => ({ symbol: sym, label: `${sym} (Historical)` })),
+    ];
+  }, [instrumentsConfig, reports, journalEntries, selectedPair]);
 
   const onSessionChangeRef = useRef(onSessionChange);
   useEffect(() => {
@@ -374,12 +414,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 <select
                   value={selectedPair}
                   onChange={(e) => setSelectedPair(e.target.value)}
+                  aria-label="Filter reports by instrument"
                   className="bg-transparent text-xs text-app-main focus:outline-hidden font-medium cursor-pointer"
                 >
                   <option value="All">All pairs</option>
-                  <option value="XAUUSD">XAUUSD</option>
-                  <option value="BTCUSD">BTCUSD</option>
-                  <option value="EURUSD">EURUSD</option>
+                  {filterPairOptions.map((opt) => (
+                    <option key={opt.symbol} value={opt.symbol}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             )}

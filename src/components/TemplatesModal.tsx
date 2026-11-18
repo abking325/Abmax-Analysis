@@ -3,6 +3,7 @@ import { X, Bookmark, Edit2, Trash2, Check, Clock, AlertCircle } from 'lucide-re
 import { SavedTemplate } from '../types/journal';
 import { getAllTemplates, deleteTemplate, renameTemplate } from '../services/db';
 import { ErrorBoundary } from './ErrorBoundary';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface SaveTemplateModalProps {
   isOpen: boolean;
@@ -49,6 +50,24 @@ export const SaveTemplateModal: React.FC<SaveTemplateModalProps> = ({
         });
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isSubmittingRef.current) {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => {
+      if (!isSubmittingRef.current) onClose();
+    });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -315,6 +334,22 @@ export const LoadTemplateModal: React.FC<LoadTemplateModalProps> = ({
       isSelectingRef.current = false;
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => onClose());
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 

@@ -18,8 +18,12 @@ import {
   Sliders,
 } from 'lucide-react';
 import {
+  DEFAULT_INSTRUMENTS_CONFIG,
   DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
+  getEnabledInstrumentSymbols,
+  InstrumentsConfig,
   JournalEntry,
+  normalizeInstrumentSymbol,
   PerformanceVisibilityConfig,
   RecordedTrade,
   SavedReport,
@@ -88,7 +92,8 @@ interface PerformanceViewProps {
   onOpenReport?: (reportId: string) => void;
   userId?: string | null;
   performanceVisibilityConfig?: PerformanceVisibilityConfig;
-  onOpenSettings?: (tab?: 'general' | 'theme' | 'journal_visibility' | 'performance_visibility' | 'admin') => void;
+  onOpenSettings?: (tab?: 'general' | 'theme' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
+  instrumentsConfig?: InstrumentsConfig;
 }
 
 export const PerformanceView: React.FC<PerformanceViewProps> = ({
@@ -97,6 +102,7 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
   userId,
   performanceVisibilityConfig = DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   onOpenSettings,
+  instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
 }) => {
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [strategies, setStrategies] = useState<TradingStrategy[]>([]);
@@ -271,14 +277,20 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
 
   // Distributions by Pair, Session, and Direction
   const distributions = useMemo(() => {
-    const pairs: Record<string, number> = { XAUUSD: 0, BTCUSD: 0, EURUSD: 0 };
+    const pairs: Record<string, number> = {};
+    for (const sym of getEnabledInstrumentSymbols(instrumentsConfig)) {
+      pairs[sym] = 0;
+    }
     const sessions: Record<string, number> = { Asia: 0, London: 0, 'NY AM': 0, 'NY PM': 0 };
     const directions: Record<string, number> = { Buy: 0, Sell: 0 };
     const mistakes: Record<string, number> = {};
     const lessons: Record<string, number> = {};
 
     for (const t of allTrades) {
-      if (t.pair && pairs[t.pair] !== undefined) pairs[t.pair]++;
+      const sym = normalizeInstrumentSymbol(t.pair || '');
+      if (sym) {
+        pairs[sym] = (pairs[sym] || 0) + 1;
+      }
       const sessionKey = t.session === 'Asian' ? 'Asia' : t.session;
       if (sessionKey && sessions[sessionKey] !== undefined) sessions[sessionKey]++;
       if (t.direction && directions[t.direction] !== undefined) directions[t.direction]++;
@@ -330,7 +342,7 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
     );
 
     return { pairs, sessions, directions, sortedMistakes, sortedLessons, setupBreakdownList };
-  }, [allTrades, filteredReports, strategies, scopedJournalEntries, startDate, endDate]);
+  }, [allTrades, filteredReports, strategies, scopedJournalEntries, startDate, endDate, instrumentsConfig]);
 
   if (isAllHidden) {
     return (

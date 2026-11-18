@@ -18,6 +18,7 @@ import {
   Image as ImageIcon,
   ChevronDown,
   ChevronUp,
+  Activity,
 } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import {
@@ -30,6 +31,7 @@ import {
   SavedReport,
   TIMEFRAME_ORDER,
   TimeframeId,
+  TradingPair,
   getPersonalBiasLabel,
   isHigherPersonalBiasTimeframe,
 } from '../types/journal';
@@ -53,6 +55,8 @@ import { EditScenariosModal } from './EditScenariosModal';
 import { TakeTradeModal } from './TakeTradeModal';
 import { ShareReportModal } from './ShareReportModal';
 import { PdfStyleChooserModal } from './PdfStyleChooserModal';
+import { copyScenarioToLiveWorkspace } from '../services/liveMarketService';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface ReportDetailsModalProps {
   isOpen: boolean;
@@ -107,6 +111,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [invalidatingScenarioId, setInvalidatingScenarioId] = useState<string | null>(null);
   const [isEditScenariosOpen, setIsEditScenariosOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [copiedToLiveScenarioId, setCopiedToLiveScenarioId] = useState<string | null>(null);
+  const [copyToLiveError, setCopyToLiveError] = useState<string | null>(null);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const bodyContainerRef = useRef<HTMLDivElement>(null);
@@ -455,19 +461,15 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     };
     window.addEventListener('popstate', handlePopState);
 
-    let capHandle: any = null;
-    if (typeof window !== 'undefined' && (window as any).Capacitor?.isPluginAvailable?.('App')) {
-      import('@capacitor/app').then(({ App }) => {
-        App.addListener('backButton', () => {
-          handleBackAction('native');
-        }).then((h) => {
-          capHandle = h;
-        }).catch(() => {});
-      }).catch(() => {});
-    }
+    const unregBack = registerBackHandler(() => {
+      handleBackAction('native');
+    });
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (isTakeTradeOpen || isEditScenariosOpen) {
+          return;
+        }
         e.preventDefault();
         handleBackAction('escape');
       }
@@ -485,9 +487,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
       document.body.style.overflow = originalOverflow;
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('popstate', handlePopState);
-      if (capHandle?.remove) {
-        capHandle.remove();
-      }
+      unregBack();
       if (historyPushedRef.current && window.history.state?.abmaxModal === 'report_details') {
         historyPushedRef.current = false;
         try {
@@ -1335,9 +1335,9 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                 </div>
                               )}
 
-                              {/* Actions inside each scenario box: Take Trade & Mark Invalid */}
+                              {/* Actions inside each scenario box: Take Trade, Copy into Live & Mark Invalid */}
                               <div className="flex items-center justify-between pt-2 border-t border-app/60 flex-wrap gap-2">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <button
                                     type="button"
                                     disabled={sc.isInvalid || sc.status === 'Invalid'}
@@ -1347,6 +1347,33 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   >
                                     <TrendingUp className="w-3.5 h-3.5" />
                                     <span>Take Trade</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      setCopyToLiveError(null);
+                                      try {
+                                        await copyScenarioToLiveWorkspace({
+                                          userId: user?.id,
+                                          pair: (report.pair || 'XAUUSD') as TradingPair,
+                                          scenario: sc,
+                                          sourceReportId: report.id,
+                                          sourceReportTitle: report.title || `${report.pair} Analysis (${report.date})`,
+                                        });
+                                        setCopiedToLiveScenarioId(sc.id);
+                                        setTimeout(() => {
+                                          setCopiedToLiveScenarioId((prev) => (prev === sc.id ? null : prev));
+                                        }, 3000);
+                                      } catch (err) {
+                                        setCopyToLiveError((err as Error).message || 'Could not copy scenario into Live.');
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] text-xs font-semibold text-app-main bg-app-main hover:bg-app-secondary rounded-md border border-app transition-colors cursor-pointer"
+                                    title="Copy an independent monitoring scenario into the Live workspace"
+                                  >
+                                    <Activity className="w-3.5 h-3.5 text-emerald-theme" />
+                                    <span>{copiedToLiveScenarioId === sc.id ? 'Copied into Live' : 'Copy into Live'}</span>
                                   </button>
 
                                   {(sc.isInvalid || sc.status === 'Invalid') ? (
@@ -1396,6 +1423,9 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   </span>
                                 )}
                               </div>
+                              {copyToLiveError && (
+                                <p className="text-[11px] text-rose-600 dark:text-rose-400 pt-1">{copyToLiveError}</p>
+                              )}
                             </div>
                           ))}
                         </div>

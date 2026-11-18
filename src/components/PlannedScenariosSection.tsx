@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronUp, Check, Edit2 } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Check, Edit2, Radio, X } from 'lucide-react';
 import { PlannedScenario } from '../types/journal';
+import { deepClone } from '../utils/analysisUtils';
 import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
 import { StrategySelector } from './StrategySelector';
@@ -9,6 +10,7 @@ interface PlannedScenariosSectionProps {
   scenarios: PlannedScenario[];
   onChange: (scenarios: PlannedScenario[]) => void;
   onSaveScenario?: (scenarioId: string) => Promise<void>;
+  onCopyToLive?: (scenario: PlannedScenario) => Promise<void> | void;
   initialExpandedMap?: Record<string, boolean>;
   onExpandedMapChange?: (map: Record<string, boolean>) => void;
   userId?: string | null;
@@ -18,16 +20,23 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
   scenarios = [],
   onChange,
   onSaveScenario,
+  onCopyToLive,
   initialExpandedMap,
   onExpandedMapChange,
   userId,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() => initialExpandedMap || {});
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [copiedLiveId, setCopiedLiveId] = useState<string | null>(null);
   const [activeViewerImage, setActiveViewerImage] = useState<{ url: string; title: string } | null>(
     null
   );
+  // Isolated editable copies so live scenario edits never mutate saved scenarios until Save is pressed
+  const [editingDrafts, setEditingDrafts] = useState<Record<string, PlannedScenario>>({});
+  const editingOriginalsRef = useRef<Record<string, PlannedScenario>>({});
+  const newlyCreatedIdsRef = useRef<Set<string>>(new Set());
   const scenarioCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const onExpandedMapChangeRef = useRef(onExpandedMapChange);
@@ -41,8 +50,9 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
 
   const handleAddScenario = () => {
     const nextIndex = scenarios.length + 1;
+    const now = Date.now();
     const newScenario: PlannedScenario = {
-      id: `scn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      id: `scn_${now}_${Math.random().toString(36).substring(2, 9)}`,
       label: `Scenario ${nextIndex}`,
       strategy: '',
       direction: '',
@@ -51,15 +61,38 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
       invalidationConditions: '',
       images: [],
       isSaved: false,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
     };
+    newlyCreatedIdsRef.current.add(newScenario.id);
+    editingOriginalsRef.current[newScenario.id] = deepClone(newScenario);
+    setEditingDrafts((prev) => ({ ...prev, [newScenario.id]: deepClone(newScenario) }));
     onChange([...scenarios, newScenario]);
-    // Expand newly added scenario
     setExpandedMap((prev) => ({ ...prev, [newScenario.id]: true }));
   };
 
-  const handleUpdateScenario = (id: string, updates: Partial<PlannedScenario>) => {
+  const handleEditScenario = (id: string) => {
+    const target = scenarios.find((s) => s.id === id);
+    if (!target) return;
+    editingOriginalsRef.current[id] = deepClone(target);
+    setEditingDrafts((prev) => ({ ...prev, [id]: deepClone(target) }));
+    setCancelConfirmId(null);
+    setDeleteConfirmId(null);
+    setExpandedMap((prev) => ({ ...prev, [id]: true }));
+  };
+
+  const handleUpdateDraftOrScenario = (id: string, updates: Partial<PlannedScenario>) => {
+    if (editingDrafts[id]) {
+      setEditingDrafts((prev) => ({
+        ...prev,
+        [id]: {
+          ...prev[id],
+          ...updates,
+          updatedAt: Date.now(),
+        },
+      }));
+      return;
+    }
     const updated = scenarios.map((s) => {
       if (s.id === id) {
         return {
@@ -73,42 +106,121 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
     onChange(updated);
   };
 
+  const isScenarioDraftDirty = (id: string): boolean => {
+    const draft = editingDrafts[id];
+    const orig = editingOriginalsRef.current[id];
+    if (!draft || !orig) return false;
+    const stripMeta = (s: PlannedScenario) => ({
+      ...s,
+      updatedAt: 0,
+      isSaved: undefined,
+    });
+    return JSON.stringify(stripMeta(draft)) !== JSON.stringify(stripMeta(orig));
+  };
+
+  const executeCancelEdit = (id: string) => {
+    const isNew = newlyCreatedIdsRef.current.has(id);
+    const orig = editingOriginalsRef.current[id];
+    setCancelConfirmId(null);
+    setEditingDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    delete editingOriginalsRef.current[id];
+    newlyCreatedIdsRef.current.delete(id);
+
+    if (isNew) {
+      // Canceling an unfinished newly added item removes only that item
+      const filtered = scenarios.filter((s) => s.id !== id).map((s, idx) => ({
+        ...s,
+        label: `Scenario ${idx + 1}`,
+      }));
+      onChange(filtered);
+      return;
+    }
+
+    if (orig) {
+      // Restore pre-edit baseline without altering unrelated scenarios or state
+      const restored = scenarios.map((s) => (s.id === id ? deepClone(orig) : s));
+      onChange(restored);
+      setExpandedMap((prev) => ({ ...prev, [id]: false }));
+    } else {
+      setExpandedMap((prev) => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleRequestCancelEdit = (id: string) => {
+    if (isScenarioDraftDirty(id)) {
+      setCancelConfirmId(id);
+      return;
+    }
+    executeCancelEdit(id);
+  };
+
   const handleRemoveScenario = (id: string) => {
+    setEditingDrafts((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    delete editingOriginalsRef.current[id];
+    newlyCreatedIdsRef.current.delete(id);
     const filtered = scenarios.filter((s) => s.id !== id);
-    // Renumber scenario labels to keep them orderly (Scenario 1, Scenario 2...)
     const renumbered = filtered.map((s, idx) => ({
       ...s,
       label: `Scenario ${idx + 1}`,
     }));
     onChange(renumbered);
     setDeleteConfirmId(null);
+    setCancelConfirmId(null);
   };
 
   const toggleExpand = (id: string) => {
+    const currentlyExpanded = expandedMap[id] !== false && (!scenarios.find((s) => s.id === id)?.isSaved || Boolean(editingDrafts[id]));
+    if (currentlyExpanded && editingDrafts[id]) {
+      handleRequestCancelEdit(id);
+      return;
+    }
     setExpandedMap((prev) => ({
       ...prev,
       [id]: prev[id] === undefined ? false : !prev[id],
     }));
   };
 
-  const handleSaveIndividualScenario = async (scenario: PlannedScenario) => {
-    const cardEl = scenarioCardRefs.current[scenario.id];
+  const handleSaveIndividualScenario = async (scenarioId: string) => {
+    const activeVersion = editingDrafts[scenarioId] || scenarios.find((s) => s.id === scenarioId);
+    if (!activeVersion) return;
+
+    const cardEl = scenarioCardRefs.current[scenarioId];
     const topBefore = cardEl?.getBoundingClientRect().top ?? null;
 
-    setSavingId(scenario.id);
+    setSavingId(scenarioId);
     try {
-      // 1. Mark saved
-      handleUpdateScenario(scenario.id, { isSaved: true });
+      const committed: PlannedScenario = {
+        ...deepClone(activeVersion),
+        isSaved: true,
+        updatedAt: Date.now(),
+      };
+      const updatedList = scenarios.map((s) => (s.id === scenarioId ? committed : s));
+      onChange(updatedList);
 
-      // 2. Persist to parent draft/report if handler provided
+      // Clean up edit buffers now that Save committed
+      setEditingDrafts((prev) => {
+        const next = { ...prev };
+        delete next[scenarioId];
+        return next;
+      });
+      delete editingOriginalsRef.current[scenarioId];
+      newlyCreatedIdsRef.current.delete(scenarioId);
+      setCancelConfirmId(null);
+
       if (onSaveScenario) {
-        await onSaveScenario(scenario.id);
+        await onSaveScenario(scenarioId);
       }
 
-      // 3. Collapse editor after successful saving
-      setExpandedMap((prev) => ({ ...prev, [scenario.id]: false }));
+      setExpandedMap((prev) => ({ ...prev, [scenarioId]: false }));
 
-      // 4. Stabilize scroll without sudden jumps
       if (topBefore !== null) {
         const wasAboveViewport = topBefore < 0;
         requestAnimationFrame(() => {
@@ -133,9 +245,13 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
     }
   };
 
-  const handleEditScenario = (id: string) => {
-    handleUpdateScenario(id, { isSaved: false });
-    setExpandedMap((prev) => ({ ...prev, [id]: true }));
+  const handleCopyScenarioLive = async (scenario: PlannedScenario) => {
+    if (!onCopyToLive) return;
+    await onCopyToLive(deepClone(scenario));
+    setCopiedLiveId(scenario.id);
+    setTimeout(() => {
+      setCopiedLiveId((prev) => (prev === scenario.id ? null : prev));
+    }, 2500);
   };
 
   return (
@@ -145,7 +261,7 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
           <div className="text-xs font-bold text-app-main uppercase tracking-wider flex items-center gap-2">
             <span>Planned Scenarios</span>
             {scenarios.length > 0 && (
-              <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+              <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
                 {scenarios.length} {scenarios.length === 1 ? 'scenario' : 'scenarios'}
               </span>
             )}
@@ -173,15 +289,19 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
         </div>
       ) : (
         <div className="space-y-3.5 mt-3">
-          {scenarios.map((scenario, index) => {
-            const isExpanded = expandedMap[scenario.id] !== false && !scenario.isSaved;
-            const isDeleting = deleteConfirmId === scenario.id;
+          {scenarios.map((parentScenario, index) => {
+            const draftScenario = editingDrafts[parentScenario.id];
+            const scenario = draftScenario || parentScenario;
+            const isEditingCard = Boolean(draftScenario);
+            const isExpanded = isEditingCard || (expandedMap[parentScenario.id] !== false && !parentScenario.isSaved);
+            const isDeleting = deleteConfirmId === parentScenario.id;
+            const isConfirmingCancel = cancelConfirmId === parentScenario.id;
 
             return (
               <div
-                key={scenario.id}
+                key={parentScenario.id}
                 ref={(el) => {
-                  scenarioCardRefs.current[scenario.id] = el;
+                  scenarioCardRefs.current[parentScenario.id] = el;
                 }}
                 className="border border-app rounded-md bg-app-secondary/30 overflow-hidden transition-all"
               >
@@ -211,29 +331,47 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                       </span>
                     )}
 
-                    {scenario.isSaved && (
+                    {parentScenario.isSaved && !isEditingCard && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-theme bg-emerald-pale px-2 py-0.5 rounded">
                         <Check className="w-2.5 h-2.5" /> Saved
+                      </span>
+                    )}
+
+                    {isEditingCard && (
+                      <span className="text-[10px] font-semibold text-amber-theme bg-amber-100 dark:bg-amber-950/40 px-2 py-0.5 rounded">
+                        Editing
                       </span>
                     )}
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    {onCopyToLive && !isEditingCard && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyScenarioLive(parentScenario)}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-emerald-theme hover:bg-emerald-pale rounded transition-colors cursor-pointer"
+                        title="Copy scenario independently into Live workspace"
+                      >
+                        <Radio className="w-3 h-3" />
+                        <span>{copiedLiveId === parentScenario.id ? 'Copied to Live' : 'Copy into Live'}</span>
+                      </button>
+                    )}
+
                     {/* Delete confirmation */}
                     {isDeleting ? (
                       <div className="flex items-center gap-1.5 bg-rose-50 dark:bg-rose-950/40 p-1 rounded border border-rose-200 dark:border-rose-800 text-[11px]">
                         <span className="text-rose-700 dark:text-rose-300">Remove?</span>
                         <button
                           type="button"
-                          onClick={() => handleRemoveScenario(scenario.id)}
-                          className="px-2 py-0.5 bg-rose-600 text-white rounded font-medium text-[10px]"
+                          onClick={() => handleRemoveScenario(parentScenario.id)}
+                          className="px-2 py-0.5 bg-rose-600 text-white rounded font-medium text-[10px] cursor-pointer"
                         >
                           Yes
                         </button>
                         <button
                           type="button"
                           onClick={() => setDeleteConfirmId(null)}
-                          className="px-1.5 py-0.5 text-app-secondary hover:text-app-main text-[10px]"
+                          className="px-1.5 py-0.5 text-app-secondary hover:text-app-main text-[10px] cursor-pointer"
                         >
                           Cancel
                         </button>
@@ -241,8 +379,8 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                     ) : (
                       <button
                         type="button"
-                        onClick={() => setDeleteConfirmId(scenario.id)}
-                        className="p-1 text-app-secondary hover:text-rose-600 rounded transition-colors"
+                        onClick={() => setDeleteConfirmId(parentScenario.id)}
+                        className="p-1 text-app-secondary hover:text-rose-600 rounded transition-colors cursor-pointer"
                         title="Remove scenario"
                         aria-label={`Remove ${scenario.label}`}
                       >
@@ -252,8 +390,8 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
 
                     <button
                       type="button"
-                      onClick={() => toggleExpand(scenario.id)}
-                      className="p-1 text-app-secondary hover:text-app-main rounded transition-colors"
+                      onClick={() => toggleExpand(parentScenario.id)}
+                      className="p-1 text-app-secondary hover:text-app-main rounded transition-colors cursor-pointer"
                       title={isExpanded ? 'Collapse' : 'Expand'}
                       aria-label={isExpanded ? 'Collapse scenario' : 'Expand scenario'}
                     >
@@ -266,28 +404,29 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                   </div>
                 </div>
 
-                {/* Collapsed Compact Summary (when saved) */}
+                {/* Collapsed Compact Summary (when saved & not editing) */}
                 {!isExpanded && (
                   <div className="p-3 bg-app-main flex flex-wrap items-center justify-between gap-3 text-xs">
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-app-secondary">
                       <span>
                         <strong className="text-app-main font-semibold">Direction:</strong>{' '}
-                        {scenario.direction || '—'}
+                        {parentScenario.direction || '—'}
                       </span>
-                      {scenario.strategy && (
+                      {parentScenario.strategy && (
                         <span>
                           <strong className="text-app-main font-semibold">Strategy:</strong>{' '}
-                          {scenario.strategy}
+                          {parentScenario.strategy}
                         </span>
                       )}
-                      {scenario.description && (
+                      {parentScenario.description && (
                         <span className="truncate max-w-xs text-app-secondary">
-                          {scenario.description}
+                          {parentScenario.description}
                         </span>
                       )}
-                      {(scenario.images?.length || 0) > 0 && (
+                      {(parentScenario.images?.length || 0) > 0 && (
                         <span className="text-emerald-theme font-medium">
-                          {scenario.images?.length} {scenario.images?.length === 1 ? 'chart' : 'charts'}
+                          {parentScenario.images?.length}{' '}
+                          {parentScenario.images?.length === 1 ? 'chart' : 'charts'}
                         </span>
                       )}
                     </div>
@@ -295,15 +434,20 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => toggleExpand(scenario.id)}
-                        className="px-2.5 py-1 text-xs text-app-secondary hover:text-app-main rounded transition-colors"
+                        onClick={() =>
+                          setExpandedMap((prev) => ({
+                            ...prev,
+                            [parentScenario.id]: true,
+                          }))
+                        }
+                        className="px-2.5 py-1 text-xs text-app-secondary hover:text-app-main rounded transition-colors cursor-pointer"
                       >
                         View Details
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleEditScenario(scenario.id)}
-                        className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-emerald-theme bg-emerald-pale rounded hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+                        onClick={() => handleEditScenario(parentScenario.id)}
+                        className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-emerald-theme bg-emerald-pale rounded hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors cursor-pointer"
                       >
                         <Edit2 className="w-3 h-3" /> Edit Scenario
                       </button>
@@ -314,6 +458,30 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                 {/* Body fields */}
                 {isExpanded && (
                   <div className="p-3.5 sm:p-4 space-y-3.5">
+                    {isConfirmingCancel && (
+                      <div className="p-2.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 text-xs flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-amber-800 dark:text-amber-200 font-medium">
+                          Discard unsaved edits to {scenario.label || 'this scenario'}?
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setCancelConfirmId(null)}
+                            className="px-2.5 py-1 text-xs font-medium text-app-main bg-app-main border border-app rounded cursor-pointer"
+                          >
+                            Keep editing
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => executeCancelEdit(parentScenario.id)}
+                            className="px-2.5 py-1 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded cursor-pointer"
+                          >
+                            Discard changes
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {/* Strategy Used */}
                       <div className="sm:col-span-2">
@@ -323,10 +491,10 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                           strategy={scenario.strategy}
                           strategySnapshot={scenario.strategySnapshot}
                           onChange={({ strategyId, strategy, strategySnapshot }) =>
-                            handleUpdateScenario(scenario.id, {
+                            handleUpdateDraftOrScenario(parentScenario.id, {
                               strategyId,
                               strategy,
-                              strategySnapshot,
+                              strategySnapshot: strategySnapshot ? deepClone(strategySnapshot) : undefined,
                             })
                           }
                           hasExistingTargetContent={Boolean(
@@ -353,7 +521,7 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                                 : scenario.invalidationConditions.trim()
                                   ? scenario.invalidationConditions
                                   : selectedStrat.invalidationConditions || '';
-                            handleUpdateScenario(scenario.id, {
+                            handleUpdateDraftOrScenario(parentScenario.id, {
                               description: nextDescription,
                               entryConditions: nextEntry,
                               invalidationConditions: nextInvalidation,
@@ -371,7 +539,7 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                           <button
                             type="button"
                             onClick={() =>
-                              handleUpdateScenario(scenario.id, {
+                              handleUpdateDraftOrScenario(parentScenario.id, {
                                 direction: scenario.direction === 'Buy' ? '' : 'Buy',
                               })
                             }
@@ -386,7 +554,7 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                           <button
                             type="button"
                             onClick={() =>
-                              handleUpdateScenario(scenario.id, {
+                              handleUpdateDraftOrScenario(parentScenario.id, {
                                 direction: scenario.direction === 'Sell' ? '' : 'Sell',
                               })
                             }
@@ -411,7 +579,9 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                         rows={2}
                         value={scenario.description}
                         onChange={(e) =>
-                          handleUpdateScenario(scenario.id, { description: e.target.value })
+                          handleUpdateDraftOrScenario(parentScenario.id, {
+                            description: e.target.value,
+                          })
                         }
                         placeholder="Expected narrative and context: how price delivers into the POI..."
                         className="w-full px-3 py-2 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 resize-y"
@@ -420,7 +590,6 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
 
                     {/* Two-column layout for Entry & Invalidation */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {/* Entry Conditions / Rules */}
                       <div>
                         <label className="block text-xs font-medium text-app-secondary mb-1">
                           Entry Conditions / Rules
@@ -429,14 +598,15 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                           rows={2}
                           value={scenario.entryConditions}
                           onChange={(e) =>
-                            handleUpdateScenario(scenario.id, { entryConditions: e.target.value })
+                            handleUpdateDraftOrScenario(parentScenario.id, {
+                              entryConditions: e.target.value,
+                            })
                           }
                           placeholder="e.g. Wait for 5M displacement body close, limit order at 50% discount..."
                           className="w-full px-3 py-2 text-xs sm:text-sm bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 resize-y"
                         />
                       </div>
 
-                      {/* Invalidation Conditions */}
                       <div>
                         <label className="block text-xs font-medium text-app-secondary mb-1">
                           Invalidation Conditions
@@ -445,7 +615,7 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                           rows={2}
                           value={scenario.invalidationConditions}
                           onChange={(e) =>
-                            handleUpdateScenario(scenario.id, {
+                            handleUpdateDraftOrScenario(parentScenario.id, {
                               invalidationConditions: e.target.value,
                             })
                           }
@@ -459,31 +629,60 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                     <div className="pt-2 border-t border-app/60">
                       <ImageAttachmentManager
                         attachments={scenario.images || []}
-                        onChange={(imgs) => handleUpdateScenario(scenario.id, { images: imgs })}
+                        onChange={(imgs) =>
+                          handleUpdateDraftOrScenario(parentScenario.id, { images: imgs })
+                        }
                         onViewImage={(url, title) => setActiveViewerImage({ url, title })}
                         label="Scenario Setup Charts & Markups (HTF, POI, Entry Setup)"
                       />
                     </div>
 
                     {/* Action buttons inside scenario */}
-                    <div className="pt-3 border-t border-app/60 flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleSaveIndividualScenario(scenario)}
-                        disabled={savingId === scenario.id}
-                        className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        {savingId === scenario.id ? 'Saving Scenario...' : 'Save Scenario'}
-                      </button>
+                    <div className="pt-3 border-t border-app/60 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveIndividualScenario(parentScenario.id)}
+                          disabled={savingId === parentScenario.id}
+                          className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          {savingId === parentScenario.id ? 'Saving Scenario...' : 'Save Scenario'}
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => toggleExpand(scenario.id)}
-                        className="px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors"
-                      >
-                        Collapse
-                      </button>
+                        {isEditingCard ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRequestCancelEdit(parentScenario.id)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 border border-app rounded transition-colors cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            Cancel
+                          </button>
+                        ) : (
+                          !parentScenario.isSaved && (
+                            <button
+                              type="button"
+                              onClick={() => handleEditScenario(parentScenario.id)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-emerald-theme bg-emerald-pale rounded transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-3 h-3" /> Edit
+                            </button>
+                          )
+                        )}
+                      </div>
+
+                      {!isEditingCard && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedMap((prev) => ({ ...prev, [parentScenario.id]: false }))
+                          }
+                          className="px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors cursor-pointer"
+                        >
+                          Collapse
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -505,3 +704,4 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
     </div>
   );
 };
+

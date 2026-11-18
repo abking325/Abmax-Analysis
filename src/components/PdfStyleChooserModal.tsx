@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   X,
   FileText,
@@ -10,6 +10,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { PdfExportStyle } from '../services/pdfExport';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface PdfStyleChooserModalProps {
   isOpen: boolean;
@@ -56,6 +57,28 @@ export const PdfStyleChooserModal: React.FC<PdfStyleChooserModalProps> = ({
   const [selectedStyle, setSelectedStyle] = useState<PdfExportStyle>('minimal');
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isExporting) {
+        e.preventDefault();
+        setExportError(null);
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => {
+      if (!isExporting) {
+        setExportError(null);
+        onClose();
+      }
+    });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen, isExporting, onClose]);
 
   if (!isOpen) return null;
 

@@ -13,6 +13,7 @@ import {
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { registerBackHandler } from '../utils/backNavigation';
 import { generateReportPdfBlob } from '../services/pdfExport';
 import { ReportPresentationConfig, SavedReport } from '../types/journal';
 
@@ -128,9 +129,12 @@ export const ShareReportModal: React.FC<ShareReportModalProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
 
+    const unregBack = registerBackHandler(() => onClose());
+
     return () => {
       document.body.style.overflow = originalOverflow;
       window.removeEventListener('keydown', handleKeyDown);
+      unregBack();
       if (previouslyFocusedRef.current && typeof previouslyFocusedRef.current.focus === 'function') {
         previouslyFocusedRef.current.focus();
       }

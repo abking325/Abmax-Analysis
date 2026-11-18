@@ -65,7 +65,11 @@ export interface WorkingSessionState {
   accountId: string; // user.id or 'local'
   activeView: ActiveView;
   isEditingExistingReport: boolean;
+  isBoundToReport?: boolean;
+  hasActiveAnalysisSession?: boolean;
   activeReportId?: string;
+  activePair?: string;
+  activeTitle?: string;
   sourceRevision?: number;
   scrollPositions: {
     home?: number;
@@ -73,6 +77,7 @@ export interface WorkingSessionState {
     reports?: number;
     journal?: number;
     performance?: number;
+    live?: number;
     [key: string]: number | undefined;
   };
   analysisUI?: {
@@ -123,6 +128,10 @@ class SerializedSessionManager {
 
   public getLastCompletedWriteTimestamp(): number | null {
     return this.lastCompletedWriteTimestamp;
+  }
+
+  public clearPendingAnalysis() {
+    this.pendingAnalysis = null;
   }
 
   /**

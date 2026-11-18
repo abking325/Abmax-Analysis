@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavigationDrawer } from './NavigationDrawer';
 
-export type ActiveView = 'home' | 'analysis' | 'reports' | 'journal' | 'performance';
+export type ActiveView = 'home' | 'analysis' | 'reports' | 'journal' | 'performance' | 'live';
 
 interface HeaderProps {
   activeView: ActiveView;

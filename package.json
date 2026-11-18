@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx src/tests/persistence.test.ts"
+    "test": "tsx src/tests/persistence.test.ts",
+    "test:e2e": "node scripts/e2e-browser-regression.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",

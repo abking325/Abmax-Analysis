@@ -1,19 +1,25 @@
 import {
   AnalysisData,
   BackupData,
+  DEFAULT_INSTRUMENTS_CONFIG,
   DEFAULT_JOURNAL_VISIBILITY_CONFIG,
   DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
   ImageAttachment,
+  InstrumentsConfig,
   JournalEntry,
   JournalVisibilityConfig,
+  LiveWorkspaceData,
   PerformanceVisibilityConfig,
   ReportPresentationConfig,
   SavedReport,
   SavedTemplate,
   TradingStrategy,
   WorkspaceVisibilityConfig,
+  createEmptyLiveInstrumentState,
+  createInitialLiveWorkspace,
+  normalizeInstrumentsConfig,
   normalizeJournalVisibilityConfig,
   normalizePerformanceVisibilityConfig,
   normalizeWorkspaceVisibilityConfig,
@@ -21,7 +27,7 @@ import {
 } from '../types/journal';
 
 const DB_NAME = 'abmax_analysis_db';
-const DB_VERSION = 4; // Version 4 adds strategies store
+const DB_VERSION = 5; // Version 5 adds live_workspace store
 
 interface DBStores {
   reports: SavedReport;
@@ -32,6 +38,7 @@ interface DBStores {
   journal: JournalEntry;
   journal_draft: { id: string; data: Partial<JournalEntry> | Partial<TradingStrategy> };
   strategies: TradingStrategy;
+  live_workspace: LiveWorkspaceData;
 }
 
 let cachedDB: IDBDatabase | null = null;
@@ -118,6 +125,11 @@ function openDB(): Promise<IDBDatabase> {
         const strStore = db.createObjectStore('strategies', { keyPath: 'id' });
         strStore.createIndex('userId', 'userId', { unique: false });
         strStore.createIndex('name', 'name', { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains('live_workspace')) {
+        const liveStore = db.createObjectStore('live_workspace', { keyPath: 'id' });
+        liveStore.createIndex('ownerScope', 'ownerScope', { unique: false });
       }
     };
 
@@ -278,54 +290,63 @@ export async function updateReportAtomically(
       getReq.onerror = () => reject(getReq.error ?? new Error('Failed to read report in transaction'));
 
       getReq.onsuccess = () => {
-        const existing: SavedReport | undefined = getReq.result;
-        if (!existing) {
-          resolve({
-            success: false,
-            notFound: true,
-            error: `Original report ${report.id} not found in storage.`,
-          });
-          return;
+        try {
+          const existing: SavedReport | undefined = getReq.result;
+          if (!existing) {
+            resolve({
+              success: false,
+              notFound: true,
+              error: `Original report ${report.id} not found in storage.`,
+            });
+            return;
+          }
+
+          // Handle missing or legacy revision values explicitly (default legacy to 1)
+          const currentRevision = typeof existing.revision === 'number' && Number.isFinite(existing.revision)
+            ? existing.revision
+            : 1;
+
+          if (currentRevision !== expectedSourceRevision) {
+            resolve({
+              success: false,
+              conflict: true,
+              currentRevision,
+              expectedRevision: expectedSourceRevision,
+              error: `Concurrency conflict on report ${report.id}: expected revision ${expectedSourceRevision}, found disk revision ${currentRevision}.`,
+            });
+            return;
+          }
+
+          const nextRevision = currentRevision + 1;
+          const sanitized: SavedReport = JSON.parse(
+            JSON.stringify({
+              ...existing,
+              ...report,
+              id: existing.id,
+              createdAt: existing.createdAt || report.createdAt || Date.now(),
+              revision: nextRevision,
+              updatedAt: Date.now(),
+              status: 'Modified',
+              isModified: true,
+            })
+          );
+
+          const putReq = store.put(sanitized);
+          putReq.onerror = () => reject(putReq.error ?? new Error('Failed to put updated report in transaction'));
+
+          tx.oncomplete = () => {
+            removeDeletedReportId(sanitized.id).catch(() => {});
+            addPendingCloudItem({ id: sanitized.id, type: 'report', timestamp: Date.now() }).catch(() => {});
+            resolve({ success: true, report: sanitized });
+          };
+        } catch (innerErr) {
+          try {
+            tx.abort();
+          } catch {
+            // Transaction may already be inactive
+          }
+          reject(innerErr);
         }
-
-        // Handle missing or legacy revision values explicitly (default legacy to 1)
-        const currentRevision = typeof existing.revision === 'number' && Number.isFinite(existing.revision)
-          ? existing.revision
-          : 1;
-
-        if (currentRevision !== expectedSourceRevision) {
-          resolve({
-            success: false,
-            conflict: true,
-            currentRevision,
-            expectedRevision: expectedSourceRevision,
-            error: `Concurrency conflict on report ${report.id}: expected revision ${expectedSourceRevision}, found disk revision ${currentRevision}.`,
-          });
-          return;
-        }
-
-        const nextRevision = currentRevision + 1;
-        const sanitized: SavedReport = JSON.parse(
-          JSON.stringify({
-            ...existing,
-            ...report,
-            id: existing.id,
-            createdAt: existing.createdAt || report.createdAt || Date.now(),
-            revision: nextRevision,
-            updatedAt: Date.now(),
-            status: 'Modified',
-            isModified: true,
-          })
-        );
-
-        const putReq = store.put(sanitized);
-        putReq.onerror = () => reject(putReq.error ?? new Error('Failed to put updated report in transaction'));
-
-        tx.oncomplete = () => {
-          removeDeletedReportId(sanitized.id).catch(() => {});
-          addPendingCloudItem({ id: sanitized.id, type: 'report', timestamp: Date.now() }).catch(() => {});
-          resolve({ success: true, report: sanitized });
-        };
       };
 
       tx.onerror = () => reject(tx.error ?? new Error('Transaction failed'));
@@ -354,31 +375,40 @@ export async function saveReport(report: SavedReport): Promise<SavedReport> {
       getReq.onerror = () => reject(getReq.error ?? new Error('Failed to check existing report'));
 
       getReq.onsuccess = () => {
-        const existing: SavedReport | undefined = getReq.result;
-        const currentRev = typeof existing?.revision === 'number' ? existing.revision : 0;
-        const reportRev = typeof report.revision === 'number' ? report.revision : 0;
-        const targetRevision = Math.max(currentRev, reportRev) + 1;
+        try {
+          const existing: SavedReport | undefined = getReq.result;
+          const currentRev = typeof existing?.revision === 'number' ? existing.revision : 0;
+          const reportRev = typeof report.revision === 'number' ? report.revision : 0;
+          const targetRevision = Math.max(currentRev, reportRev) + 1;
 
-        const sanitizedReport: SavedReport = JSON.parse(
-          JSON.stringify({
-            ...report,
-            revision: targetRevision,
-            openingCandles: report.openingCandles || [],
-            updatedAt: report.updatedAt || Date.now(),
-            createdAt: report.createdAt || Date.now(),
-            pair: report.pair || 'XAUUSD',
-            date: report.date || new Date().toISOString().slice(0, 10),
-          })
-        );
+          const sanitizedReport: SavedReport = JSON.parse(
+            JSON.stringify({
+              ...report,
+              revision: targetRevision,
+              openingCandles: report.openingCandles || [],
+              updatedAt: report.updatedAt || Date.now(),
+              createdAt: report.createdAt || Date.now(),
+              pair: report.pair || 'XAUUSD',
+              date: report.date || new Date().toISOString().slice(0, 10),
+            })
+          );
 
-        const putReq = store.put(sanitizedReport);
-        putReq.onerror = () => reject(putReq.error ?? new Error('Failed to put report record'));
+          const putReq = store.put(sanitizedReport);
+          putReq.onerror = () => reject(putReq.error ?? new Error('Failed to put report record'));
 
-        tx.oncomplete = () => {
-          removeDeletedReportId(sanitizedReport.id).catch(() => {});
-          addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() }).catch(() => {});
-          resolve(sanitizedReport);
-        };
+          tx.oncomplete = () => {
+            removeDeletedReportId(sanitizedReport.id).catch(() => {});
+            addPendingCloudItem({ id: sanitizedReport.id, type: 'report', timestamp: Date.now() }).catch(() => {});
+            resolve(sanitizedReport);
+          };
+        } catch (innerErr) {
+          try {
+            tx.abort();
+          } catch {
+            // Transaction may already be inactive
+          }
+          reject(innerErr);
+        }
       };
 
       tx.onerror = () => reject(tx.error ?? new Error('Report save transaction failed on commit'));
@@ -572,18 +602,27 @@ export async function saveDraft(draft: AnalysisData): Promise<void> {
       getReq.onerror = () => reject(getReq.error ?? new Error('Failed to inspect existing draft'));
 
       getReq.onsuccess = () => {
-        const existing = getReq.result;
-        // If an existing draft on disk has a strictly newer timestamp, do not overwrite it
-        if (existing && typeof existing.updatedAt === 'number' && typeof payload.updatedAt === 'number') {
-          if (existing.updatedAt > payload.updatedAt) {
-            resolve();
-            return;
+        try {
+          const existing = getReq.result;
+          // If an existing draft on disk has a strictly newer timestamp, do not overwrite it
+          if (existing && typeof existing.updatedAt === 'number' && typeof payload.updatedAt === 'number') {
+            if (existing.updatedAt > payload.updatedAt) {
+              resolve();
+              return;
+            }
           }
-        }
 
-        const req = store.put(payload);
-        req.onerror = () => reject(req.error ?? new Error('Failed to save draft'));
-        tx.oncomplete = () => resolve();
+          const req = store.put(payload);
+          req.onerror = () => reject(req.error ?? new Error('Failed to save draft'));
+          tx.oncomplete = () => resolve();
+        } catch (innerErr) {
+          try {
+            tx.abort();
+          } catch {
+            // Transaction may already be inactive
+          }
+          reject(innerErr);
+        }
       };
 
       tx.onerror = () => reject(tx.error ?? new Error('Draft transaction failed on commit'));
@@ -723,6 +762,455 @@ export async function saveUserReportPresentationConfig(
   await runTransaction('preferences', 'readwrite', (store) =>
     store.put({ key: 'report_presentation_config', value: config })
   );
+}
+
+/* ================= USER INSTRUMENTS PREFERENCES (SCOPED) ================= */
+
+export function getInstrumentsPreferenceKey(accountId?: string | null): string {
+  const scope = normalizeAccountScope(accountId);
+  return `instruments_config_${scope}`;
+}
+
+export async function getUserInstrumentsConfig(accountId?: string | null): Promise<InstrumentsConfig> {
+  try {
+    const key = getInstrumentsPreferenceKey(accountId);
+    const scope = normalizeAccountScope(accountId);
+    let record = await runTransaction<{ key: string; value: Partial<InstrumentsConfig> } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get(key)
+    );
+    if (!record && scope === 'guest') {
+      record = await runTransaction<{ key: string; value: Partial<InstrumentsConfig> } | undefined>(
+        'preferences',
+        'readonly',
+        (store) => store.get('instruments_config')
+      );
+    }
+    return record?.value
+      ? normalizeInstrumentsConfig(record.value)
+      : normalizeInstrumentsConfig(DEFAULT_INSTRUMENTS_CONFIG);
+  } catch {
+    return normalizeInstrumentsConfig(DEFAULT_INSTRUMENTS_CONFIG);
+  }
+}
+
+export async function saveUserInstrumentsConfig(
+  config: Partial<InstrumentsConfig>,
+  accountId?: string | null
+): Promise<InstrumentsConfig> {
+  const key = getInstrumentsPreferenceKey(accountId);
+  const normalized: InstrumentsConfig = {
+    ...normalizeInstrumentsConfig(config),
+    updatedAt: Date.now(),
+  };
+  await runTransaction('preferences', 'readwrite', (store) =>
+    store.put({ key, value: safeClone(normalized) })
+  );
+  return normalized;
+}
+
+export async function getAllScopedInstrumentsConfigs(): Promise<Record<string, InstrumentsConfig>> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction('preferences', 'readonly');
+      const store = tx.objectStore('preferences');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const result: Record<string, InstrumentsConfig> = {};
+        for (const rec of req.result || []) {
+          if (!rec?.key) continue;
+          if (typeof rec.key === 'string' && rec.key.startsWith('instruments_config_')) {
+            const scope = rec.key.replace('instruments_config_', '');
+            result[scope] = normalizeInstrumentsConfig(rec.value);
+          } else if (rec.key === 'instruments_config' && !result['guest']) {
+            result['guest'] = normalizeInstrumentsConfig(rec.value);
+          }
+        }
+        resolve(result);
+      };
+      req.onerror = () => resolve({});
+    });
+  } catch {
+    return {};
+  }
+}
+
+/* ================= ACCOUNT RESET EPOCH & SCOPED WIPE ================= */
+
+export function getAccountResetEpochKey(accountId?: string | null): string {
+  return `account_reset_epoch_${normalizeAccountScope(accountId)}`;
+}
+
+export async function getLocalAccountResetEpoch(accountId?: string | null): Promise<number> {
+  try {
+    const key = getAccountResetEpochKey(accountId);
+    const rec = await runTransaction<{ key: string; value: number } | undefined>(
+      'preferences',
+      'readonly',
+      (store) => store.get(key)
+    );
+    return typeof rec?.value === 'number' && Number.isFinite(rec.value) ? rec.value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function setLocalAccountResetEpoch(accountId: string | null | undefined, epoch: number): Promise<void> {
+  const key = getAccountResetEpochKey(accountId);
+  await runTransaction('preferences', 'readwrite', (store) =>
+    store.put({ key, value: epoch })
+  );
+}
+
+function isRecordOwnedByTargetResetScope(recordAccountId: string | undefined | null, targetScope: string): boolean {
+  const normalized = recordAccountId ? normalizeAccountScope(recordAccountId) : null;
+  if (normalized === targetScope) return true;
+  // Unscoped or 'local' records belong to active workspace unless owned by a distinct foreign account
+  if (!recordAccountId || recordAccountId === 'local') return true;
+  return false;
+}
+
+function collectReferencedImageIdsFromAnalysis(item: Partial<AnalysisData> | null | undefined, out: Set<string>): void {
+  if (!item) return;
+  if (item.timeframes) {
+    for (const tf of Object.values(item.timeframes)) {
+      if (tf?.chartImageId && !tf.chartImageId.includes('/')) {
+        out.add(tf.chartImageId);
+      }
+    }
+  }
+  for (const scn of item.scenarios || []) {
+    for (const img of scn.images || []) {
+      if (img?.id) out.add(img.id);
+    }
+  }
+  for (const trd of item.trades || []) {
+    for (const img of trd.images || []) {
+      if (img?.id) out.add(img.id);
+    }
+  }
+}
+
+export interface LocalResetScopeCounts {
+  reportsCount: number;
+  templatesCount: number;
+  journalCount: number;
+  strategiesCount: number;
+  hasLiveWorkspace: boolean;
+  hasActiveAnalysisDraft: boolean;
+  scopedDraftsCount: number;
+  estimatedImagesCount: number;
+  preservedForeignAccountsCount: number;
+}
+
+export async function getLocalResetScopeCounts(accountId?: string | null): Promise<LocalResetScopeCounts> {
+  const targetScope = normalizeAccountScope(accountId);
+  const [reports, templates, draft, images, journalEntries, strategies, liveWorkspaces, scopedDrafts] =
+    await Promise.all([
+      getAllReports(),
+      getAllTemplates(),
+      getDraft(),
+      getAllImages(),
+      getAllJournalEntries(),
+      getAllStrategies(),
+      getAllLiveWorkspaces(),
+      getAllScopedJournalDrafts(),
+    ]);
+
+  const foreignAccounts = new Set<string>();
+  const targetReports = reports.filter((r) => {
+    if (isRecordOwnedByTargetResetScope(r.accountId, targetScope)) return true;
+    if (r.accountId) foreignAccounts.add(normalizeAccountScope(r.accountId));
+    return false;
+  });
+
+  const targetTemplates = templates.filter((t) => {
+    const owner = (t as any).accountId || (t as any).userId;
+    if (isRecordOwnedByTargetResetScope(owner, targetScope)) return true;
+    if (owner) foreignAccounts.add(normalizeAccountScope(owner));
+    return false;
+  });
+
+  const targetJournal = journalEntries.filter((j) => {
+    if (isJournalEntryOwnedByScope(j, targetScope)) return true;
+    foreignAccounts.add(normalizeAccountScope(j.userId));
+    return false;
+  });
+
+  const targetStrategies = strategies.filter((s) => {
+    if (isStrategyOwnedByScope(s, targetScope)) return true;
+    foreignAccounts.add(normalizeAccountScope(s.userId));
+    return false;
+  });
+
+  const hasLiveWorkspace = liveWorkspaces.some((lw) => {
+    if (normalizeAccountScope(lw.ownerScope) === targetScope) return true;
+    foreignAccounts.add(normalizeAccountScope(lw.ownerScope));
+    return false;
+  });
+
+  const hasActiveAnalysisDraft = Boolean(
+    draft && isRecordOwnedByTargetResetScope(draft.accountId, targetScope)
+  );
+
+  let scopedDraftsCount = 0;
+  if (scopedDrafts.scopedJournalDrafts[targetScope]) scopedDraftsCount++;
+  if (scopedDrafts.scopedMyJournalDrafts[targetScope]) scopedDraftsCount++;
+  if (scopedDrafts.scopedStrategyDrafts[targetScope]) scopedDraftsCount++;
+
+  const targetImageRefs = new Set<string>();
+  const preservedImageRefs = new Set<string>();
+
+  for (const r of targetReports) collectReferencedImageIdsFromAnalysis(r, targetImageRefs);
+  for (const r of reports) {
+    if (!isRecordOwnedByTargetResetScope(r.accountId, targetScope)) {
+      collectReferencedImageIdsFromAnalysis(r, preservedImageRefs);
+    }
+  }
+  for (const j of targetJournal) {
+    for (const img of j.images || []) {
+      if (img?.id) targetImageRefs.add(img.id);
+    }
+  }
+  for (const j of journalEntries) {
+    if (!isJournalEntryOwnedByScope(j, targetScope)) {
+      for (const img of j.images || []) {
+        if (img?.id) preservedImageRefs.add(img.id);
+      }
+    }
+  }
+  if (hasActiveAnalysisDraft && draft) {
+    collectReferencedImageIdsFromAnalysis(draft, targetImageRefs);
+  }
+
+  let estimatedImagesCount = 0;
+  for (const img of images) {
+    if (targetImageRefs.has(img.id) && !preservedImageRefs.has(img.id)) {
+      estimatedImagesCount++;
+    } else if (preservedImageRefs.size === 0 && targetReports.length + targetJournal.length > 0 && !preservedImageRefs.has(img.id)) {
+      estimatedImagesCount++;
+    }
+  }
+
+  return {
+    reportsCount: targetReports.length,
+    templatesCount: targetTemplates.length,
+    journalCount: targetJournal.length,
+    strategiesCount: targetStrategies.length,
+    hasLiveWorkspace,
+    hasActiveAnalysisDraft,
+    scopedDraftsCount,
+    estimatedImagesCount,
+    preservedForeignAccountsCount: foreignAccounts.size,
+  };
+}
+
+export async function clearLocalAccountDataForReset(
+  accountId: string,
+  newResetEpoch?: number
+): Promise<{
+  deletedReports: number;
+  deletedTemplates: number;
+  deletedJournalEntries: number;
+  deletedStrategies: number;
+  deletedLiveWorkspace: boolean;
+  deletedDraft: boolean;
+  deletedImages: number;
+}> {
+  const targetScope = normalizeAccountScope(accountId);
+  const db = await openDB();
+
+  const [reports, templates, draft, images, journalEntries] = await Promise.all([
+    getAllReports(),
+    getAllTemplates(),
+    getDraft(),
+    getAllImages(),
+    getAllJournalEntries(),
+  ]);
+  const strategies = await getAllStrategies();
+
+  const preservedImageRefs = new Set<string>();
+  const reportsToDelete: string[] = [];
+  for (const r of reports) {
+    if (isRecordOwnedByTargetResetScope(r.accountId, targetScope)) {
+      reportsToDelete.push(r.id);
+    } else {
+      collectReferencedImageIdsFromAnalysis(r, preservedImageRefs);
+    }
+  }
+
+  const templatesToDelete: string[] = [];
+  for (const t of templates) {
+    const owner = (t as any).accountId || (t as any).userId;
+    if (isRecordOwnedByTargetResetScope(owner, targetScope)) {
+      templatesToDelete.push(t.id);
+    } else if (t.imageMap) {
+      for (const idOrPath of Object.values(t.imageMap)) {
+        if (idOrPath && !idOrPath.includes('/')) preservedImageRefs.add(idOrPath);
+      }
+    }
+  }
+
+  const journalToDelete: string[] = [];
+  for (const j of journalEntries) {
+    if (isJournalEntryOwnedByScope(j, targetScope)) {
+      journalToDelete.push(j.id);
+    } else {
+      for (const img of j.images || []) {
+        if (img?.id) preservedImageRefs.add(img.id);
+      }
+    }
+  }
+
+  const strategiesToDelete: string[] = [];
+  for (const s of strategies) {
+    if (isStrategyOwnedByScope(s, targetScope)) {
+      strategiesToDelete.push(s.id);
+    }
+  }
+
+  const shouldDeleteDraft = Boolean(
+    draft && isRecordOwnedByTargetResetScope(draft.accountId, targetScope)
+  );
+  if (draft && !shouldDeleteDraft) {
+    collectReferencedImageIdsFromAnalysis(draft, preservedImageRefs);
+  }
+
+  const imagesToDelete = images
+    .filter((img) => !preservedImageRefs.has(img.id))
+    .map((img) => img.id);
+
+  // Execute scoped deletions per store safely
+  if (reportsToDelete.length > 0) {
+    const tx = db.transaction('reports', 'readwrite');
+    const store = tx.objectStore('reports');
+    for (const id of reportsToDelete) store.delete(id);
+    await new Promise<void>((res, rej) => {
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  if (templatesToDelete.length > 0 && db.objectStoreNames.contains('templates')) {
+    const tx = db.transaction('templates', 'readwrite');
+    const store = tx.objectStore('templates');
+    for (const id of templatesToDelete) store.delete(id);
+    await new Promise<void>((res, rej) => {
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  if (journalToDelete.length > 0 && db.objectStoreNames.contains('journal')) {
+    const tx = db.transaction('journal', 'readwrite');
+    const store = tx.objectStore('journal');
+    for (const id of journalToDelete) store.delete(id);
+    await new Promise<void>((res, rej) => {
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  if (strategiesToDelete.length > 0 && db.objectStoreNames.contains('strategies')) {
+    const tx = db.transaction('strategies', 'readwrite');
+    const store = tx.objectStore('strategies');
+    for (const id of strategiesToDelete) store.delete(id);
+    await new Promise<void>((res, rej) => {
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  if (db.objectStoreNames.contains('journal_draft')) {
+    const tx = db.transaction('journal_draft', 'readwrite');
+    const store = tx.objectStore('journal_draft');
+    store.delete(getJournalDraftKey(targetScope));
+    store.delete(getMyJournalDraftKey(targetScope));
+    store.delete(getStrategyDraftKey(targetScope));
+    if (targetScope === 'guest') {
+      store.delete('active_journal_draft');
+      store.delete('active_my_journal_draft');
+    }
+    await new Promise<void>((res, rej) => {
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  let deletedLiveWorkspace = false;
+  if (db.objectStoreNames.contains('live_workspace')) {
+    const liveId = getLiveWorkspaceIdForScope(targetScope);
+    const existingLive = await runTransaction<LiveWorkspaceData | undefined>('live_workspace', 'readonly', (s) =>
+      s.get(liveId)
+    );
+    if (existingLive) {
+      await runTransaction('live_workspace', 'readwrite', (s) => s.delete(liveId));
+      deletedLiveWorkspace = true;
+    }
+  }
+
+  if (shouldDeleteDraft) {
+    await clearDraft();
+  }
+
+  if (imagesToDelete.length > 0) {
+    const tx = db.transaction('images', 'readwrite');
+    const store = tx.objectStore('images');
+    for (const id of imagesToDelete) store.delete(id);
+    await new Promise<void>((res, rej) => {
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  // Clear active user's pending sync queue, deletion tombstones, scoped instrument & visibility preferences,
+  // and record the new authoritative reset epoch (while preserving foreign accounts' preferences/epochs)
+  const prefTx = db.transaction('preferences', 'readwrite');
+  const prefStore = prefTx.objectStore('preferences');
+  prefStore.delete('pending_cloud_queue');
+  prefStore.delete('deleted_report_ids');
+  prefStore.delete(getInstrumentsPreferenceKey(targetScope));
+  prefStore.delete('workspace_visibility');
+  prefStore.delete('journal_visibility');
+  prefStore.delete('performance_visibility');
+  prefStore.delete('report_presentation_config');
+  if (typeof newResetEpoch === 'number' && Number.isFinite(newResetEpoch) && newResetEpoch > 0) {
+    prefStore.put({ key: getAccountResetEpochKey(targetScope), value: newResetEpoch });
+  }
+  await new Promise<void>((res, rej) => {
+    prefTx.oncomplete = () => res();
+    prefTx.onerror = () => rej(prefTx.error);
+  });
+
+  // Clear ONLY target account's working session & migration prompt keys in localStorage;
+  // NEVER delete auth keys (abmax_supabase_auth / abmax_remember_login) or other accounts' sessions.
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const safeAcc = (accountId || 'local').replace(/[^a-zA-Z0-9_-]/g, '_');
+      localStorage.removeItem(`abmax_session_v2_${safeAcc}`);
+      if (targetScope === 'guest') {
+        localStorage.removeItem('abmax_session_v2_local');
+        localStorage.removeItem('abmax_session_v2_guest');
+      } else {
+        localStorage.removeItem(`abmax_migrated_prompt_${accountId}`);
+      }
+      localStorage.removeItem('abmax_active_view');
+    } catch {
+      // Ignore storage access errors
+    }
+  }
+
+  return {
+    deletedReports: reportsToDelete.length,
+    deletedTemplates: templatesToDelete.length,
+    deletedJournalEntries: journalToDelete.length,
+    deletedStrategies: strategiesToDelete.length,
+    deletedLiveWorkspace,
+    deletedDraft: shouldDeleteDraft,
+    deletedImages: imagesToDelete.length,
+  };
 }
 
 /* ================= TEMPLATES ================= */
@@ -1158,6 +1646,81 @@ export async function deleteStrategy(id: string): Promise<void> {
   await runTransaction('strategies', 'readwrite', (store) => store.delete(id));
 }
 
+/* ================= LIVE WORKSPACE (SCOPED LOCAL-ONLY) ================= */
+
+export function getLiveWorkspaceIdForScope(userId?: string | null): string {
+  const scope = normalizeAccountScope(userId);
+  return `live_workspace_${scope}`;
+}
+
+export async function getLiveWorkspace(userId?: string | null): Promise<LiveWorkspaceData> {
+  const scope = normalizeAccountScope(userId);
+  const id = getLiveWorkspaceIdForScope(scope);
+  try {
+    const existing = await runTransaction<LiveWorkspaceData | undefined>('live_workspace', 'readonly', (store) =>
+      store.get(id)
+    );
+    if (existing && existing.instruments) {
+      const cloned = safeClone(existing);
+      if (!cloned.instruments['XAUUSD']) cloned.instruments['XAUUSD'] = createEmptyLiveInstrumentState('XAUUSD');
+      if (!cloned.instruments['BTCUSD']) cloned.instruments['BTCUSD'] = createEmptyLiveInstrumentState('BTCUSD');
+      if (!cloned.instruments['EURUSD']) cloned.instruments['EURUSD'] = createEmptyLiveInstrumentState('EURUSD');
+      cloned.ownerScope = scope;
+      cloned.id = id;
+      return cloned;
+    }
+  } catch (err) {
+    console.warn('[DB] Failed to load live workspace, initializing default:', err);
+  }
+  return createInitialLiveWorkspace(scope);
+}
+
+export async function saveLiveWorkspace(
+  workspace: LiveWorkspaceData,
+  userId?: string | null
+): Promise<LiveWorkspaceData> {
+  const scope = normalizeAccountScope(userId ?? workspace.ownerScope);
+  const payload: LiveWorkspaceData = {
+    ...safeClone(workspace),
+    id: getLiveWorkspaceIdForScope(scope),
+    ownerScope: scope,
+    updatedAt: Date.now(),
+  };
+  await runTransaction('live_workspace', 'readwrite', (store) => store.put(payload));
+  return payload;
+}
+
+export async function resetLiveInstrument(
+  pair: string,
+  userId?: string | null
+): Promise<LiveWorkspaceData> {
+  const ws = await getLiveWorkspace(userId);
+  const next: LiveWorkspaceData = {
+    ...ws,
+    instruments: {
+      ...ws.instruments,
+      [pair]: createEmptyLiveInstrumentState(pair),
+    },
+    updatedAt: Date.now(),
+  };
+  return saveLiveWorkspace(next, userId);
+}
+
+export async function resetLiveWorkspace(userId?: string | null): Promise<LiveWorkspaceData> {
+  const scope = normalizeAccountScope(userId);
+  const fresh = createInitialLiveWorkspace(scope);
+  return saveLiveWorkspace(fresh, scope);
+}
+
+export async function getAllLiveWorkspaces(): Promise<LiveWorkspaceData[]> {
+  try {
+    const all = await runTransaction<LiveWorkspaceData[]>('live_workspace', 'readonly', (store) => store.getAll());
+    return Array.isArray(all) ? all.map((w) => safeClone(w)) : [];
+  } catch {
+    return [];
+  }
+}
+
 /* ================= BACKUP & RESTORE ================= */
 
 export function getLastBackupMetadata(): { timestamp: number | null; status: string | null } {
@@ -1184,6 +1747,7 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     images,
     journalEntries,
     strategies,
+    liveWorkspaces,
     journalDraft,
     myJournalDraft,
     scopedDrafts,
@@ -1191,6 +1755,8 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     visibilityConfig,
     journalVisibilityConfig,
     performanceVisibilityConfig,
+    instrumentsConfig,
+    scopedInstrumentsConfigs,
   ] = await Promise.all([
     getAllReports(),
     getAllTemplates(),
@@ -1198,6 +1764,7 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     getAllImages(),
     getAllJournalEntries(),
     getAllStrategies(),
+    getAllLiveWorkspaces(),
     getJournalDraft(accountId),
     getMyJournalDraft(accountId),
     getAllScopedJournalDrafts(),
@@ -1205,6 +1772,8 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     getUserVisibilityConfig(),
     getUserJournalVisibilityConfig(),
     getUserPerformanceVisibilityConfig(),
+    getUserInstrumentsConfig(accountId),
+    getAllScopedInstrumentsConfigs(),
   ]);
 
   const theme =
@@ -1245,6 +1814,11 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     userId: normalizeAccountScope(str.userId),
   }));
 
+  const normalizedLiveWorkspaces = liveWorkspaces.map((lw) => ({
+    ...lw,
+    ownerScope: normalizeAccountScope(lw.ownerScope),
+  }));
+
   const entryOwners: Record<string, number> = {};
   for (const entry of normalizedJournalEntries) {
     const owner = normalizeAccountScope(entry.userId);
@@ -1257,6 +1831,12 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     strategyOwners[owner] = (strategyOwners[owner] || 0) + 1;
   }
 
+  const liveWorkspaceOwners: Record<string, number> = {};
+  for (const lw of normalizedLiveWorkspaces) {
+    const owner = normalizeAccountScope(lw.ownerScope);
+    liveWorkspaceOwners[owner] = (liveWorkspaceOwners[owner] || 0) + 1;
+  }
+
   const scopedDraftAccountSet = new Set<string>([
     ...Object.keys(scopedDrafts.scopedJournalDrafts || {}),
     ...Object.keys(scopedDrafts.scopedMyJournalDrafts || {}),
@@ -1264,7 +1844,7 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
   ]);
 
   const backup: BackupData = {
-    version: 4,
+    version: 5,
     exportedAt: new Date().toISOString(),
     app: 'ABMAX_ANALYSIS',
     reports,
@@ -1273,11 +1853,14 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     images,
     journalEntries: normalizedJournalEntries,
     strategies: normalizedStrategies,
+    liveWorkspaces: normalizedLiveWorkspaces,
     journalDraft: journalDraft || undefined,
     myJournalDraft: myJournalDraft || undefined,
     scopedJournalDrafts: scopedDrafts.scopedJournalDrafts,
     scopedMyJournalDrafts: scopedDrafts.scopedMyJournalDrafts,
     scopedStrategyDrafts: scopedDrafts.scopedStrategyDrafts,
+    scopedInstrumentsConfigs:
+      Object.keys(scopedInstrumentsConfigs).length > 0 ? scopedInstrumentsConfigs : undefined,
     ownership: {
       exportedByAccountId: normalizeAccountScope(accountId),
       totalJournalEntries: normalizedJournalEntries.length,
@@ -1285,6 +1868,8 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
       scopedDraftAccounts: Array.from(scopedDraftAccountSet),
       totalStrategies: normalizedStrategies.length,
       strategyOwners,
+      totalLiveWorkspaces: normalizedLiveWorkspaces.length,
+      liveWorkspaceOwners,
     },
     preferences: {
       theme,
@@ -1292,6 +1877,7 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
       visibilityConfig: visibilityConfig || undefined,
       journalVisibilityConfig: journalVisibilityConfig || undefined,
       performanceVisibilityConfig: performanceVisibilityConfig || undefined,
+      instrumentsConfig,
     },
     workingSessions,
   };
@@ -1324,6 +1910,7 @@ export interface RestorePreview {
   totalStrategiesInBackup: number;
   newStrategiesCount: number;
   skippedStrategiesCount: number;
+  totalLiveWorkspacesInBackup?: number;
   hasWorkingSession?: boolean;
   ownershipSummary?: {
     currentScope: string;
@@ -1331,6 +1918,7 @@ export interface RestorePreview {
     matchingOwnerEntriesCount: number;
     foreignOwnerEntriesCount: number;
     foreignOwnerStrategiesCount: number;
+    foreignOwnerLiveWorkspacesCount: number;
     foreignAccountIds: string[];
     scopedDraftCount: number;
     foreignScopedDraftCount: number;
@@ -1411,6 +1999,15 @@ export async function analyzeBackup(
     }
   }
 
+  let foreignOwnerLiveWorkspacesCount = 0;
+  for (const lw of backup.liveWorkspaces || []) {
+    const owner = normalizeAccountScope(lw?.ownerScope);
+    if (owner !== currentScope) {
+      foreignOwnerLiveWorkspacesCount++;
+      foreignAccountsSet.add(owner);
+    }
+  }
+
   const draftScopes = new Set<string>([
     ...Object.keys(backup.scopedJournalDrafts || {}),
     ...Object.keys(backup.scopedMyJournalDrafts || {}),
@@ -1439,6 +2036,7 @@ export async function analyzeBackup(
     totalStrategiesInBackup: backup.strategies?.length || 0,
     newStrategiesCount,
     skippedStrategiesCount,
+    totalLiveWorkspacesInBackup: backup.liveWorkspaces?.length || 0,
     hasWorkingSession: Boolean(backup.workingSessions && Object.keys(backup.workingSessions).length > 0),
     ownershipSummary: {
       currentScope,
@@ -1446,6 +2044,7 @@ export async function analyzeBackup(
       matchingOwnerEntriesCount,
       foreignOwnerEntriesCount,
       foreignOwnerStrategiesCount,
+      foreignOwnerLiveWorkspacesCount,
       foreignAccountIds: Array.from(foreignAccountsSet),
       scopedDraftCount: draftScopes.size,
       foreignScopedDraftCount,
@@ -1471,19 +2070,22 @@ export async function restoreBackup(
   skippedForeignJournalEntries: number;
   addedStrategies: number;
   skippedForeignStrategies: number;
+  restoredLiveWorkspaces: number;
 }> {
   const db = await openDB();
-  const [existingReports, existingTemplates, existingJournal, existingStrategies] = await Promise.all([
+  const [existingReports, existingTemplates, existingJournal, existingStrategies, existingLiveWorkspaces] = await Promise.all([
     getAllReports(),
     getAllTemplates(),
     getAllJournalEntries(),
     getAllStrategies(),
+    getAllLiveWorkspaces(),
   ]);
 
   const existingReportIds = new Set(existingReports.map((r) => r.id));
   const existingTemplateIds = new Set(existingTemplates.map((t) => t.id));
   const existingJournalIds = new Set(existingJournal.map((j) => j.id));
   const existingStrategyIds = new Set(existingStrategies.map((s) => s.id));
+  const existingLiveMap = new Map(existingLiveWorkspaces.map((lw) => [lw.id, lw]));
 
   const targetScope = normalizeAccountScope(options.targetAccountId);
   const ownershipMode = options.foreignOwnershipMode || 'preserve';
@@ -1495,6 +2097,7 @@ export async function restoreBackup(
   let skippedForeignJournalEntries = 0;
   let addedStrategies = 0;
   let skippedForeignStrategies = 0;
+  let restoredLiveWorkspaces = 0;
 
   // Add reports that don't already exist
   const reportTx = db.transaction('reports', 'readwrite');
@@ -1581,6 +2184,76 @@ export async function restoreBackup(
     await new Promise<void>((res, rej) => {
       strTx.oncomplete = () => res();
       strTx.onerror = () => rej(strTx.error);
+    });
+  }
+
+  // Restore live workspaces (v5) honoring account ownership isolation and non-clobbering merge
+  if (backup.liveWorkspaces && backup.liveWorkspaces.length > 0) {
+    const liveTx = db.transaction('live_workspace', 'readwrite');
+    const liveStore = liveTx.objectStore('live_workspace');
+    for (const lw of backup.liveWorkspaces) {
+      if (!lw) continue;
+      const srcScope = normalizeAccountScope(lw.ownerScope);
+      if (ownershipMode === 'skip' && srcScope !== targetScope) {
+        continue;
+      }
+      const destScope = ownershipMode === 'claim' ? targetScope : srcScope;
+      const destId = getLiveWorkspaceIdForScope(destScope);
+      const existingLw = existingLiveMap.get(destId);
+
+      if (!existingLw) {
+        const cloned: LiveWorkspaceData = {
+          ...safeClone(lw),
+          id: destId,
+          ownerScope: destScope,
+        };
+        liveStore.put(cloned);
+        existingLiveMap.set(destId, cloned);
+        restoredLiveWorkspaces++;
+      } else {
+        // Non-destructive merge per instrument: add missing keyLevels, scenarios, events by ID
+        const mergedInstruments = { ...safeClone(existingLw.instruments) };
+        for (const [pairKey, incomingInst] of Object.entries(lw.instruments || {})) {
+          const curInst = mergedInstruments[pairKey];
+          if (!curInst) {
+            mergedInstruments[pairKey] = safeClone(incomingInst);
+            continue;
+          }
+          const levelIds = new Set((curInst.keyLevels || []).map((l) => l.id));
+          const scenIds = new Set((curInst.scenarios || []).map((s) => s.id));
+          const eventIds = new Set((curInst.events || []).map((e) => e.id));
+          mergedInstruments[pairKey] = {
+            ...curInst,
+            marketConditionSummary:
+              curInst.marketConditionSummary || incomingInst.marketConditionSummary || '',
+            keyLevels: [
+              ...(curInst.keyLevels || []),
+              ...(incomingInst.keyLevels || []).filter((l) => !levelIds.has(l.id)),
+            ],
+            scenarios: [
+              ...(curInst.scenarios || []),
+              ...(incomingInst.scenarios || []).filter((s) => !scenIds.has(s.id)),
+            ],
+            events: [
+              ...(curInst.events || []),
+              ...(incomingInst.events || []).filter((e) => !eventIds.has(e.id)),
+            ],
+            updatedAt: Math.max(curInst.updatedAt || 0, incomingInst.updatedAt || 0),
+          };
+        }
+        const mergedLw: LiveWorkspaceData = {
+          ...existingLw,
+          instruments: mergedInstruments,
+          updatedAt: Date.now(),
+        };
+        liveStore.put(mergedLw);
+        existingLiveMap.set(destId, mergedLw);
+        restoredLiveWorkspaces++;
+      }
+    }
+    await new Promise<void>((res, rej) => {
+      liveTx.oncomplete = () => res();
+      liveTx.onerror = () => rej(liveTx.error);
     });
   }
 
@@ -1678,6 +2351,43 @@ export async function restoreBackup(
     await saveUserPerformanceVisibilityConfig(backup.preferences.performanceVisibilityConfig);
   }
 
+  // Restore scoped instrument configurations honoring ownership policy (non-clobbering merge of custom instruments)
+  const mergeInstrumentConfigs = (existingCfg: InstrumentsConfig, incomingCfg: InstrumentsConfig): InstrumentsConfig => {
+    const normExisting = normalizeInstrumentsConfig(existingCfg);
+    const normIncoming = normalizeInstrumentsConfig(incomingCfg);
+    const existingSymbols = new Set(normExisting.items.map((i) => i.symbol));
+    const mergedItems = [...normExisting.items];
+    for (const item of normIncoming.items) {
+      if (!existingSymbols.has(item.symbol)) {
+        mergedItems.push(item);
+      }
+    }
+    return normalizeInstrumentsConfig({ items: mergedItems });
+  };
+
+  if (backup.scopedInstrumentsConfigs && Object.keys(backup.scopedInstrumentsConfigs).length > 0) {
+    for (const [scope, cfg] of Object.entries(backup.scopedInstrumentsConfigs)) {
+      if (!cfg) continue;
+      const normalizedScope = normalizeAccountScope(scope);
+      if (ownershipMode === 'skip' && normalizedScope !== targetScope) {
+        continue;
+      }
+      const destScope = ownershipMode === 'claim' ? targetScope : normalizedScope;
+      const existingCfg = await getUserInstrumentsConfig(destScope);
+      await saveUserInstrumentsConfig(mergeInstrumentConfigs(existingCfg, cfg), destScope);
+    }
+  } else if (backup.preferences?.instrumentsConfig) {
+    const legacyOwner = normalizeAccountScope(backup.ownership?.exportedByAccountId || targetScope);
+    if (!(ownershipMode === 'skip' && legacyOwner !== targetScope)) {
+      const destScope = ownershipMode === 'claim' ? targetScope : legacyOwner;
+      const existingCfg = await getUserInstrumentsConfig(destScope);
+      await saveUserInstrumentsConfig(
+        mergeInstrumentConfigs(existingCfg, backup.preferences.instrumentsConfig),
+        destScope
+      );
+    }
+  }
+
   return {
     addedReports,
     addedTemplates,
@@ -1686,5 +2396,6 @@ export async function restoreBackup(
     skippedForeignJournalEntries,
     addedStrategies,
     skippedForeignStrategies,
+    restoredLiveWorkspaces,
   };
 }

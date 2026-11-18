@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, ZoomIn, ZoomOut, RotateCcw, Download } from 'lucide-react';
 import { exportBlobOrDownload } from '../utils/nativeExport';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface ImageViewerModalProps {
   isOpen: boolean;
@@ -30,7 +31,11 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    const unregBack = registerBackHandler(() => onClose());
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      unregBack();
+    };
   }, [isOpen, onClose]);
 
   if (!isOpen || !imageUrl) return null;

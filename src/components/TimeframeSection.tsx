@@ -33,6 +33,7 @@ import {
 import {
   isDeepAnalysisAligned,
   compressImageFile,
+  deepClone,
   getTimeframeStructureAlignment,
   getTimeframeOcLevel,
   getTimeframeLiquidityTaken,
@@ -49,6 +50,7 @@ interface TimeframeSectionProps {
   onChangeOverallBias: (bias: OverallBias) => void;
   onUpdateField: (updater: (prev: TimeframeData) => TimeframeData) => void;
   onSaveDeep: () => Promise<{ success: boolean; error?: string } | void> | void;
+  onCancelDeep?: (restoredData: TimeframeData) => Promise<void> | void;
   onEditDeep: () => void;
   onResetDeep: () => void;
   onAttachImage: (dataUrl: string) => Promise<void>;
@@ -85,6 +87,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   onChangeOverallBias,
   onUpdateField,
   onSaveDeep,
+  onCancelDeep,
   onEditDeep,
   onResetDeep,
   onAttachImage,
@@ -100,11 +103,23 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
   const sectionRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showRemoveImageConfirm, setShowRemoveImageConfirm] = useState(false);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [isSavingDeep, setIsSavingDeep] = useState(false);
   const [deepSaveSuccessMsg, setDeepSaveSuccessMsg] = useState<string | null>(null);
   const [deepSaveErrorMsg, setDeepSaveErrorMsg] = useState<string | null>(null);
+  const preEditSnapshotRef = useRef<TimeframeData>(deepClone(data));
+  const wasExpandedRef = useRef<boolean>(isExpanded);
+
+  useEffect(() => {
+    if (isExpanded && !wasExpandedRef.current) {
+      preEditSnapshotRef.current = deepClone(data);
+      setShowCancelConfirm(false);
+      setShowResetConfirm(false);
+    }
+    wasExpandedRef.current = isExpanded;
+  }, [isExpanded, data]);
 
   // Phase 2: Active inline adding key ('supplyLevels' | 'demandLevels' | 'supportLevels' | 'resistanceLevels' | 'liquidityLevels' | null)
   const [addingLevelKey, setAddingLevelKey] = useState<string | null>(initialLevelDraft?.addingLevelKey || null);
@@ -208,6 +223,8 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
         // Keep editor open, retain all entered values, show actionable error
         setDeepSaveErrorMsg(res.error || 'Failed to save deep analysis.');
       } else {
+        preEditSnapshotRef.current = deepClone({ ...data, isSaved: true });
+        setShowCancelConfirm(false);
         setDeepSaveSuccessMsg('Deep analysis saved');
         setTimeout(() => {
           setDeepSaveSuccessMsg(null);
@@ -217,6 +234,54 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
       setDeepSaveErrorMsg((err as Error).message || 'Failed to save deep analysis.');
     } finally {
       setIsSavingDeep(false);
+    }
+  };
+
+  const hasUnsavedDeepChanges = () => {
+    if (
+      addingLevelKey ||
+      editingLevelId ||
+      newLevelPrice.trim() ||
+      newLevelNote.trim() ||
+      editLevelPrice.trim() ||
+      editLevelNote.trim()
+    ) {
+      return true;
+    }
+    try {
+      return JSON.stringify(data) !== JSON.stringify(preEditSnapshotRef.current);
+    } catch {
+      return true;
+    }
+  };
+
+  const executeCancelDeep = async () => {
+    const restored = deepClone(preEditSnapshotRef.current || data);
+    setAddingLevelKey(null);
+    setNewLevelPrice('');
+    setNewLevelNote('');
+    setEditingLevelId(null);
+    setEditLevelPrice('');
+    setEditLevelNote('');
+    setConfirmDeleteLevelId(null);
+    setShowResetConfirm(false);
+    setShowRemoveImageConfirm(false);
+    setShowCancelConfirm(false);
+    setPasteError(null);
+    setDeepSaveErrorMsg(null);
+    if (onCancelDeep) {
+      await onCancelDeep(restored);
+    } else {
+      onUpdateField(() => restored);
+      onToggleExpand();
+    }
+  };
+
+  const handleRequestCancelDeep = () => {
+    if (hasUnsavedDeepChanges()) {
+      setShowCancelConfirm(true);
+    } else {
+      executeCancelDeep();
     }
   };
 
@@ -1387,7 +1452,31 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
             </div>
           )}
 
-          {/* 13. Save, Reset, Collapse actions */}
+          {/* 13. Save, Cancel, Collapse, Reset actions */}
+          {showCancelConfirm && (
+            <div className="my-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-medium text-amber-900 dark:text-amber-200">
+                Discard unsaved changes in {timeframe} Deep Analysis?
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCancelConfirm(false)}
+                  className="px-2.5 py-1 text-xs font-medium text-app-main bg-app-main border border-app rounded hover:bg-app-field cursor-pointer"
+                >
+                  Keep editing
+                </button>
+                <button
+                  type="button"
+                  onClick={executeCancelDeep}
+                  className="px-2.5 py-1 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded cursor-pointer"
+                >
+                  Discard changes
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-2 pt-4">
             <div className="flex items-center gap-2 flex-wrap">
               <button
@@ -1407,6 +1496,16 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
 
               <button
                 type="button"
+                onClick={handleRequestCancelDeep}
+                disabled={isSavingDeep}
+                aria-label={`Cancel ${timeframe} Deep Analysis edits`}
+                className="px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app hover:bg-app-secondary rounded transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
                 onClick={onToggleExpand}
                 className="px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors cursor-pointer"
               >
@@ -1419,7 +1518,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               <button
                 type="button"
                 onClick={() => setShowResetConfirm(true)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors cursor-pointer"
               >
                 <RotateCcw className="w-3 h-3" /> Reset {timeframe} Fields
               </button>
@@ -1434,14 +1533,14 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                     onResetDeep();
                     setShowResetConfirm(false);
                   }}
-                  className="px-2.5 py-1 bg-rose-600 text-white rounded text-xs font-semibold"
+                  className="px-2.5 py-1 bg-rose-600 text-white rounded text-xs font-semibold cursor-pointer"
                 >
                   Confirm Reset
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowResetConfirm(false)}
-                  className="px-2 py-1 text-app-secondary rounded text-xs"
+                  className="px-2 py-1 text-app-secondary rounded text-xs cursor-pointer"
                 >
                   Cancel
                 </button>

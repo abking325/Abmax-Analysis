@@ -25,6 +25,7 @@ import {
   saveStrategy,
   saveStrategyDraft,
 } from '../services/db';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface StrategiesSectionProps {
   userId?: string | null;
@@ -56,6 +57,8 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [hasDraftNotice, setHasDraftNotice] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const originalSnapshotRef = useRef<string>('');
 
   // Account-scoped draft isolation refs
   const currentScope = normalizeAccountScope(userId);
@@ -291,41 +294,158 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
     [scopedStrategies]
   );
 
+  const serializeStrategyEditor = (vals: {
+    name: string;
+    description: string;
+    setupContext: string;
+    entryRules: string;
+    invalidationConditions: string;
+    riskManagementRules: string;
+    exitRules: string;
+    tags: string[];
+    notes: string;
+  }) => JSON.stringify(vals);
+
   const openNewEditor = async () => {
     setFormError(null);
+    setShowDiscardConfirm(false);
     const savedDraft = await getStrategyDraft(userId);
     if (savedDraft && (savedDraft.name || savedDraft.description || savedDraft.entryRules)) {
+      const nextVals = {
+        name: savedDraft.name || '',
+        description: savedDraft.description || '',
+        setupContext: savedDraft.setupContext || '',
+        entryRules: savedDraft.entryRules || '',
+        invalidationConditions: savedDraft.invalidationConditions || '',
+        riskManagementRules: savedDraft.riskManagementRules || '',
+        exitRules: savedDraft.exitRules || '',
+        tags: savedDraft.tags ? [...savedDraft.tags] : [],
+        notes: savedDraft.notes || '',
+      };
       setEditingStrategyId(null);
-      setName(savedDraft.name || '');
-      setDescription(savedDraft.description || '');
-      setSetupContext(savedDraft.setupContext || '');
-      setEntryRules(savedDraft.entryRules || '');
-      setInvalidationConditions(savedDraft.invalidationConditions || '');
-      setRiskManagementRules(savedDraft.riskManagementRules || '');
-      setExitRules(savedDraft.exitRules || '');
-      setTags(savedDraft.tags || []);
-      setNotes(savedDraft.notes || '');
+      setName(nextVals.name);
+      setDescription(nextVals.description);
+      setSetupContext(nextVals.setupContext);
+      setEntryRules(nextVals.entryRules);
+      setInvalidationConditions(nextVals.invalidationConditions);
+      setRiskManagementRules(nextVals.riskManagementRules);
+      setExitRules(nextVals.exitRules);
+      setTags(nextVals.tags);
+      setNotes(nextVals.notes);
+      originalSnapshotRef.current = serializeStrategyEditor(nextVals);
     } else {
       resetForm();
+      originalSnapshotRef.current = serializeStrategyEditor({
+        name: '',
+        description: '',
+        setupContext: '',
+        entryRules: '',
+        invalidationConditions: '',
+        riskManagementRules: '',
+        exitRules: '',
+        tags: [],
+        notes: '',
+      });
     }
     setIsEditorOpen(true);
   };
 
   const openEditEditor = (strategy: TradingStrategy) => {
-    setEditingStrategyId(strategy.id);
-    setName(strategy.name || '');
-    setDescription(strategy.description || '');
-    setSetupContext(strategy.setupContext || '');
-    setEntryRules(strategy.entryRules || '');
-    setInvalidationConditions(strategy.invalidationConditions || '');
-    setRiskManagementRules(strategy.riskManagementRules || '');
-    setExitRules(strategy.exitRules || '');
-    setTags(strategy.tags ? [...strategy.tags] : []);
-    setNotes(strategy.notes || '');
+    const cloned: TradingStrategy = JSON.parse(JSON.stringify(strategy));
+    const nextVals = {
+      name: cloned.name || '',
+      description: cloned.description || '',
+      setupContext: cloned.setupContext || '',
+      entryRules: cloned.entryRules || '',
+      invalidationConditions: cloned.invalidationConditions || '',
+      riskManagementRules: cloned.riskManagementRules || '',
+      exitRules: cloned.exitRules || '',
+      tags: cloned.tags ? [...cloned.tags] : [],
+      notes: cloned.notes || '',
+    };
+    setEditingStrategyId(cloned.id);
+    setName(nextVals.name);
+    setDescription(nextVals.description);
+    setSetupContext(nextVals.setupContext);
+    setEntryRules(nextVals.entryRules);
+    setInvalidationConditions(nextVals.invalidationConditions);
+    setRiskManagementRules(nextVals.riskManagementRules);
+    setExitRules(nextVals.exitRules);
+    setTags(nextVals.tags);
+    setNotes(nextVals.notes);
     setFormError(null);
+    setShowDiscardConfirm(false);
     setViewingStrategy(null);
+    originalSnapshotRef.current = serializeStrategyEditor(nextVals);
     setIsEditorOpen(true);
   };
+
+  const isEditorDirty = () => {
+    return (
+      serializeStrategyEditor({
+        name,
+        description,
+        setupContext,
+        entryRules,
+        invalidationConditions,
+        riskManagementRules,
+        exitRules,
+        tags,
+        notes,
+      }) !== originalSnapshotRef.current
+    );
+  };
+
+  const executeDiscardAndCloseEditor = async () => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    if (!editingStrategyId) {
+      await clearStrategyDraft(userId).catch(() => {});
+      setHasDraftNotice(false);
+    }
+    setShowDiscardConfirm(false);
+    setIsEditorOpen(false);
+    resetForm();
+  };
+
+  const handleRequestCloseEditor = () => {
+    if (isEditorDirty()) {
+      setShowDiscardConfirm(true);
+    } else {
+      executeDiscardAndCloseEditor();
+    }
+  };
+
+  const modalBackRef = useRef<() => void>(() => {});
+  modalBackRef.current = () => {
+    if (isEditorOpen) {
+      if (showDiscardConfirm) {
+        setShowDiscardConfirm(false);
+      } else {
+        handleRequestCloseEditor();
+      }
+    } else if (viewingStrategy) {
+      setViewingStrategy(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!isEditorOpen && !viewingStrategy) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        modalBackRef.current();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    const unregBack = registerBackHandler(() => modalBackRef.current());
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      unregBack();
+    };
+  }, [isEditorOpen, Boolean(viewingStrategy)]);
 
   const handleAddTag = () => {
     const clean = tagInput.trim();
@@ -338,6 +458,10 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
     const trimmedName = name.trim();
     if (!trimmedName) {
       setFormError('Strategy Name is required.');
@@ -784,7 +908,7 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
           aria-modal="true"
           aria-label={editingStrategyId ? 'Edit Strategy' : 'New Strategy'}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-          onClick={() => setIsEditorOpen(false)}
+          onClick={handleRequestCloseEditor}
         >
           <div
             className="w-full max-w-xl bg-app-main border border-app rounded-xl shadow-xl overflow-hidden max-h-[90vh] flex flex-col"
@@ -796,7 +920,7 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
               </h2>
               <button
                 type="button"
-                onClick={() => setIsEditorOpen(false)}
+                onClick={handleRequestCloseEditor}
                 className="p-1 text-app-secondary hover:text-app-main rounded cursor-pointer"
                 aria-label="Close strategy editor"
               >
@@ -966,10 +1090,34 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                 />
               </div>
 
+              {showDiscardConfirm && (
+                <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-amber-900 dark:text-amber-200">
+                    Discard unsaved strategy changes?
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowDiscardConfirm(false)}
+                      className="px-3 py-1 text-xs font-medium text-app-main bg-app-main border border-app rounded hover:bg-app-field cursor-pointer"
+                    >
+                      Keep editing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={executeDiscardAndCloseEditor}
+                      className="px-3 py-1 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded cursor-pointer"
+                    >
+                      Discard changes
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-app">
                 <button
                   type="button"
-                  onClick={() => setIsEditorOpen(false)}
+                  onClick={handleRequestCloseEditor}
                   className="px-3.5 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded cursor-pointer"
                 >
                   Cancel

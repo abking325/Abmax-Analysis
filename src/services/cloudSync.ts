@@ -21,6 +21,8 @@ import {
   removeDeletedReportId,
   getPendingCloudQueue,
   removePendingCloudItem,
+  getLocalAccountResetEpoch,
+  clearLocalAccountDataForReset,
 } from './db';
 
 export type SyncState = 'local' | 'syncing' | 'synced' | 'error';
@@ -165,15 +167,89 @@ export async function uploadChartImageToCloud(
   }
 }
 
+/* ================= ACCOUNT RESET EPOCH BARRIER ================= */
+
+export async function fetchRemoteResetEpoch(
+  userId: string,
+  client: any = supabase
+): Promise<{ epoch: number; resetAt?: string; tableMissing?: boolean }> {
+  if (!client || !userId) return { epoch: 0 };
+  try {
+    const { data, error } = await client
+      .from('user_reset_epochs')
+      .select('reset_epoch, reset_at')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      const msg = (error.message || '').toLowerCase();
+      const code = (error as any).code || '';
+      if (
+        code === 'PGRST205' ||
+        code === '42P01' ||
+        msg.includes('could not find the table') ||
+        msg.includes('does not exist')
+      ) {
+        return { epoch: 0, tableMissing: true };
+      }
+      return { epoch: 0 };
+    }
+
+    return {
+      epoch: typeof data?.reset_epoch === 'number' ? data.reset_epoch : 0,
+      resetAt: data?.reset_at,
+    };
+  } catch {
+    return { epoch: 0 };
+  }
+}
+
+/**
+ * Checks whether another device executed a full account reset (`remoteEpoch > localEpoch`).
+ * When detected, immediately purges pre-reset local account data (preserving auth session
+ * and any foreign local accounts) and refuses to push pre-reset records back to the cloud.
+ */
+export async function enforceRemoteResetBarrier(
+  userId: string,
+  client: any = supabase
+): Promise<{ resetDetected: boolean; remoteEpoch: number; localEpoch: number; tableMissing?: boolean }> {
+  if (!client || !userId) {
+    return { resetDetected: false, remoteEpoch: 0, localEpoch: 0 };
+  }
+  const [remote, localEpoch] = await Promise.all([
+    fetchRemoteResetEpoch(userId, client),
+    getLocalAccountResetEpoch(userId),
+  ]);
+
+  if (remote.epoch > localEpoch) {
+    await clearLocalAccountDataForReset(userId, remote.epoch);
+    resetCloudDraftVersionTracking(userId);
+    return { resetDetected: true, remoteEpoch: remote.epoch, localEpoch, tableMissing: remote.tableMissing };
+  }
+
+  return { resetDetected: false, remoteEpoch: remote.epoch, localEpoch, tableMissing: remote.tableMissing };
+}
+
 /* ================= CLOUD CRUD OPERATIONS ================= */
 
 export async function uploadReportToCloud(
   userId: string,
-  report: SavedReport
+  report: SavedReport,
+  clientOverride?: any
 ): Promise<{ success: boolean; conflict?: boolean; error?: string }> {
-  if (!supabase) return { success: false, error: 'Supabase not configured' };
+  const client = clientOverride ?? supabase;
+  if (!client) return { success: false, error: 'Supabase not configured' };
 
   try {
+    const barrier = await enforceRemoteResetBarrier(userId, client);
+    if (barrier.resetDetected) {
+      return {
+        success: false,
+        conflict: true,
+        error: 'Account was reset on another device; stale pre-reset upload rejected.',
+      };
+    }
+
     // 1. Upload any attached images to cloud storage if they haven't been uploaded yet
     const sanitizedTimeframes = { ...report.timeframes };
     for (const tf of TIMEFRAME_ORDER) {
@@ -197,7 +273,7 @@ export async function uploadReportToCloud(
     let targetRevision = localRevision;
 
     // Check existing cloud record for optimistic concurrency
-    const { data: existing } = await supabase
+    const { data: existing } = await client
       .from('analyses')
       .select('revision, updated_at, payload')
       .eq('user_id', userId)
@@ -251,7 +327,8 @@ export async function uploadReportToCloud(
       lastCloudRevision: targetRevision,
     };
 
-    const row = {
+    const localEpoch = await getLocalAccountResetEpoch(userId);
+    const row: Record<string, any> = {
       id: report.id,
       user_id: userId,
       pair: report.pair || 'XAUUSD',
@@ -267,12 +344,13 @@ export async function uploadReportToCloud(
       revision: targetRevision,
       created_at: new Date(report.createdAt || Date.now()).toISOString(),
       updated_at: new Date(report.updatedAt || Date.now()).toISOString(),
+      ...(!barrier.tableMissing && localEpoch > 0 ? { reset_epoch: localEpoch } : {}),
     };
 
     if (existing) {
       // Server-enforced conditional revision update against the expected base revision
       const expectedCloudRev = baseCloudRev || existing.revision || 1;
-      const { data: updateData, error: updateError } = await supabase
+      const { data: updateData, error: updateError } = await client
         .from('analyses')
         .update(row)
         .eq('user_id', userId)
@@ -290,10 +368,10 @@ export async function uploadReportToCloud(
         return { success: false, conflict: true };
       }
     } else {
-      const { error: insertError } = await supabase.from('analyses').insert(row);
+      const { error: insertError } = await client.from('analyses').insert(row);
       if (insertError) {
         // If conflict on concurrent insert, fall back to upsert
-        const { error: upsertError } = await supabase.from('analyses').upsert(row, {
+        const { error: upsertError } = await client.from('analyses').upsert(row, {
           onConflict: 'user_id,id',
         });
         if (upsertError) {
@@ -337,33 +415,139 @@ export async function deleteReportFromCloud(
   }
 }
 
-export async function uploadDraftToCloud(
-  userId: string,
-  draft: AnalysisData
-): Promise<void> {
-  if (!supabase) return;
+export interface CloudDraftVersion {
+  updatedAtIso: string;
+  syncToken?: string;
+}
 
-  try {
-    const row = {
-      user_id: userId,
-      draft_id: 'active_draft',
-      pair: draft.pair,
-      payload: draft,
-      updated_at: new Date().toISOString(),
-    };
+const lastKnownCloudDraftVersionByUser = new Map<string, CloudDraftVersion>();
 
-    await supabase.from('drafts').upsert(row, { onConflict: 'user_id' });
-  } catch (err) {
-    console.error('Failed to sync draft to cloud', err);
+export function getLastKnownCloudDraftVersion(userId: string): CloudDraftVersion | undefined {
+  return lastKnownCloudDraftVersionByUser.get(userId);
+}
+
+export function resetCloudDraftVersionTracking(userId?: string): void {
+  if (userId) {
+    lastKnownCloudDraftVersionByUser.delete(userId);
+  } else {
+    lastKnownCloudDraftVersionByUser.clear();
   }
 }
 
-export async function clearDraftFromCloud(userId: string): Promise<void> {
-  if (!supabase) return;
+export async function uploadDraftToCloud(
+  userId: string,
+  draft: AnalysisData
+): Promise<{ success: boolean; updatedAtIso?: string; syncToken?: string; error?: string }> {
+  if (!supabase) return { success: false, error: 'Supabase not configured' };
+
   try {
-    await supabase.from('drafts').delete().eq('user_id', userId);
+    const barrier = await enforceRemoteResetBarrier(userId);
+    if (barrier.resetDetected) {
+      return { success: false, error: 'Account was reset on another device; pre-reset draft discarded.' };
+    }
+    const localEpoch = await getLocalAccountResetEpoch(userId);
+    const syncToken = `drf_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const updatedAtIso = new Date().toISOString();
+    const row: Record<string, any> = {
+      user_id: userId,
+      draft_id: 'active_draft',
+      pair: draft.pair,
+      payload: {
+        ...draft,
+        draftSyncToken: syncToken,
+      },
+      updated_at: updatedAtIso,
+      ...(!barrier.tableMissing && localEpoch > 0 ? { reset_epoch: localEpoch } : {}),
+    };
+
+    const { error } = await supabase.from('drafts').upsert(row, { onConflict: 'user_id' });
+    if (error) {
+      console.error('Failed to sync draft to cloud', error);
+      return { success: false, error: error.message };
+    }
+    lastKnownCloudDraftVersionByUser.set(userId, { updatedAtIso, syncToken });
+    return { success: true, updatedAtIso, syncToken };
+  } catch (err) {
+    console.error('Failed to sync draft to cloud', err);
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+export async function clearDraftFromCloud(
+  userId: string,
+  expectedVersion?: CloudDraftVersion
+): Promise<{
+  deleted: boolean;
+  retainedReason?: 'offline' | 'no_remote_draft' | 'unverified_remote_draft' | 'remote_newer_or_modified' | 'error';
+}> {
+  if (!supabase) return { deleted: false, retainedReason: 'offline' };
+  const targetVersion = expectedVersion || lastKnownCloudDraftVersionByUser.get(userId);
+
+  try {
+    // If this device never authored or acknowledged a cloud draft version, verify remotely first:
+    // never blindly wipe a draft that another device may have written.
+    if (!targetVersion?.updatedAtIso) {
+      const { data: remoteRow, error: fetchErr } = await supabase
+        .from('drafts')
+        .select('updated_at, payload')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (fetchErr) {
+        console.warn('[CloudSync] Could not verify remote draft before clear, retaining remote draft:', fetchErr);
+        return { deleted: false, retainedReason: 'error' };
+      }
+      if (!remoteRow) {
+        lastKnownCloudDraftVersionByUser.delete(userId);
+        return { deleted: false, retainedReason: 'no_remote_draft' };
+      }
+      // A remote draft exists that was not authored/acknowledged by this device session — retain it safely
+      const remoteToken = (remoteRow.payload as any)?.draftSyncToken;
+      if (remoteRow.updated_at) {
+        lastKnownCloudDraftVersionByUser.set(userId, {
+          updatedAtIso: remoteRow.updated_at,
+          syncToken: typeof remoteToken === 'string' ? remoteToken : undefined,
+        });
+      }
+      console.info('[CloudSync] Retaining unverified remote cloud draft written on another device.');
+      return { deleted: false, retainedReason: 'unverified_remote_draft' };
+    }
+
+    // Server-enforced conditional delete: deletes ONLY if the remote draft still matches the version this device saved/saw
+    let query = supabase
+      .from('drafts')
+      .delete()
+      .eq('user_id', userId)
+      .eq('updated_at', targetVersion.updatedAtIso);
+
+    if (targetVersion.syncToken) {
+      query = query.eq('payload->>draftSyncToken', targetVersion.syncToken);
+    }
+
+    const { data: deletedRows, error } = await query.select('user_id');
+
+    if (error) {
+      console.warn('[CloudSync] Conditional cloud draft delete failed, retaining remote draft:', error);
+      return { deleted: false, retainedReason: 'error' };
+    }
+
+    if (!deletedRows || deletedRows.length === 0) {
+      console.info('[CloudSync] Cloud draft changed concurrently on another device; retaining newer remote draft.');
+      return { deleted: false, retainedReason: 'remote_newer_or_modified' };
+    }
+
+    const currentTracked = lastKnownCloudDraftVersionByUser.get(userId);
+    if (
+      currentTracked &&
+      currentTracked.updatedAtIso === targetVersion.updatedAtIso &&
+      currentTracked.syncToken === targetVersion.syncToken
+    ) {
+      lastKnownCloudDraftVersionByUser.delete(userId);
+    }
+    return { deleted: true };
   } catch (err) {
     console.error('Failed to clear cloud draft', err);
+    return { deleted: false, retainedReason: 'error' };
   }
 }
 
@@ -374,13 +558,17 @@ export async function uploadTemplateToCloud(
   if (!supabase) return;
 
   try {
-    const row = {
+    const barrier = await enforceRemoteResetBarrier(userId);
+    if (barrier.resetDetected) return;
+    const localEpoch = await getLocalAccountResetEpoch(userId);
+    const row: Record<string, any> = {
       id: template.id,
       user_id: userId,
       name: template.name,
       payload: template,
       created_at: new Date(template.createdAt).toISOString(),
       updated_at: new Date(template.updatedAt).toISOString(),
+      ...(!barrier.tableMissing && localEpoch > 0 ? { reset_epoch: localEpoch } : {}),
     };
 
     await supabase.from('templates').upsert(row, { onConflict: 'user_id,id' });
@@ -407,6 +595,7 @@ export async function fetchAllUserCloudData(userId: string): Promise<{
   reports: SavedReport[];
   templates: SavedTemplate[];
   draft: AnalysisData | null;
+  draftVersion?: CloudDraftVersion;
 }> {
   if (!supabase) return { reports: [], templates: [], draft: null };
 
@@ -417,7 +606,7 @@ export async function fetchAllUserCloudData(userId: string): Promise<{
       .eq('user_id', userId)
       .order('date', { ascending: false }),
     supabase.from('templates').select('payload').eq('user_id', userId),
-    supabase.from('drafts').select('payload').eq('user_id', userId).maybeSingle(),
+    supabase.from('drafts').select('payload, updated_at').eq('user_id', userId).maybeSingle(),
   ]);
 
   if (reportsRes.error) {
@@ -443,9 +632,23 @@ export async function fetchAllUserCloudData(userId: string): Promise<{
     .map((t) => t.payload as SavedTemplate)
     .filter(Boolean);
 
-  const draft: AnalysisData | null = draftRes.data?.payload || null;
+  const rawDraftPayload = (draftRes.data?.payload || null) as (AnalysisData & { draftSyncToken?: string }) | null;
+  let draftVersion: CloudDraftVersion | undefined;
+  let draft: AnalysisData | null = null;
+  if (rawDraftPayload) {
+    const updatedAtIso =
+      (draftRes.data as any)?.updated_at ||
+      new Date(rawDraftPayload.updatedAt || Date.now()).toISOString();
+    draftVersion = {
+      updatedAtIso,
+      syncToken: typeof rawDraftPayload.draftSyncToken === 'string' ? rawDraftPayload.draftSyncToken : undefined,
+    };
+    lastKnownCloudDraftVersionByUser.set(userId, draftVersion);
+    const { draftSyncToken: _omit, ...cleanDraft } = rawDraftPayload;
+    draft = cleanDraft;
+  }
 
-  return { reports, templates, draft };
+  return { reports, templates, draft, draftVersion };
 }
 
 /**
@@ -461,6 +664,12 @@ async function executeSyncOperation(userId: string): Promise<{
   uploaded: number;
   conflicts: number;
 }> {
+  const barrier = await enforceRemoteResetBarrier(userId);
+  if (barrier.resetDetected) {
+    console.warn(`[CloudSync] Authoritative account reset epoch (${barrier.remoteEpoch}) detected; local pre-reset records purged without re-uploading.`);
+    return { downloaded: 0, uploaded: 0, conflicts: 0 };
+  }
+
   const [cloudData, localReports, localTemplates, deletedReportIdsList, pendingQueue] = await Promise.all([
     fetchAllUserCloudData(userId),
     getAllReports(),
@@ -841,11 +1050,22 @@ export async function uploadPreferencesToCloud(
 ): Promise<void> {
   if (!supabase) return;
   try {
-    const row = {
+    const barrier = await enforceRemoteResetBarrier(userId);
+    if (barrier.resetDetected) return;
+
+    const existing = await fetchPreferencesFromCloud(userId);
+    const mergedPreferences = {
+      ...(existing?.preferences || {}),
+      ...preferences,
+    };
+    const localEpoch = await getLocalAccountResetEpoch(userId);
+
+    const row: Record<string, any> = {
       user_id: userId,
       theme,
-      preferences,
+      preferences: mergedPreferences,
       updated_at: new Date().toISOString(),
+      ...(!barrier.tableMissing && localEpoch > 0 ? { reset_epoch: localEpoch } : {}),
     };
     await supabase.from('user_preferences').upsert(row, { onConflict: 'user_id' });
   } catch (err) {

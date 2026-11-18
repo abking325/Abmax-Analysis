@@ -466,10 +466,14 @@ export const SupplyDemandSection: React.FC<SupplyDemandProps> = ({
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setIsAdding(false)}
-                className="px-3 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded transition-colors"
+                onClick={() => {
+                  setNewSupply('');
+                  setNewDemand('');
+                  setIsAdding(false);
+                }}
+                className="px-3 py-1.5 text-xs text-app-secondary hover:bg-app-field rounded transition-colors cursor-pointer"
               >
-                Remove
+                Cancel
               </button>
               <button
                 type="button"

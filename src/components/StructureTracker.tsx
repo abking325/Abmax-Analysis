@@ -87,6 +87,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
   const [editBrokenLevel, setEditBrokenLevel] = useState('');
   const [editHigh, setEditHigh] = useState('');
   const [editLow, setEditLow] = useState('');
+  const [editValidationError, setEditValidationError] = useState<string | null>(null);
 
   // History delete confirmation
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -327,6 +328,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     setEditBrokenLevel(evt.brokenLevel);
     setEditHigh(evt.high);
     setEditLow(evt.low);
+    setEditValidationError(null);
     setConfirmDeleteId(null);
   };
 
@@ -334,9 +336,10 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
   const handleSaveEditEvent = (evtId: string) => {
     const error = validatePriceLevels(editHigh, editLow);
     if (error) {
-      alert(error);
+      setEditValidationError(error);
       return;
     }
+    setEditValidationError(null);
 
     const updatedHistory = (history || []).map((e) =>
       e.id === evtId
@@ -1065,6 +1068,12 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                         ) : (
                           /* Inline Edit Row */
                           <div className="space-y-2 p-1">
+                            {editValidationError && (
+                              <div className="p-1.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-[11px] flex items-center gap-1.5">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span>{editValidationError}</span>
+                              </div>
+                            )}
                             <div className="grid grid-cols-3 gap-2">
                               <div>
                                 <label className="block text-[10px] text-app-secondary">Broken</label>
@@ -1098,14 +1107,17 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleSaveEditEvent(evt.id)}
-                                className="px-2 py-0.5 bg-emerald-theme text-white text-[11px] font-semibold rounded"
+                                className="px-2 py-0.5 bg-emerald-theme text-white text-[11px] font-semibold rounded cursor-pointer"
                               >
                                 Save
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setEditingEventId(null)}
-                                className="px-2 py-0.5 text-app-secondary text-[11px]"
+                                onClick={() => {
+                                  setEditValidationError(null);
+                                  setEditingEventId(null);
+                                }}
+                                className="px-2 py-0.5 text-app-secondary text-[11px] cursor-pointer"
                               >
                                 Cancel
                               </button>

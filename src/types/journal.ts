@@ -109,7 +109,190 @@ export function getPersonalBiasLabel(tf: TimeframeId): 'My Monthly Bias' | 'My W
   return null;
 }
 
-export type TradingPair = 'XAUUSD' | 'BTCUSD' | 'EURUSD';
+export type TradingPair = string;
+
+export type InstrumentCategory =
+  | 'Forex'
+  | 'Commodities'
+  | 'Crypto'
+  | 'Indices'
+  | 'Stocks'
+  | 'Custom';
+
+export interface InstrumentConfigItem {
+  symbol: string;
+  name?: string;
+  category: InstrumentCategory;
+  enabled: boolean;
+  isDefault?: boolean;
+  supportsLiveFeed?: boolean;
+  createdAt?: number;
+}
+
+export interface InstrumentsConfig {
+  items: InstrumentConfigItem[];
+  updatedAt?: number;
+}
+
+export const DEFAULT_INSTRUMENTS: ReadonlyArray<InstrumentConfigItem> = [
+  {
+    symbol: 'XAUUSD',
+    name: 'Gold / US Dollar',
+    category: 'Commodities',
+    enabled: true,
+    isDefault: true,
+    supportsLiveFeed: false,
+  },
+  {
+    symbol: 'EURUSD',
+    name: 'Euro / US Dollar',
+    category: 'Forex',
+    enabled: true,
+    isDefault: true,
+    supportsLiveFeed: false,
+  },
+  {
+    symbol: 'BTCUSD',
+    name: 'Bitcoin / US Dollar',
+    category: 'Crypto',
+    enabled: true,
+    isDefault: true,
+    supportsLiveFeed: true,
+  },
+];
+
+export const DEFAULT_INSTRUMENTS_CONFIG: InstrumentsConfig = {
+  items: DEFAULT_INSTRUMENTS.map((item) => ({ ...item })),
+};
+
+export function normalizeInstrumentSymbol(raw: string): string {
+  const cleaned = (raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/\//g, '')
+    .replace(/[^A-Z0-9._-]/g, '');
+  return cleaned.slice(0, 16);
+}
+
+export function validateInstrumentSymbol(raw: string): {
+  valid: boolean;
+  symbol: string;
+  error?: string;
+} {
+  const symbol = normalizeInstrumentSymbol(raw);
+  if (!symbol || symbol.length < 2) {
+    return {
+      valid: false,
+      symbol,
+      error: 'Enter an instrument symbol with 2 to 16 alphanumeric characters (e.g. GBPUSD, US30, NAS100, AAPL).',
+    };
+  }
+  if (!/^[A-Z0-9][A-Z0-9._-]{1,15}$/.test(symbol)) {
+    return {
+      valid: false,
+      symbol,
+      error: 'Instrument symbol must start with a letter or number and use only A-Z, 0-9, ., -, or _.',
+    };
+  }
+  return { valid: true, symbol };
+}
+
+export function normalizeInstrumentsConfig(
+  raw?: Partial<InstrumentsConfig> | null
+): InstrumentsConfig {
+  const incoming = Array.isArray(raw?.items) ? raw.items : [];
+  const defaultMap = new Map(DEFAULT_INSTRUMENTS.map((d) => [d.symbol, d]));
+  const resultMap = new Map<string, InstrumentConfigItem>();
+
+  // Always preserve default instruments in canonical order
+  for (const def of DEFAULT_INSTRUMENTS) {
+    const match = incoming.find((item) => normalizeInstrumentSymbol(item?.symbol || '') === def.symbol);
+    resultMap.set(def.symbol, {
+      symbol: def.symbol,
+      name: (match?.name || def.name || '').trim() || undefined,
+      category: match?.category || def.category,
+      enabled: match ? match.enabled !== false : true,
+      isDefault: true,
+      supportsLiveFeed: def.symbol === 'BTCUSD',
+      createdAt: match?.createdAt,
+    });
+  }
+
+  // Append custom instruments cleanly, deduplicated by uppercase symbol
+  for (const item of incoming) {
+    const sym = normalizeInstrumentSymbol(item?.symbol || '');
+    if (!sym || sym.length < 2 || defaultMap.has(sym) || resultMap.has(sym)) {
+      continue;
+    }
+    const validCategories: InstrumentCategory[] = [
+      'Forex',
+      'Commodities',
+      'Crypto',
+      'Indices',
+      'Stocks',
+      'Custom',
+    ];
+    const cat = validCategories.includes(item?.category as InstrumentCategory)
+      ? (item.category as InstrumentCategory)
+      : 'Custom';
+    resultMap.set(sym, {
+      symbol: sym,
+      name: item?.name ? String(item.name).trim().slice(0, 48) : undefined,
+      category: cat,
+      enabled: item?.enabled !== false,
+      isDefault: false,
+      supportsLiveFeed: false,
+      createdAt: item?.createdAt || Date.now(),
+    });
+  }
+
+  const items = Array.from(resultMap.values());
+  // Ensure at least one instrument stays enabled across selectors
+  if (!items.some((i) => i.enabled)) {
+    items[0] = { ...items[0], enabled: true };
+  }
+
+  return {
+    items,
+    updatedAt: typeof raw?.updatedAt === 'number' ? raw.updatedAt : undefined,
+  };
+}
+
+export function getEnabledInstrumentSymbols(config?: InstrumentsConfig | null): string[] {
+  const normalized = normalizeInstrumentsConfig(config);
+  const enabled = normalized.items.filter((i) => i.enabled).map((i) => i.symbol);
+  return enabled.length > 0 ? enabled : ['XAUUSD', 'EURUSD', 'BTCUSD'];
+}
+
+export function getSelectorInstrumentOptions(
+  config?: InstrumentsConfig | null,
+  currentOrHistoricalValues: Array<string | undefined | null> = []
+): Array<{ symbol: string; label: string; isInactive: boolean }> {
+  const normalized = normalizeInstrumentsConfig(config);
+  const enabledItems = normalized.items.filter((i) => i.enabled);
+  const enabledSet = new Set(enabledItems.map((i) => i.symbol));
+
+  const options = enabledItems.map((i) => ({
+    symbol: i.symbol,
+    label: i.symbol,
+    isInactive: false,
+  }));
+
+  const seenExtra = new Set<string>();
+  for (const rawVal of currentOrHistoricalValues) {
+    const clean = normalizeInstrumentSymbol(rawVal || '');
+    if (!clean || enabledSet.has(clean) || seenExtra.has(clean)) continue;
+    seenExtra.add(clean);
+    options.push({
+      symbol: clean,
+      label: `${clean} (Disabled / Historical)`,
+      isInactive: true,
+    });
+  }
+
+  return options;
+}
 
 export type TradingSession = 'Asian' | 'London' | 'NY AM' | 'NY PM';
 
@@ -663,6 +846,7 @@ export interface AnalysisData {
   baseCloudRevision?: number;
   lastCloudRevision?: number;
   pendingSaveId?: string;
+  templateId?: string;
 }
 
 export interface SavedReport extends AnalysisData {
@@ -1041,11 +1225,13 @@ export interface BackupData {
   images: ImageAttachment[];
   journalEntries?: JournalEntry[];
   strategies?: TradingStrategy[];
+  liveWorkspaces?: LiveWorkspaceData[];
   journalDraft?: any;
   myJournalDraft?: any;
   scopedJournalDrafts?: Record<string, any>;
   scopedMyJournalDrafts?: Record<string, any>;
   scopedStrategyDrafts?: Record<string, Partial<TradingStrategy>>;
+  scopedInstrumentsConfigs?: Record<string, InstrumentsConfig>;
   ownership?: {
     exportedByAccountId: string;
     totalJournalEntries: number;
@@ -1053,6 +1239,8 @@ export interface BackupData {
     scopedDraftAccounts: string[];
     totalStrategies?: number;
     strategyOwners?: Record<string, number>;
+    totalLiveWorkspaces?: number;
+    liveWorkspaceOwners?: Record<string, number>;
   };
   preferences: {
     theme: 'light' | 'dark';
@@ -1060,8 +1248,198 @@ export interface BackupData {
     presentationConfig?: ReportPresentationConfig;
     journalVisibilityConfig?: JournalVisibilityConfig;
     performanceVisibilityConfig?: PerformanceVisibilityConfig;
+    instrumentsConfig?: InstrumentsConfig;
   };
   workingSessions?: Record<string, unknown>;
+}
+
+// ============================================================================
+// Live Trading Workspace Types (Local-Only Monitor & Watch Scenarios)
+// ============================================================================
+
+export type LiveScenarioStatus =
+  | 'Waiting'
+  | 'Level reached'
+  | 'Awaiting confirmation'
+  | 'Confirmed'
+  | 'Invalidated'
+  | 'Paused'
+  | 'Completed';
+
+export const LIVE_SCENARIO_STATUSES: LiveScenarioStatus[] = [
+  'Waiting',
+  'Level reached',
+  'Awaiting confirmation',
+  'Confirmed',
+  'Invalidated',
+  'Paused',
+  'Completed',
+];
+
+export type LiveConfirmationTimeframe =
+  | 'Weekly'
+  | 'Daily'
+  | '4H'
+  | '1H'
+  | '15M'
+  | '5M'
+  | '1M'
+  | '';
+
+export interface LiveLevelZone {
+  id: string;
+  label: string;
+  type: 'Supply' | 'Demand' | 'Support' | 'Resistance' | 'Liquidity' | 'Custom';
+  price: string;
+  zoneLow?: string;
+  zoneHigh?: string;
+  timeframe?: TimeframeId | '';
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LiveQuoteState {
+  mode: 'manual' | 'public_rest';
+  provider: string;
+  price: number | null;
+  priceType: 'last' | 'bid' | 'ask' | 'manual';
+  bid?: number | null;
+  ask?: number | null;
+  providerTimestamp?: number | null;
+  timestamp: number | null;
+  fetchedAt: number | null;
+  status: 'fresh' | 'delayed' | 'stale' | 'disconnected' | 'manual';
+  staleThresholdMs: number;
+  error?: string;
+}
+
+export interface LiveWatchScenario {
+  id: string;
+  name: string;
+  direction: 'Buy' | 'Sell' | '';
+  strategyId?: string;
+  strategy?: string;
+  strategySnapshot?: StrategySnapshot;
+  targetZoneOrLevel: string;
+  zoneLow?: string;
+  zoneHigh?: string;
+  triggerConditions: string;
+  confirmationType: string;
+  confirmationTimeframe?: LiveConfirmationTimeframe;
+  requiresCandleClose?: boolean;
+  plannedResponse: string;
+  invalidationLevel: string;
+  priority: 'High' | 'Medium' | 'Low';
+  notes: string;
+  status: LiveScenarioStatus;
+  alertOnZoneTouch: boolean;
+  alertOnInvalidation: boolean;
+  sourceReportId?: string;
+  sourceReportTitle?: string;
+  sourceScenarioId?: string;
+  sourcePair?: TradingPair;
+  sourceLabel?: string;
+  lastEvaluatedAt?: number;
+  lastTriggeredKey?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LiveEventItem {
+  id: string;
+  title: string;
+  scheduledTime: string;
+  timezone: string;
+  currencyOrInstrument: string;
+  impact?: 'High' | 'Medium' | 'Low';
+  notes: string;
+  status: 'Upcoming' | 'Triggered' | 'Dismissed';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LiveAlertRecord {
+  id: string;
+  scenarioId?: string;
+  eventId?: string;
+  dedupeKey: string;
+  title: string;
+  message: string;
+  severity: 'info' | 'warning' | 'alert';
+  timestamp: number;
+  acknowledged: boolean;
+}
+
+export interface LiveInstrumentState {
+  pair: string;
+  marketConditionSummary: string;
+  quote: LiveQuoteState;
+  keyLevels: LiveLevelZone[];
+  scenarios: LiveWatchScenario[];
+  events: LiveEventItem[];
+  alerts: LiveAlertRecord[];
+  updatedAt: number;
+}
+
+export interface LiveWorkspaceData {
+  id: string; // e.g. live_workspace_local or live_workspace_<userId>
+  ownerScope: string;
+  activePair: string;
+  instruments: Record<string, LiveInstrumentState>;
+  updatedAt: number;
+}
+
+export function createEmptyLiveInstrumentState(pair: string): LiveInstrumentState {
+  return {
+    pair,
+    marketConditionSummary: '',
+    quote: {
+      mode: 'manual',
+      provider: 'Manual Observation',
+      price: null,
+      priceType: 'manual',
+      bid: null,
+      ask: null,
+      timestamp: null,
+      fetchedAt: null,
+      status: 'manual',
+      staleThresholdMs: 60000,
+    },
+    keyLevels: [],
+    scenarios: [],
+    events: [],
+    alerts: [],
+    updatedAt: Date.now(),
+  };
+}
+
+export function createInitialLiveWorkspace(
+  ownerScope: string,
+  enabledPairs?: string[]
+): LiveWorkspaceData {
+  const cleanScope = ownerScope || 'local';
+  const seedPairs = Array.from(
+    new Set([
+      ...(enabledPairs && enabledPairs.length > 0 ? enabledPairs : []),
+      'XAUUSD',
+      'BTCUSD',
+      'EURUSD',
+    ])
+  );
+  const instruments: Record<string, LiveInstrumentState> = {};
+  for (const sym of seedPairs) {
+    instruments[sym] = createEmptyLiveInstrumentState(sym);
+  }
+  const initialActive =
+    enabledPairs && enabledPairs.length > 0 ? enabledPairs[0] : 'XAUUSD';
+  return {
+    id: `live_workspace_${cleanScope}`,
+    ownerScope: cleanScope,
+    activePair: initialActive,
+    instruments,
+    updatedAt: Date.now(),
+  };
 }
 
 export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
@@ -1112,8 +1490,18 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
 
 export function createInitialAnalysisData(pair: TradingPair = 'XAUUSD', visibility?: WorkspaceVisibilityConfig): AnalysisData {
   const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  let dateStr = '';
+  try {
+    dateStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(now);
+  } catch {
+    dateStr = now.toISOString().slice(0, 10);
+  }
   
   const timeframes = {} as Record<TimeframeId, TimeframeData>;
   for (const tf of TIMEFRAME_ORDER) {

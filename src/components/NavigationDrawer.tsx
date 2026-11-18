@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import {
+  Activity,
   BookOpen,
   TrendingUp,
   Settings,
@@ -7,6 +8,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { ActiveView } from './Header';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface NavigationDrawerProps {
   isOpen: boolean;
@@ -33,26 +35,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
     const originalOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    // Android back button support via Capacitor
-    interface PluginHandle {
-      remove: () => Promise<void>;
-    }
-    let capHandle: PluginHandle | null = null;
-    interface CapacitorWindow extends Window {
-      Capacitor?: {
-        isPluginAvailable?: (name: string) => boolean;
-      };
-    }
-    const capWin = window as CapacitorWindow;
-    if (typeof window !== 'undefined' && capWin.Capacitor?.isPluginAvailable?.('App')) {
-      import('@capacitor/app').then(({ App }) => {
-        App.addListener('backButton', () => {
-          onClose();
-        }).then((h: PluginHandle) => {
-          capHandle = h;
-        }).catch(() => {});
-      }).catch(() => {});
-    }
+    const unregBack = registerBackHandler(() => onClose());
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -66,9 +49,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
     return () => {
       document.body.style.overflow = originalOverflow;
       window.removeEventListener('keydown', handleKeyDown);
-      if (capHandle) {
-        capHandle.remove().catch(() => {});
-      }
+      unregBack();
       if (previouslyFocusedRef.current && typeof previouslyFocusedRef.current.focus === 'function') {
         previouslyFocusedRef.current.focus();
       }
@@ -83,6 +64,13 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
   };
 
   const navItems = [
+    {
+      id: 'live' as ActiveView,
+      label: 'Live',
+      description: 'Trading monitor, watch scenarios, levels & alerts',
+      icon: Activity,
+      onClick: () => handleItemClick(() => onNavigate('live')),
+    },
     {
       id: 'journal' as ActiveView,
       label: 'Journal',

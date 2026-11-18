@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { App as CapApp } from '@capacitor/app';
 import { Download, RefreshCw } from 'lucide-react';
 import { ActiveView, Header } from './components/Header';
 import { HomeView } from './components/HomeView';
@@ -6,10 +7,12 @@ import { AnalysisView } from './components/AnalysisView';
 import { ReportsView } from './components/ReportsView';
 import { JournalView } from './components/JournalView';
 import { PerformanceView } from './components/PerformanceView';
+import { LiveView } from './components/LiveView';
 import { AuthModal } from './components/AuthModal';
 import { MigrationModal } from './components/MigrationModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { hasMeaningfulAnalysisWork } from './utils/analysisUtils';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import {
   onUpdateAvailable,
@@ -19,26 +22,33 @@ import {
 } from './services/pwaService';
 import {
   AnalysisData,
+  DEFAULT_INSTRUMENTS_CONFIG,
   DEFAULT_JOURNAL_VISIBILITY_CONFIG,
   DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_VISIBILITY_CONFIG,
+  InstrumentsConfig,
   JournalVisibilityConfig,
   PerformanceVisibilityConfig,
   SavedReport,
   WorkspaceVisibilityConfig,
   createInitialAnalysisData,
+  getEnabledInstrumentSymbols,
+  normalizeInstrumentsConfig,
 } from './types/journal';
 import {
   clearDraft,
   deleteReport,
   getAllReports,
   getDraft,
+  getReportById,
+  getUserInstrumentsConfig,
   getUserJournalVisibilityConfig,
   getUserPerformanceVisibilityConfig,
   getUserVisibilityConfig,
   saveDraft,
   saveReport,
   saveTemplate,
+  saveUserInstrumentsConfig,
   saveUserJournalVisibilityConfig,
   saveUserPerformanceVisibilityConfig,
   saveUserVisibilityConfig,
@@ -59,6 +69,10 @@ import {
   restoreScrollPosition,
   WorkingSessionState,
 } from './services/sessionRestoration';
+import {
+  dispatchTopmostBackHandler,
+  registerBackHandler,
+} from './utils/backNavigation';
 
 function MainApp() {
   const { user, isPasswordRecovery, isRecoveryLinkExpired } = useAuth();
@@ -86,7 +100,13 @@ function MainApp() {
     return JSON.parse(JSON.stringify(DEFAULT_PERFORMANCE_VISIBILITY_CONFIG));
   });
 
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility'>('general');
+  const [instrumentsConfig, setInstrumentsConfig] = useState<InstrumentsConfig>(() => {
+    return JSON.parse(JSON.stringify(DEFAULT_INSTRUMENTS_CONFIG));
+  });
+
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments'
+  >('general');
 
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData>(() =>
     createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG)
@@ -95,7 +115,11 @@ function MainApp() {
   const [isEditingExistingReport, setIsEditingExistingReport] = useState<boolean>(() => {
     return initialSession?.isEditingExistingReport || false;
   });
+  const [isBoundToReport, setIsBoundToReport] = useState<boolean>(() => {
+    return Boolean(initialSession?.isBoundToReport || initialSession?.isEditingExistingReport);
+  });
   const [reportsList, setReportsList] = useState<SavedReport[]>([]);
+  const analysisFlushHandlerRef = useRef<(() => Promise<void>) | null>(null);
 
   // Cold start splash state (genuine cold launch / full restart only)
   const [isColdStarting, setIsColdStarting] = useState(true);
@@ -126,7 +150,11 @@ function MainApp() {
     accountId,
     activeView: 'home',
     isEditingExistingReport: initialSession?.isEditingExistingReport || false,
+    isBoundToReport: Boolean(initialSession?.isBoundToReport || initialSession?.isEditingExistingReport),
+    hasActiveAnalysisSession: initialSession?.hasActiveAnalysisSession || false,
     activeReportId: initialSession?.activeReportId,
+    activePair: initialSession?.activePair,
+    activeTitle: initialSession?.activeTitle,
     scrollPositions: initialSession?.scrollPositions || {},
     analysisUI: initialSession?.analysisUI,
     reportsUI: initialSession?.reportsUI,
@@ -181,7 +209,18 @@ function MainApp() {
     const unbind = registerLifecycleSessionListeners(
       () => {
         sessionStateRef.current.scrollPositions[activeView] = window.scrollY;
-        sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 0);
+        const shouldPersistAnalysis =
+          isBoundToReport ||
+          isEditingExistingReport ||
+          hasMeaningfulAnalysisWork(currentAnalysis, isEditingExistingReport);
+        if (activeView === 'analysis' && analysisFlushHandlerRef.current) {
+          analysisFlushHandlerRef.current().catch(() => {});
+        }
+        sessionManager.scheduleSave(
+          sessionStateRef.current,
+          shouldPersistAnalysis ? currentAnalysis : undefined,
+          0
+        );
         sessionManager.flushNow();
       },
       () => {
@@ -189,14 +228,25 @@ function MainApp() {
       }
     );
     return unbind;
-  }, [activeView, currentAnalysis]);
+  }, [activeView, currentAnalysis, isBoundToReport, isEditingExistingReport]);
 
-  // Save current active view on change
+  // Save current active view on change (never persist untouched blank analysis forms)
   useEffect(() => {
     sessionStateRef.current.activeView = activeView;
-    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 300);
+    const shouldPersistAnalysis =
+      isBoundToReport ||
+      isEditingExistingReport ||
+      hasMeaningfulAnalysisWork(currentAnalysis, isEditingExistingReport);
+    if (!shouldPersistAnalysis) {
+      sessionManager.clearPendingAnalysis();
+    }
+    sessionManager.scheduleSave(
+      sessionStateRef.current,
+      shouldPersistAnalysis ? currentAnalysis : undefined,
+      300
+    );
     localStorage.setItem('abmax_active_view', activeView);
-  }, [activeView, currentAnalysis]);
+  }, [activeView, currentAnalysis, isBoundToReport, isEditingExistingReport]);
 
   // Load visibility preferences from local DB on mount
   useEffect(() => {
@@ -242,8 +292,8 @@ function MainApp() {
     setReportDetailsCloseTrigger((prev) => prev + 1);
   }, []);
 
-  // Navigate helper that scrolls window to top and switches view with session serialization
-  const navigateTo = (view: ActiveView) => {
+  // Navigate helper that flushes active Analysis work, scrolls window to top, and switches view safely
+  const navigateTo = useCallback(async (view: ActiveView) => {
     if (activeView === 'reports' && isReportDetailsOpen) {
       if (view === 'reports') {
         // User clicked "Reports" button in header while inside report details:
@@ -251,17 +301,50 @@ function MainApp() {
         handleCloseReportDetails();
         return;
       } else {
-        // User clicked "Home" or "Analysis": dismiss details and proceed with navigation
+        // User clicked another tab: dismiss details and proceed with navigation
         handleCloseReportDetails();
       }
+    }
+
+    if (activeView === 'analysis' && view !== 'analysis') {
+      if (analysisFlushHandlerRef.current) {
+        try {
+          await analysisFlushHandlerRef.current();
+        } catch (err) {
+          console.warn('Flush before leaving analysis failed:', err);
+        }
+      }
+      try {
+        const [draft, reports] = await Promise.all([getDraft(), getAllReports()]);
+        setSavedDraft(draft);
+        setReportsList(reports);
+      } catch {
+        // Ignore refresh error on navigation
+      }
+    }
+
+    if (view === 'analysis') {
+      sessionStateRef.current.hasActiveAnalysisSession = true;
     }
 
     sessionStateRef.current.scrollPositions[activeView] = window.scrollY;
     sessionStateRef.current.activeView = view;
     setActiveView(view);
-    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysis, 200);
+    const shouldPersistAnalysis =
+      isBoundToReport ||
+      isEditingExistingReport ||
+      hasMeaningfulAnalysisWork(currentAnalysisRef.current, isEditingExistingReport);
+    if (!shouldPersistAnalysis) {
+      sessionManager.clearPendingAnalysis();
+    }
+    sessionManager.scheduleSave(
+      sessionStateRef.current,
+      shouldPersistAnalysis ? currentAnalysisRef.current : undefined,
+      0
+    );
+    sessionManager.flushNow();
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-  };
+  }, [activeView, handleCloseReportDetails, isBoundToReport, isEditingExistingReport, isReportDetailsOpen]);
 
   const currentAnalysisRef = useRef(currentAnalysis);
   useEffect(() => {
@@ -270,23 +353,45 @@ function MainApp() {
 
   const handleSessionUIChange = useCallback((ui: any) => {
     sessionStateRef.current.analysisUI = ui;
-    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 500);
-  }, []);
+    const shouldPersist =
+      isBoundToReport ||
+      isEditingExistingReport ||
+      hasMeaningfulAnalysisWork(currentAnalysisRef.current, isEditingExistingReport);
+    if (!shouldPersist) {
+      sessionManager.clearPendingAnalysis();
+    }
+    sessionManager.scheduleSave(
+      sessionStateRef.current,
+      shouldPersist ? currentAnalysisRef.current : undefined,
+      500
+    );
+  }, [isBoundToReport, isEditingExistingReport]);
 
   const handleAnalysisDataChange = useCallback((updated: AnalysisData) => {
     setCurrentAnalysis(updated);
     currentAnalysisRef.current = updated;
-    sessionManager.scheduleSave(sessionStateRef.current, updated, 400);
-  }, []);
+    const shouldPersist =
+      isBoundToReport ||
+      isEditingExistingReport ||
+      hasMeaningfulAnalysisWork(updated, isEditingExistingReport);
+    if (!shouldPersist) {
+      sessionManager.clearPendingAnalysis();
+    }
+    sessionManager.scheduleSave(
+      sessionStateRef.current,
+      shouldPersist ? updated : undefined,
+      400
+    );
+  }, [isBoundToReport, isEditingExistingReport]);
 
   const handleReportsSessionChange = useCallback((ui: any) => {
     sessionStateRef.current.reportsUI = ui;
-    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 500);
+    sessionManager.scheduleSave(sessionStateRef.current, undefined, 500);
   }, []);
 
   const handleTradeDraftChange = useCallback((tradeDraft: any) => {
     sessionStateRef.current.tradeModalDraft = tradeDraft;
-    sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 400);
+    sessionManager.scheduleSave(sessionStateRef.current, undefined, 400);
   }, []);
 
   // Load draft and reports from IndexedDB without overriding active analysis
@@ -298,6 +403,63 @@ function MainApp() {
     } catch (e) {
       console.error('Failed to load storage data from IndexedDB', e);
     }
+  }, []);
+
+  // Keep live refs for single global Capacitor hardware backButton listener
+  const activeViewRef = useRef(activeView);
+  useEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
+
+  const isColdStartingRef = useRef(isColdStarting);
+  useEffect(() => {
+    isColdStartingRef.current = isColdStarting;
+  }, [isColdStarting]);
+
+  const navigateToRef = useRef(navigateTo);
+  useEffect(() => {
+    navigateToRef.current = navigateTo;
+  }, [navigateTo]);
+
+  // Register replace-draft dialog on back LIFO stack when open
+  useEffect(() => {
+    if (!showReplaceDraftDialog) return;
+    return registerBackHandler(() => setShowReplaceDraftDialog(false));
+  }, [showReplaceDraftDialog]);
+
+  // Single global Android hardware back button listener:
+  // 1. Dismisses topmost open drawer/modal in strict LIFO order
+  // 2. Otherwise returns cleanly from any sub-view to Home (flushing active Analysis edits)
+  useEffect(() => {
+    let handle: { remove: () => void } | null = null;
+    let disposed = false;
+    try {
+      CapApp.addListener('backButton', () => {
+        if (isColdStartingRef.current) {
+          return;
+        }
+        if (dispatchTopmostBackHandler()) {
+          return;
+        }
+        if (activeViewRef.current !== 'home') {
+          void navigateToRef.current('home');
+        }
+      })
+        .then((h) => {
+          if (disposed) {
+            h.remove();
+          } else {
+            handle = h;
+          }
+        })
+        .catch(() => {});
+    } catch {
+      // Non-native environment
+    }
+    return () => {
+      disposed = true;
+      handle?.remove();
+    };
   }, []);
 
   // Hydrate on mount: restores latest persisted working state before empty defaults or autosave can overwrite
@@ -321,28 +483,88 @@ function MainApp() {
 
     (async () => {
       try {
-        const [draft, reports, userJournalVis, userPerfVis] = await Promise.all([
+        const [draft, reports, userJournalVis, userPerfVis, userInstruments] = await Promise.all([
           getDraft(),
           getAllReports(),
           getUserJournalVisibilityConfig(),
           getUserPerformanceVisibilityConfig(),
+          getUserInstrumentsConfig(user?.id),
         ]);
         if (!isMounted) return;
         setSavedDraft(draft);
         setReportsList(reports);
         if (userJournalVis) setJournalVisibilityConfig(userJournalVis);
         if (userPerfVis) setPerformanceVisibilityConfig(userPerfVis);
+        if (userInstruments) setInstrumentsConfig(userInstruments);
 
         const sess = sessionStateRef.current;
-        if (sess.isEditingExistingReport && sess.activeReportId) {
+        if (draft) {
+          // Prefer persisted draft so unsaved edits made while bound/modifying a report survive cold restart,
+          // while rejecting untouched phantom drafts whose originalId was only stamped by saveDraft().
+          const restoredDraft: AnalysisData = { ...draft };
+          const candidateBoundId =
+            restoredDraft.originalId &&
+            restoredDraft.originalId !== 'active_draft' &&
+            restoredDraft.originalId !== 'draft'
+              ? restoredDraft.originalId
+              : sess.isBoundToReport && sess.activeReportId
+              ? sess.activeReportId
+              : undefined;
+          const matchedReportOnDisk = candidateBoundId
+            ? reports.find((r) => r.id === candidateBoundId)
+            : undefined;
+          const draftBound = Boolean(
+            matchedReportOnDisk ||
+              restoredDraft.isModified ||
+              (sess.isBoundToReport && candidateBoundId && matchedReportOnDisk)
+          );
+          if (!draftBound && !hasMeaningfulAnalysisWork(restoredDraft, false)) {
+            setSavedDraft(null);
+            setIsBoundToReport(false);
+            setIsEditingExistingReport(false);
+            sess.isBoundToReport = false;
+            sess.isEditingExistingReport = false;
+            sess.hasActiveAnalysisSession = false;
+            sess.activeReportId = undefined;
+            clearDraft(restoredDraft.updatedAt).catch(() => {});
+          } else {
+            if (draftBound && candidateBoundId) {
+              restoredDraft.originalId = candidateBoundId;
+              restoredDraft.sourceRevision =
+                restoredDraft.sourceRevision || sess.sourceRevision || restoredDraft.revision || 1;
+              setIsBoundToReport(true);
+              sess.isBoundToReport = true;
+              sess.activeReportId = candidateBoundId;
+              sess.hasActiveAnalysisSession = true;
+            } else {
+              setIsBoundToReport(false);
+              sess.isBoundToReport = false;
+              sess.activeReportId = undefined;
+            }
+            if (sess.isEditingExistingReport || restoredDraft.isModified) {
+              setIsEditingExistingReport(true);
+              sess.isEditingExistingReport = true;
+            }
+            setCurrentAnalysis(restoredDraft);
+          }
+        } else if ((sess.isEditingExistingReport || sess.isBoundToReport) && sess.activeReportId) {
           const matched = reports.find((r) => r.id === sess.activeReportId);
           if (matched) {
-            setCurrentAnalysis(JSON.parse(JSON.stringify(matched)));
-          } else if (draft) {
-            setCurrentAnalysis(draft);
+            const copy = JSON.parse(JSON.stringify(matched));
+            copy.originalId = matched.id;
+            copy.sourceRevision = matched.revision || 1;
+            setCurrentAnalysis(copy);
+            setIsBoundToReport(true);
+            sess.isBoundToReport = true;
+          } else {
+            // Referenced report was deleted: clear stale binding so Home does not show a phantom session
+            setIsBoundToReport(false);
+            setIsEditingExistingReport(false);
+            sess.isBoundToReport = false;
+            sess.isEditingExistingReport = false;
+            sess.activeReportId = undefined;
+            sess.hasActiveAnalysisSession = false;
           }
-        } else if (draft) {
-          setCurrentAnalysis(draft);
         }
 
         sessionManager.setHydrated(true);
@@ -439,11 +661,19 @@ function MainApp() {
     };
   }, [user?.id, refreshStorageData]);
 
-  // When user signs in, load cloud preferences if any
+  // When active account changes, load that account's scoped instruments config and fetch cloud preferences if signed in
   useEffect(() => {
     const userId = user?.id;
+    let mounted = true;
+    getUserInstrumentsConfig(userId).then((localCfg) => {
+      if (mounted && localCfg) {
+        setInstrumentsConfig(localCfg);
+      }
+    });
+
     if (userId) {
-      fetchPreferencesFromCloud(userId).then((cloudPref) => {
+      fetchPreferencesFromCloud(userId).then(async (cloudPref) => {
+        if (!mounted) return;
         if (cloudPref?.preferences?.visibilityConfig) {
           setVisibilityConfig(cloudPref.preferences.visibilityConfig);
           saveUserVisibilityConfig(cloudPref.preferences.visibilityConfig);
@@ -456,8 +686,24 @@ function MainApp() {
           setPerformanceVisibilityConfig(cloudPref.preferences.performanceVisibilityConfig);
           saveUserPerformanceVisibilityConfig(cloudPref.preferences.performanceVisibilityConfig);
         }
+        if (cloudPref?.preferences?.instrumentsConfig) {
+          const normalizedCloudInstruments = normalizeInstrumentsConfig(
+            cloudPref.preferences.instrumentsConfig
+          );
+          const localInstruments = await getUserInstrumentsConfig(userId);
+          // Prefer whichever updatedAt is newer, defaulting to non-empty custom union when timestamps match/missing
+          const localTime = localInstruments.updatedAt || 0;
+          const cloudTime = normalizedCloudInstruments.updatedAt || 0;
+          if (cloudTime >= localTime || localInstruments.items.length <= 3) {
+            const saved = await saveUserInstrumentsConfig(normalizedCloudInstruments, userId);
+            if (mounted) setInstrumentsConfig(saved);
+          }
+        }
       });
     }
+    return () => {
+      mounted = false;
+    };
   }, [user?.id]);
 
   const handleUpdateVisibilityConfig = (newCfg: WorkspaceVisibilityConfig) => {
@@ -472,6 +718,7 @@ function MainApp() {
         visibilityConfig: newCfg,
         journalVisibilityConfig,
         performanceVisibilityConfig,
+        instrumentsConfig,
       });
     }
   };
@@ -484,6 +731,7 @@ function MainApp() {
         visibilityConfig,
         journalVisibilityConfig: newCfg,
         performanceVisibilityConfig,
+        instrumentsConfig,
       });
     }
   };
@@ -496,12 +744,55 @@ function MainApp() {
         visibilityConfig,
         journalVisibilityConfig,
         performanceVisibilityConfig: newCfg,
+        instrumentsConfig,
       });
     }
   };
 
+  const handleUpdateInstrumentsConfig = (newCfg: InstrumentsConfig) => {
+    const normalized = normalizeInstrumentsConfig({
+      ...newCfg,
+      updatedAt: Date.now(),
+    });
+    setInstrumentsConfig(normalized);
+    void saveUserInstrumentsConfig(normalized, user?.id).then((saved) => {
+      if (user) {
+        uploadPreferencesToCloud(user.id, theme, {
+          visibilityConfig,
+          journalVisibilityConfig,
+          performanceVisibilityConfig,
+          instrumentsConfig: saved,
+        });
+      }
+    });
+  };
+
+  const handleAccountDataResetCompleted = async () => {
+    sessionManager.clearPendingAnalysis();
+    const freshInst = await getUserInstrumentsConfig(user?.id);
+    setInstrumentsConfig(freshInst);
+    const defaultPair = getEnabledInstrumentSymbols(freshInst)[0] || 'XAUUSD';
+    const freshAnalysis = createInitialAnalysisData(defaultPair, DEFAULT_VISIBILITY_CONFIG);
+    setVisibilityConfig(JSON.parse(JSON.stringify(DEFAULT_VISIBILITY_CONFIG)));
+    setJournalVisibilityConfig(JSON.parse(JSON.stringify(DEFAULT_JOURNAL_VISIBILITY_CONFIG)));
+    setPerformanceVisibilityConfig(JSON.parse(JSON.stringify(DEFAULT_PERFORMANCE_VISIBILITY_CONFIG)));
+    setCurrentAnalysis(freshAnalysis);
+    setSavedDraft(null);
+    setIsEditingExistingReport(false);
+    setIsBoundToReport(false);
+    sessionStateRef.current.isEditingExistingReport = false;
+    sessionStateRef.current.isBoundToReport = false;
+    sessionStateRef.current.hasActiveAnalysisSession = false;
+    sessionStateRef.current.activeReportId = undefined;
+    sessionStateRef.current.sourceRevision = undefined;
+    sessionStateRef.current.analysisUI = undefined;
+    sessionStateRef.current.reportsUI = undefined;
+    sessionStateRef.current.tradeModalDraft = undefined;
+    await refreshStorageData();
+  };
+
   const handleOpenSettingsWithTab = (
-    tab: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' = 'general'
+    tab: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments' = 'general'
   ) => {
     setSettingsInitialTab(tab);
     setIsSettingsModalOpen(true);
@@ -522,61 +813,132 @@ function MainApp() {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
   };
 
+  const isSavedDraftBoundToReport = Boolean(
+    savedDraft &&
+      (savedDraft.isModified ||
+        (savedDraft.originalId &&
+          reportsList.some((r) => r.id === savedDraft.originalId)))
+  );
+
+  const hasResumableSession = Boolean(
+    (savedDraft &&
+      hasMeaningfulAnalysisWork(savedDraft, isSavedDraftBoundToReport)) ||
+      (sessionStateRef.current.hasActiveAnalysisSession &&
+        (isBoundToReport ||
+          isEditingExistingReport ||
+          hasMeaningfulAnalysisWork(currentAnalysis, isEditingExistingReport)))
+  );
+
   // Start fresh analysis
   const handleStartAnalysisClick = () => {
-    if (savedDraft) {
+    if (hasResumableSession) {
       setShowReplaceDraftDialog(true);
     } else {
-      const fresh = createInitialAnalysisData('XAUUSD', visibilityConfig);
+      const defaultPair = getEnabledInstrumentSymbols(instrumentsConfig)[0] || 'XAUUSD';
+      const fresh = createInitialAnalysisData(defaultPair, visibilityConfig);
       setCurrentAnalysis(fresh);
       setIsEditingExistingReport(false);
+      setIsBoundToReport(false);
+      sessionStateRef.current.isEditingExistingReport = false;
+      sessionStateRef.current.isBoundToReport = false;
+      sessionStateRef.current.hasActiveAnalysisSession = true;
+      sessionStateRef.current.activeReportId = undefined;
+      sessionStateRef.current.sourceRevision = undefined;
+      sessionStateRef.current.analysisUI = undefined;
       navigateTo('analysis');
     }
   };
 
   const confirmStartFreshAnalysis = async () => {
+    sessionManager.clearPendingAnalysis();
     await clearDraft();
     setSavedDraft(null);
-    const fresh = createInitialAnalysisData('XAUUSD', visibilityConfig);
+    const defaultPair = getEnabledInstrumentSymbols(instrumentsConfig)[0] || 'XAUUSD';
+    const fresh = createInitialAnalysisData(defaultPair, visibilityConfig);
     setCurrentAnalysis(fresh);
     setIsEditingExistingReport(false);
+    setIsBoundToReport(false);
     sessionStateRef.current.isEditingExistingReport = false;
+    sessionStateRef.current.isBoundToReport = false;
+    sessionStateRef.current.hasActiveAnalysisSession = true;
     sessionStateRef.current.activeReportId = undefined;
     sessionStateRef.current.sourceRevision = undefined;
     sessionStateRef.current.analysisUI = undefined;
+    sessionManager.scheduleSave(sessionStateRef.current, undefined, 0);
+    sessionManager.flushNow();
     setShowReplaceDraftDialog(false);
     navigateTo('analysis');
   };
 
-  // Continue existing analysis: preserves content and editing context (source report ID and revision)
+  // Continue existing analysis: preserves content and editing/bound context (source report ID and revision)
   const handleContinueAnalysis = async () => {
     const draft = await getDraft();
     if (draft) {
-      setCurrentAnalysis(draft);
+      const draftBoundToSaved = Boolean(
+        draft.isModified ||
+          (draft.originalId && reportsList.some((r) => r.id === draft.originalId))
+      );
       const isModifying = Boolean(
         sessionStateRef.current.isEditingExistingReport ||
-        (draft as any).isEditingExistingReport ||
-        ((draft as any).originalId && (draft as any).isModified)
+          (draft as any).isEditingExistingReport ||
+          ((draft as any).originalId && (draft as any).isModified)
       );
-      const activeId = sessionStateRef.current.activeReportId || (draft as any).originalId || (isModifying ? draft.id : undefined);
-      const sourceRev = sessionStateRef.current.sourceRevision || (draft as any).sourceRevision || (draft as any).revision || 1;
+      const isBound = Boolean(
+        isModifying ||
+          sessionStateRef.current.isBoundToReport ||
+          draftBoundToSaved
+      );
+      const activeId = isBound
+        ? sessionStateRef.current.activeReportId ||
+          (draft as any).originalId ||
+          draft.id
+        : undefined;
+      const sourceRev =
+        sessionStateRef.current.sourceRevision ||
+        (draft as any).sourceRevision ||
+        (draft as any).revision ||
+        1;
+      setCurrentAnalysis(draft);
       setIsEditingExistingReport(isModifying);
+      setIsBoundToReport(isBound);
       sessionStateRef.current.isEditingExistingReport = isModifying;
+      sessionStateRef.current.isBoundToReport = isBound;
+      sessionStateRef.current.hasActiveAnalysisSession = true;
       sessionStateRef.current.activeReportId = activeId;
-      sessionStateRef.current.sourceRevision = sourceRev;
+      sessionStateRef.current.sourceRevision = isBound ? sourceRev : undefined;
       navigateTo('analysis');
-    } else {
-      handleStartAnalysisClick();
+      return;
     }
+
+    const fallbackReportId = sessionStateRef.current.activeReportId;
+    if (fallbackReportId) {
+      const matched = await getReportById(fallbackReportId);
+      if (matched) {
+        const copy = JSON.parse(JSON.stringify(matched));
+        copy.originalId = matched.id;
+        copy.sourceRevision = matched.revision || 1;
+        setCurrentAnalysis(copy);
+        setIsEditingExistingReport(sessionStateRef.current.isEditingExistingReport);
+        setIsBoundToReport(true);
+        sessionStateRef.current.isBoundToReport = true;
+        sessionStateRef.current.hasActiveAnalysisSession = true;
+        navigateTo('analysis');
+        return;
+      }
+    }
+
+    handleStartAnalysisClick();
   };
 
-  // When a report is saved successfully
+  // When a report is saved and navigated to View Report
   const handleReportSavedSuccessfully = async (savedReportId?: string) => {
     await refreshStorageData();
-    const wasEditing = isEditingExistingReport;
     const targetReportId = savedReportId || sessionStateRef.current.activeReportId;
     setIsEditingExistingReport(false);
+    setIsBoundToReport(false);
     sessionStateRef.current.isEditingExistingReport = false;
+    sessionStateRef.current.isBoundToReport = false;
+    sessionStateRef.current.hasActiveAnalysisSession = false;
     sessionStateRef.current.activeReportId = undefined;
     sessionStateRef.current.sourceRevision = undefined;
     sessionStateRef.current.analysisUI = undefined;
@@ -588,21 +950,28 @@ function MainApp() {
         activeReportDetailsId: targetReportId,
       };
     }
+    sessionManager.scheduleSave(sessionStateRef.current, undefined, 0);
+    sessionManager.flushNow();
     navigateTo('reports');
   };
 
   // Modify report from Reports view: loads all data into Analysis view with authoritative editing context
-  const handleModifyReport = (report: SavedReport) => {
+  const handleModifyReport = async (report: SavedReport) => {
     const reportCopy = JSON.parse(JSON.stringify(report));
     reportCopy.originalId = report.id;
     reportCopy.sourceRevision = report.revision || 1;
     reportCopy.isModified = true;
     setCurrentAnalysis(reportCopy);
     setIsEditingExistingReport(true);
+    setIsBoundToReport(true);
     sessionStateRef.current.isEditingExistingReport = true;
+    sessionStateRef.current.isBoundToReport = true;
+    sessionStateRef.current.hasActiveAnalysisSession = true;
     sessionStateRef.current.activeReportId = report.id;
     sessionStateRef.current.sourceRevision = report.revision || 1;
-    saveDraft(reportCopy).catch(console.error);
+    await saveDraft(reportCopy).catch(console.error);
+    sessionManager.scheduleSave(sessionStateRef.current, reportCopy, 0);
+    sessionManager.flushNow();
     navigateTo('analysis');
   };
 
@@ -729,7 +1098,7 @@ function MainApp() {
         activeView={activeView}
         onNavigate={navigateTo}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
-        hasUnsavedDraft={Boolean(savedDraft)}
+        hasUnsavedDraft={hasResumableSession}
         hidden={isOrganizedReportViewActive}
         isReportDetailsOpen={isReportDetailsOpen}
       />
@@ -745,14 +1114,20 @@ function MainApp() {
             onStartAnalysis={handleStartAnalysisClick}
             onContinueAnalysis={handleContinueAnalysis}
             onViewReports={() => navigateTo('reports')}
-            hasDraft={Boolean(savedDraft)}
+            hasDraft={hasResumableSession}
             isAnimationPaused={isAnimationPaused}
             draftSummary={
-              savedDraft
+              savedDraft && hasResumableSession
                 ? {
                     pair: savedDraft.pair,
                     date: savedDraft.date,
                     time: savedDraft.time,
+                  }
+                : hasResumableSession
+                ? {
+                    pair: currentAnalysis.pair,
+                    date: currentAnalysis.date,
+                    time: currentAnalysis.time,
                   }
                 : null
             }
@@ -763,8 +1138,22 @@ function MainApp() {
           <AnalysisView
             initialData={currentAnalysis}
             isEditingExistingReport={isEditingExistingReport}
+            initialIsBoundReport={isBoundToReport}
+            registerFlushHandler={(fn) => {
+              analysisFlushHandlerRef.current = fn;
+            }}
+            onEditingExistingChange={(val) => {
+              setIsEditingExistingReport(val);
+              sessionStateRef.current.isEditingExistingReport = val;
+            }}
+            onBoundReportChange={(bound, activeId) => {
+              setIsBoundToReport(bound);
+              sessionStateRef.current.isBoundToReport = bound;
+              sessionStateRef.current.activeReportId = activeId;
+              sessionManager.scheduleSave(sessionStateRef.current, currentAnalysisRef.current, 0);
+              sessionManager.flushNow();
+            }}
             onNavigateHome={() => {
-              refreshStorageData();
               navigateTo('home');
             }}
             onReportSavedSuccessfully={handleReportSavedSuccessfully}
@@ -772,6 +1161,7 @@ function MainApp() {
             initialSessionUI={sessionStateRef.current.analysisUI}
             onSessionUIChange={handleSessionUIChange}
             onAnalysisDataChange={handleAnalysisDataChange}
+            instrumentsConfig={instrumentsConfig}
           />
         )}
 
@@ -794,6 +1184,23 @@ function MainApp() {
             }}
             onNavigateToJournal={() => navigateTo('journal')}
             onNavigateToPerformance={() => navigateTo('performance')}
+            instrumentsConfig={instrumentsConfig}
+          />
+        )}
+
+        {activeView === 'live' && (
+          <LiveView
+            userId={user?.id}
+            instrumentsConfig={instrumentsConfig}
+            onOpenReport={(reportId) => {
+              const matched = reportsList.find((r) => r.id === reportId);
+              sessionStateRef.current.reportsUI = {
+                selectedPair: matched?.pair || 'All',
+                searchQuery: '',
+                activeReportDetailsId: reportId,
+              };
+              navigateTo('reports');
+            }}
           />
         )}
 
@@ -812,6 +1219,7 @@ function MainApp() {
             userId={user?.id}
             journalVisibilityConfig={journalVisibilityConfig}
             onOpenSettings={handleOpenSettingsWithTab}
+            instrumentsConfig={instrumentsConfig}
           />
         )}
 
@@ -830,6 +1238,7 @@ function MainApp() {
             userId={user?.id}
             performanceVisibilityConfig={performanceVisibilityConfig}
             onOpenSettings={handleOpenSettingsWithTab}
+            instrumentsConfig={instrumentsConfig}
           />
         )}
       </div>
@@ -896,6 +1305,9 @@ function MainApp() {
         onChangeJournalVisibilityConfig={handleUpdateJournalVisibilityConfig}
         performanceVisibilityConfig={performanceVisibilityConfig}
         onChangePerformanceVisibilityConfig={handleUpdatePerformanceVisibilityConfig}
+        instrumentsConfig={instrumentsConfig}
+        onChangeInstrumentsConfig={handleUpdateInstrumentsConfig}
+        onAccountDataReset={handleAccountDataResetCompleted}
         initialTab={settingsInitialTab}
       />
 

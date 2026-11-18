@@ -53,7 +53,25 @@ import {
   getStrategiesForScope,
   archiveStrategy,
   deleteStrategy,
+  getLiveWorkspace,
+  saveLiveWorkspace,
+  getAllLiveWorkspaces,
+  resetLiveInstrument,
+  resetLiveWorkspace,
+  getUserInstrumentsConfig,
+  saveUserInstrumentsConfig,
+  getLocalAccountResetEpoch,
+  setLocalAccountResetEpoch,
+  getLocalResetScopeCounts,
+  clearLocalAccountDataForReset,
+  closeDBConnection,
 } from '../services/db';
+import { supabase } from '../services/supabase';
+import {
+  registerBackHandler,
+  dispatchTopmostBackHandler,
+  getActiveBackHandlerCount,
+} from '../utils/backNavigation';
 import {
   JournalEntry,
   BackupData,
@@ -70,6 +88,16 @@ import {
   isHigherPersonalBiasTimeframe,
   getPersonalBiasLabel,
   DEFAULT_DEEP_FIELDS_VISIBILITY,
+  createEmptyLiveInstrumentState,
+  createInitialLiveWorkspace,
+  LiveWatchScenario,
+  LiveQuoteState,
+  DEFAULT_INSTRUMENTS_CONFIG,
+  InstrumentsConfig,
+  validateInstrumentSymbol,
+  normalizeInstrumentsConfig,
+  getEnabledInstrumentSymbols,
+  getSelectorInstrumentOptions,
 } from '../types/journal';
 import { getPdfStatusColor, generateReportPdfBlob } from '../services/pdfExport';
 import { exportPeriodReport, generatePeriodPdfBlob, extractDeduplicatedTrades, calculatePeriodPerformance } from '../services/periodExport';
@@ -97,7 +125,19 @@ import {
 import {
   normalizeReportForContentComparison,
   computeContentFingerprint,
+  uploadDraftToCloud,
+  clearDraftFromCloud,
+  resetCloudDraftVersionTracking,
+  enforceRemoteResetBarrier,
+  uploadReportToCloud,
 } from '../services/cloudSync';
+import {
+  REQUIRED_RESET_CONFIRMATION,
+  validateResetConfirmationPhrase,
+  checkServerAccountResetAvailability,
+  verifyFreshAuthForReset,
+  executeProtectedAccountReset,
+} from '../services/accountReset';
 import {
   calculateOverallAlignment,
   getReportBiasSummary,
@@ -106,7 +146,18 @@ import {
   generateReportsCsv,
   formatReadableAnalysisDate,
   findMatchingValues,
+  deepClone,
+  formatDateInTimezone,
+  formatTimeInTimezone,
+  hasMeaningfulAnalysisWork,
 } from '../utils/analysisUtils';
+import {
+  isQuoteStale,
+  parseNumericZone,
+  evaluateLiveScenarioConditions,
+  copyScenarioToLiveWorkspace,
+  fetchPublicQuoteForPair,
+} from '../services/liveMarketService';
 
 async function runTests() {
   console.log('=== STARTING ABMAX PERSISTENCE & LIFECYCLE VERIFICATION TESTS ===\n');
@@ -4973,10 +5024,10 @@ async function runTests() {
     // Backup export v4 & non-merging ID-based restore
     const v4Backup = await createFullBackup();
     assert(
-      v4Backup.version === 4 &&
+      (v4Backup.version === 4 || v4Backup.version === 5) &&
         (v4Backup.strategies?.length || 0) >= 3 &&
         Boolean(v4Backup.scopedStrategyDrafts?.['user-a-uid']),
-      'createFullBackup v4 includes all strategies and scopedStrategyDrafts'
+      'createFullBackup v4/v5 includes all strategies and scopedStrategyDrafts'
     );
 
     const backupPreviewForB = await analyzeBackup(v4Backup, 'user-b-uid');
@@ -5212,6 +5263,1195 @@ async function runTests() {
         fs.readFileSync(path.resolve(process.cwd(), 'android/app/build.gradle'), 'utf8').includes('applicationId "com.abmax.analysis"'),
       'Android workflow uses collision-free monotonic versionCode formula while preserving com.abmax.analysis'
     );
+
+    // =========================================================================
+    // 10. LIFECYCLE REPAIRS, CANCEL ISOLATION, LIVE WORKSPACE & VERSION >= 2737
+    // =========================================================================
+    const gradleSrc = fs.readFileSync(path.resolve(process.cwd(), 'android/app/build.gradle'), 'utf8');
+    assert(
+      workflowSrc.includes('vars.ANDROID_BASE_VERSION_CODE || 2736') &&
+        workflowSrc.includes('-le 2736') &&
+        gradleSrc.includes('"2737"'),
+      'Android workflow and build.gradle enforce versionCode > 2736 above installed baseline'
+    );
+
+    // Untouched blank vs meaningful analysis detection
+    const untouchedAnalysis = createInitialAnalysisData('XAUUSD');
+    assert(
+      hasMeaningfulAnalysisWork(untouchedAnalysis, false) === false,
+      'Untouched blank new analysis does not falsely register meaningful work'
+    );
+    const editedAnalysis = {
+      ...createInitialAnalysisData('XAUUSD'),
+      title: 'London Liquidity Plan',
+    };
+    assert(
+      hasMeaningfulAnalysisWork(editedAnalysis, false) === true,
+      'Edited analysis with title registers meaningful work'
+    );
+    const boundUntouched = createInitialAnalysisData('XAUUSD');
+    assert(
+      hasMeaningfulAnalysisWork(boundUntouched, true) === true,
+      'Bound saved report session always registers resumable session'
+    );
+
+    // Timezone-safe date/time formatting
+    const sampleDate = new Date('2026-11-14T02:30:00Z');
+    const nyDate = formatDateInTimezone(sampleDate, 'America/New_York');
+    const tokyoDate = formatDateInTimezone(sampleDate, 'Asia/Tokyo');
+    assert(
+      nyDate === '2026-11-13' && tokyoDate === '2026-11-14' && /^\d{2}:\d{2}:\d{2}$/.test(formatTimeInTimezone(sampleDate, 'UTC')),
+      'Timezone formatting uses analysis timezone rather than raw UTC slice'
+    );
+
+    // Deep clone isolation (cancel/edit safety)
+    const originalSnap = { nested: { list: [1, 2], note: 'Saved' } };
+    const isolatedCopy = deepClone(originalSnap);
+    isolatedCopy.nested.list.push(3);
+    isolatedCopy.nested.note = 'Modified draft';
+    assert(
+      originalSnap.nested.list.length === 2 && originalSnap.nested.note === 'Saved',
+      'deepClone creates completely isolated editable copy'
+    );
+
+    // AnalysisView & App lifecycle contract checks
+    const analysisViewSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/AnalysisView.tsx'), 'utf8');
+    const appSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+    const tfSectionSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/TimeframeSection.tsx'), 'utf8');
+    const journalSrcFull = fs.readFileSync(path.resolve(process.cwd(), 'src/components/JournalView.tsx'), 'utf8');
+    const myJournalSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/MyJournalSection.tsx'), 'utf8');
+    const strategiesSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/StrategiesSection.tsx'), 'utf8');
+    const plannedScenariosSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/PlannedScenariosSection.tsx'), 'utf8');
+    const structureTrackerSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/StructureTracker.tsx'), 'utf8');
+    const liveViewSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/LiveView.tsx'), 'utf8');
+
+    assert(
+      !analysisViewSrc.includes('Save & Continue') &&
+        analysisViewSrc.includes('Save as New Report') &&
+        analysisViewSrc.includes('<span>Back</span>') &&
+        analysisViewSrc.includes('Start new analysis from template') &&
+        analysisViewSrc.includes('Apply template fields to current analysis'),
+      'AnalysisView exposes Back, top Load Template, Save, Save as New Report, and template mode choice'
+    );
+
+    const reportTitleIdx = analysisViewSrc.indexOf('Report Title');
+    const loadTemplateIdx = analysisViewSrc.indexOf('setIsLoadTemplateOpen(true)');
+    const pairSelectIdx = analysisViewSrc.indexOf('Analysis Date');
+    assert(
+      reportTitleIdx !== -1 && loadTemplateIdx > reportTitleIdx && loadTemplateIdx < pairSelectIdx,
+      'Load Template button is positioned directly below Report Title near the top'
+    );
+
+    const cloudSuccessIdx = analysisViewSrc.indexOf('if (cloudRes.success)');
+    const clearCloudIdx = analysisViewSrc.indexOf('await clearDraftFromCloud(user.id)');
+    assert(
+      cloudSuccessIdx !== -1 && clearCloudIdx > cloudSuccessIdx && analysisViewSrc.includes('draftVersionRef.current === saveSnapshotVersion'),
+      'Cloud draft is cleared only after cloud upload succeeds and no newer keystrokes arrived'
+    );
+
+    assert(
+      appSrc.includes('analysisFlushHandlerRef.current') &&
+        appSrc.includes("CapApp.addListener('backButton'") &&
+        appSrc.includes('<LiveView') &&
+        appSrc.includes('hasResumableSession'),
+      'App flushes Analysis edits on navigation, handles Android backButton, routes LiveView, and computes hasResumableSession'
+    );
+
+    assert(
+      !tfSectionSrc.includes('window.alert') &&
+        !structureTrackerSrc.includes('alert(') &&
+        !myJournalSrc.includes('window.open') &&
+        !myJournalSrc.includes('window.confirm') &&
+        !journalSrcFull.includes('window.confirm') &&
+        !liveViewSrc.includes('window.alert') &&
+        !liveViewSrc.includes('window.confirm') &&
+        tfSectionSrc.includes('preEditSnapshotRef') &&
+        plannedScenariosSrc.includes('editingDrafts') &&
+        strategiesSrc.includes('originalSnapshotRef') &&
+        myJournalSrc.includes('originalSnapshotRef'),
+      'Cancel isolation works without blocking browser dialogs across edited components'
+    );
+
+    // Drawer now exposes Live before Journal without duplicating Home/Analysis/Reports
+    assert(
+      drawerSrc.includes("'live'") &&
+        drawerSrc.indexOf("'live'") < drawerSrc.indexOf("'journal'") &&
+        !drawerSrc.includes("'home'") &&
+        !drawerSrc.includes("'analysis'") &&
+        !drawerSrc.includes("'reports'"),
+      'NavigationDrawer includes Live before Journal without duplicating top bar tabs'
+    );
+
+    // Live Workspace CRUD & Account/Guest Isolation
+    const guestLive = createInitialLiveWorkspace('local');
+    guestLive.instruments.BTCUSD.marketConditionSummary = 'Guest BTC uptrend watch';
+    await saveLiveWorkspace(guestLive, null);
+
+    const acctALive = createInitialLiveWorkspace('acct_alpha');
+    acctALive.instruments.XAUUSD.marketConditionSummary = 'Account A gold London sweep';
+    await saveLiveWorkspace(acctALive, 'acct_alpha');
+
+    const loadedGuest = await getLiveWorkspace(null);
+    const loadedA = await getLiveWorkspace('acct_alpha');
+    const loadedB = await getLiveWorkspace('acct_beta');
+    assert(
+      loadedGuest.instruments.BTCUSD.marketConditionSummary === 'Guest BTC uptrend watch' &&
+        loadedA.instruments.XAUUSD.marketConditionSummary === 'Account A gold London sweep' &&
+        loadedB.instruments.XAUUSD.marketConditionSummary === '',
+      'Live workspace enforces strict ownership isolation between Guest, Account A, and Account B'
+    );
+
+    // Copy into Live from Planned Scenario (independence test)
+    const sourceReportForCopy: SavedReport = {
+      ...createInitialAnalysisData('XAUUSD'),
+      id: 'rep_live_src_1',
+      title: 'Gold NY Plan',
+      date: '2026-11-13',
+      status: 'Original',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      scenarios: [
+        {
+          id: 'scn_live_src_1',
+          label: 'OB Demand Reclaim',
+          direction: 'Buy',
+          strategy: 'Breaker Sweep',
+          entryConditions: 'Price enters 2610 - 2614 demand zone',
+          description: 'Enter long at market on 5M BOS',
+          invalidationConditions: '2607.50',
+          createdAt: 1000,
+          updatedAt: 1000,
+        },
+      ],
+    };
+    await saveReport(sourceReportForCopy);
+    const { copiedScenario: copiedWatchScenario } = await copyScenarioToLiveWorkspace({
+      scenario: sourceReportForCopy.scenarios![0],
+      pair: 'XAUUSD',
+      userId: 'acct_alpha',
+      sourceReportId: sourceReportForCopy.id,
+      sourceReportTitle: sourceReportForCopy.title,
+    });
+
+    const liveAfterCopy = await getLiveWorkspace('acct_alpha');
+    liveAfterCopy.instruments.XAUUSD.scenarios[0].notes = 'Modified only inside Live';
+    await saveLiveWorkspace(liveAfterCopy, 'acct_alpha');
+    const reloadedReportAfterLiveEdit = await getReportById(sourceReportForCopy.id);
+    assert(
+      copiedWatchScenario.sourceScenarioId === 'scn_live_src_1' &&
+        copiedWatchScenario.name === 'OB Demand Reclaim' &&
+        reloadedReportAfterLiveEdit?.scenarios?.[0]?.description === 'Enter long at market on 5M BOS',
+      'Copy into Live creates an independent Live watch scenario without mutating the source report'
+    );
+
+    // Quote freshness & Watch scenario condition evaluation (honest, no auto-confirm, deduped)
+    const staleQuote: LiveQuoteState = {
+      mode: 'public_rest',
+      provider: 'Test Feed',
+      price: 2612,
+      priceType: 'last',
+      timestamp: Date.now() - 120_000,
+      fetchedAt: Date.now() - 120_000,
+      status: 'fresh',
+      staleThresholdMs: 60_000,
+    };
+    assert(isQuoteStale(staleQuote, Date.now()) === true, 'Stale quote past threshold is detected cleanly');
+
+    const watchForEval: LiveWatchScenario = {
+      ...copiedWatchScenario,
+      targetZoneOrLevel: '2610 - 2614',
+      zoneLow: '2610',
+      zoneHigh: '2614',
+      status: 'Waiting',
+      alertOnZoneTouch: true,
+    };
+    const blockedEval = evaluateLiveScenarioConditions(
+      [watchForEval],
+      staleQuote,
+      [],
+      Date.now()
+    );
+    assert(
+      blockedEval.newAlerts.length === 0 && blockedEval.changed === false,
+      'Stale or disconnected quotes block scenario trigger evaluation cleanly'
+    );
+
+    const freshQuote: LiveQuoteState = {
+      mode: 'public_rest',
+      provider: 'Test Feed',
+      price: 2612.5,
+      priceType: 'last',
+      timestamp: Date.now(),
+      fetchedAt: Date.now(),
+      status: 'fresh',
+      staleThresholdMs: 60_000,
+    };
+    const firstEval = evaluateLiveScenarioConditions(
+      [watchForEval],
+      freshQuote,
+      [],
+      Date.now()
+    );
+    assert(
+      firstEval.newAlerts.length === 1 &&
+        firstEval.updatedScenarios[0].status === 'Level reached' &&
+        (firstEval.updatedScenarios[0].status as string) !== 'Confirmed',
+      'Fresh quote in zone transitions Waiting -> Level reached and never auto-confirms'
+    );
+
+    // Re-evaluating at same zone price must dedupe without duplicate alert spam
+    const secondEval = evaluateLiveScenarioConditions(
+      firstEval.updatedScenarios,
+      freshQuote,
+      firstEval.newAlerts,
+      Date.now()
+    );
+    assert(
+      secondEval.newAlerts.length === 0 && secondEval.changed === false,
+      'Repeated price checks inside the same zone dedupe alerts instead of firing duplicates'
+    );
+
+    const parsedZone = parseNumericZone('2610 - 2614');
+    assert(
+      parsedZone?.low === 2610 && parsedZone?.high === 2614,
+      'parseNumericZone parses price zones cleanly'
+    );
+
+    // Honest unsupported quote disclosure for XAUUSD vs Coinbase integration path for BTCUSD
+    const xauQuoteRes = await fetchPublicQuoteForPair('XAUUSD');
+    assert(
+      xauQuoteRes.status === 'disconnected' &&
+        xauQuoteRes.price === null &&
+        Boolean(xauQuoteRes.error && xauQuoteRes.error.length > 0),
+      'XAUUSD public quote honestly discloses unavailable public feed instead of faking prices'
+    );
+
+    // Instrument reset vs Workspace reset isolation
+    const preResetA = await getLiveWorkspace('acct_alpha');
+    preResetA.instruments.EURUSD.marketConditionSummary = 'Keep EURUSD during XAUUSD reset';
+    await saveLiveWorkspace(preResetA, 'acct_alpha');
+    await resetLiveInstrument('XAUUSD', 'acct_alpha');
+    const afterInstReset = await getLiveWorkspace('acct_alpha');
+    assert(
+      afterInstReset.instruments.XAUUSD.scenarios.length === 0 &&
+        afterInstReset.instruments.EURUSD.marketConditionSummary === 'Keep EURUSD during XAUUSD reset',
+      'Resetting one Live instrument leaves other instruments untouched'
+    );
+
+    await resetLiveWorkspace('acct_alpha');
+    const afterWsReset = await getLiveWorkspace('acct_alpha');
+    const reportStillIntact = await getReportById(sourceReportForCopy.id);
+    assert(
+      afterWsReset.instruments.EURUSD.marketConditionSummary === '' &&
+        reportStillIntact?.id === sourceReportForCopy.id,
+      'Resetting Live workspace clears all Live data while keeping Analysis/Reports intact'
+    );
+
+    // Backup v5 export, preview, and restore (plus backward compatibility with v4 backup)
+    await resetLiveWorkspace('acct_alpha');
+    const wsForBackup = await getLiveWorkspace('acct_alpha');
+    wsForBackup.instruments.BTCUSD.marketConditionSummary = 'Backup v5 BTC note';
+    await saveLiveWorkspace(wsForBackup, 'acct_alpha');
+    const allLiveBefore = await getAllLiveWorkspaces();
+    assert(allLiveBefore.length >= 1, 'getAllLiveWorkspaces returns persisted workspaces');
+
+    const fullBackupV5 = await createFullBackup('acct_alpha');
+    const previewV5 = await analyzeBackup(fullBackupV5, 'acct_alpha');
+    assert(
+      fullBackupV5.version === 5 &&
+        Array.isArray(fullBackupV5.liveWorkspaces) &&
+        (previewV5.totalLiveWorkspacesInBackup || 0) >= 1,
+      'Backup v5 includes Live workspaces in export and preview counts'
+    );
+
+    await resetLiveWorkspace('acct_alpha');
+    await restoreBackup(fullBackupV5, {
+      targetAccountId: 'acct_alpha',
+      foreignOwnershipMode: 'preserve',
+    });
+    const restoredLiveV5 = await getLiveWorkspace('acct_alpha');
+    assert(
+      restoredLiveV5.instruments.BTCUSD.marketConditionSummary === 'Backup v5 BTC note',
+      'Backup v5 restore recovers Live workspace data cleanly'
+    );
+
+    // Backward compatibility: importing a v4 backup (without liveWorkspaces field) succeeds cleanly
+    const legacyV4Backup: BackupData = {
+      ...fullBackupV5,
+      version: 4,
+      liveWorkspaces: undefined,
+    };
+    const v4Analysis = await analyzeBackup(legacyV4Backup, 'acct_alpha');
+    await restoreBackup(legacyV4Backup, {
+      targetAccountId: 'acct_alpha',
+      foreignOwnershipMode: 'preserve',
+    });
+    assert(
+      (v4Analysis.totalLiveWorkspacesInBackup || 0) === 0 && v4Analysis.totalReportsInBackup >= 1,
+      'v4 backups without liveWorkspaces remain backward-compatible'
+    );
+
+    // ---------------------------------------------------------
+    // PART X: [MOCK-TESTED] CLOUD DRAFT DELETION SAFETY & OWNERSHIP ISOLATION, LIFO BACK STACK, COINBASE LABELS, & POPULATED V1->V5 / V4->V5 UPGRADES
+    // ---------------------------------------------------------
+    console.log('\n--- Part X: [MOCK-TESTED] Cloud Draft Race/Ownership, Back Stack, Coinbase Timestamp, & V1/V4->V5 IDB Upgrades ---');
+
+    // 1. [MOCK-TESTED] Cross-device cloud draft deletion race & cross-account ownership isolation
+    // Note: This uses an in-memory mock of `supabase.from('drafts')`. Live multi-device verification against the real Supabase backend & RLS policies must be executed separately against authenticated accounts.
+    if (supabase) {
+      const origFrom = supabase.from.bind(supabase);
+      type MockDraftRow = { user_id: string; draft_id: string; pair: string; payload: any; updated_at: string };
+      let mockRemoteDraft: MockDraftRow | null = null;
+
+      (supabase as any).from = (table: string) => {
+        if (table !== 'drafts') return origFrom(table);
+        const state: { filters: { col: string; val: any }[]; op: 'select' | 'upsert' | 'delete' | null; upsertRow?: MockDraftRow } = {
+          filters: [],
+          op: null,
+        };
+        const builder: any = {
+          upsert: (row: MockDraftRow) => {
+            mockRemoteDraft = JSON.parse(JSON.stringify(row));
+            return Promise.resolve({ data: [row], error: null });
+          },
+          select: () => {
+            if (state.op === 'delete') {
+              if (!mockRemoteDraft) {
+                return Promise.resolve({ data: [], error: null });
+              }
+              const matches = state.filters.every((f) => {
+                if (f.col === 'user_id') return mockRemoteDraft!.user_id === f.val;
+                if (f.col === 'updated_at') return mockRemoteDraft!.updated_at === f.val;
+                if (f.col === 'payload->>draftSyncToken') return mockRemoteDraft!.payload?.draftSyncToken === f.val;
+                return false;
+              });
+              if (matches) {
+                const deleted = [mockRemoteDraft];
+                mockRemoteDraft = null;
+                return Promise.resolve({ data: deleted, error: null });
+              }
+              return Promise.resolve({ data: [], error: null });
+            }
+            state.op = 'select';
+            return builder;
+          },
+          delete: () => {
+            state.op = 'delete';
+            return builder;
+          },
+          eq: (col: string, val: any) => {
+            state.filters.push({ col, val });
+            return builder;
+          },
+          maybeSingle: () => {
+            const matches = mockRemoteDraft && state.filters.every((f) => (mockRemoteDraft as any)[f.col] === f.val);
+            return Promise.resolve({ data: matches ? mockRemoteDraft : null, error: null });
+          },
+        };
+        return builder;
+      };
+
+      try {
+        resetCloudDraftVersionTracking('race_user');
+        const deviceADraft = createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG);
+        deviceADraft.overallNotes = 'Device A original draft';
+        const upA = await uploadDraftToCloud('race_user', deviceADraft);
+        assert(upA.success && Boolean(upA.syncToken), '[MOCK-TESTED] Device A draft upload produces unique sync token');
+
+        // Simulate Device B overwriting cloud drafts with a newer remote draft before Device A finishes saving
+        const deviceBDraft = createInitialAnalysisData('BTCUSD', DEFAULT_VISIBILITY_CONFIG);
+        deviceBDraft.overallNotes = 'Device B newer draft';
+        mockRemoteDraft = {
+          user_id: 'race_user',
+          draft_id: 'active_draft',
+          pair: 'BTCUSD',
+          payload: { ...deviceBDraft, draftSyncToken: 'drf_device_b_newer' },
+          updated_at: new Date(Date.now() + 5000).toISOString(),
+        };
+
+        const contestedClear = await clearDraftFromCloud('race_user');
+        assert(
+          contestedClear.deleted === false &&
+            contestedClear.retainedReason === 'remote_newer_or_modified' &&
+            mockRemoteDraft?.payload?.overallNotes === 'Device B newer draft',
+          '[MOCK-TESTED] Device A post-save cleanup NEVER deletes newer Device B remote draft'
+        );
+
+        // Now verify uncontested cleanup when no newer remote draft exists
+        const upA2 = await uploadDraftToCloud('race_user', deviceADraft);
+        assert(upA2.success, '[MOCK-TESTED] Uncontested draft upload succeeds');
+        const uncontestedClear = await clearDraftFromCloud('race_user');
+        assert(
+          uncontestedClear.deleted === true && mockRemoteDraft === null,
+          '[MOCK-TESTED] Uncontested post-save cleanup deletes matching Device A cloud draft safely'
+        );
+
+        // Verify unverified remote draft written blindly before Device A ever synced is retained
+        resetCloudDraftVersionTracking('race_user_2');
+        mockRemoteDraft = {
+          user_id: 'race_user_2',
+          draft_id: 'active_draft',
+          pair: 'EURUSD',
+          payload: { overallNotes: 'Device B offline-first draft', draftSyncToken: 'drf_b_only' },
+          updated_at: new Date().toISOString(),
+        };
+        const blindClear = await clearDraftFromCloud('race_user_2');
+        assert(
+          blindClear.deleted === false &&
+            blindClear.retainedReason === 'unverified_remote_draft' &&
+            mockRemoteDraft !== null,
+          '[MOCK-TESTED] Device A without local draft knowledge retains existing remote draft written by another device'
+        );
+
+        // Verify cross-account ownership isolation: account B cannot delete account A's draft even with identical expected timestamp & syncToken
+        resetCloudDraftVersionTracking('owner_user_a');
+        resetCloudDraftVersionTracking('other_user_b');
+        const ownerDraftA = createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG);
+        ownerDraftA.overallNotes = 'Private draft owned by User A';
+        const upOwnerA = await uploadDraftToCloud('owner_user_a', ownerDraftA);
+        assert(upOwnerA.success && Boolean(upOwnerA.updatedAtIso) && Boolean(upOwnerA.syncToken), '[MOCK-TESTED] Owner User A uploads remote draft');
+
+        const crossAccountClear = await clearDraftFromCloud('other_user_b', {
+          updatedAtIso: upOwnerA.updatedAtIso || '',
+          syncToken: upOwnerA.syncToken || '',
+        });
+        assert(
+          crossAccountClear.deleted === false &&
+            mockRemoteDraft?.user_id === 'owner_user_a' &&
+            mockRemoteDraft?.payload?.overallNotes === 'Private draft owned by User A',
+          '[MOCK-TESTED] Cross-account clearDraftFromCloud by User B never deletes User A remote draft'
+        );
+      } finally {
+        (supabase as any).from = origFrom;
+        resetCloudDraftVersionTracking();
+      }
+    }
+
+    // 2. Centralized LIFO Android Back handler stack verification
+    const dismissOrder: string[] = [];
+    const unregParent = registerBackHandler(() => dismissOrder.push('parent_drawer'));
+    const unregChild = registerBackHandler(() => dismissOrder.push('child_modal'));
+    assert(getActiveBackHandlerCount() === 2, 'Back stack registers parent and child handlers');
+    dispatchTopmostBackHandler();
+    unregChild();
+    dispatchTopmostBackHandler();
+    unregParent();
+    assert(
+      dismissOrder.length === 2 &&
+        dismissOrder[0] === 'child_modal' &&
+        dismissOrder[1] === 'parent_drawer' &&
+        getActiveBackHandlerCount() === 0,
+      'Android Back stack dismisses topmost modal first, then parent, leaving zero leaked handlers'
+    );
+
+    // 3. Coinbase public feed provider metadata & optional providerTimestamp accuracy
+    const origFetch = globalThis.fetch;
+    try {
+      (globalThis as any).fetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { base: 'BTC', currency: 'USD', amount: '91234.56' } }),
+      });
+      const btcQuoteNoServerTs = await fetchPublicQuoteForPair('BTCUSD');
+      assert(
+        btcQuoteNoServerTs.status === 'fresh' &&
+          btcQuoteNoServerTs.provider === 'Coinbase BTC-USD' &&
+          btcQuoteNoServerTs.priceType === 'last' &&
+          btcQuoteNoServerTs.price === 91234.56 &&
+          btcQuoteNoServerTs.providerTimestamp === null &&
+          Boolean(btcQuoteNoServerTs.fetchedAt && btcQuoteNoServerTs.fetchedAt > 0),
+        'Coinbase BTC-USD spot quote leaves providerTimestamp null when omitted and records retrieval timestamp honestly'
+      );
+
+      (globalThis as any).fetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { base: 'BTC', currency: 'USD', amount: '91500.00', timestamp: '2026-11-13T18:00:00Z' } }),
+      });
+      const btcQuoteWithServerTs = await fetchPublicQuoteForPair('BTCUSD');
+      assert(
+        btcQuoteWithServerTs.providerTimestamp === Date.parse('2026-11-13T18:00:00Z'),
+        'Coinbase BTC-USD parses explicit provider timestamp when supplied'
+      );
+    } finally {
+      (globalThis as any).fetch = origFetch;
+    }
+
+    // 4. Backup Live ownership policies: preserve, claim, skip + analyzeBackup detection
+    const foreignBackup: BackupData = {
+      ...fullBackupV5,
+      liveWorkspaces: [
+        {
+          id: 'live_workspace_acct_other',
+          ownerScope: 'acct_other',
+          activePair: 'XAUUSD',
+          instruments: {
+            XAUUSD: {
+              ...createEmptyLiveInstrumentState('XAUUSD'),
+              marketConditionSummary: 'Other account Live watch',
+              scenarios: [
+                {
+                  ...copiedWatchScenario,
+                  id: 'lsc_foreign_1',
+                  name: 'Foreign Live Watch',
+                },
+              ],
+            },
+            BTCUSD: createEmptyLiveInstrumentState('BTCUSD'),
+            EURUSD: createEmptyLiveInstrumentState('EURUSD'),
+          },
+          updatedAt: Date.now(),
+        },
+      ],
+    };
+    const foreignPreview = await analyzeBackup(foreignBackup, 'acct_alpha');
+    assert(
+      Boolean(
+        (foreignPreview.ownershipSummary?.foreignOwnerLiveWorkspacesCount || 0) === 1 &&
+          foreignPreview.ownershipSummary?.foreignAccountIds.includes('acct_other')
+      ),
+      'analyzeBackup detects foreign-owned Live workspaces in backup summary'
+    );
+
+    // Policy = skip: acct_alpha should NOT receive acct_other Live workspace
+    await resetLiveWorkspace('acct_other');
+    await restoreBackup(foreignBackup, { targetAccountId: 'acct_alpha', foreignOwnershipMode: 'skip' });
+    const otherAfterSkip = await getLiveWorkspace('acct_other');
+    assert(
+      otherAfterSkip.instruments.XAUUSD.scenarios.length === 0,
+      'Backup restore foreignOwnershipMode=skip leaves foreign Live workspace unimported'
+    );
+
+    // Policy = preserve: imports into acct_other without leaking into acct_alpha
+    await restoreBackup(foreignBackup, { targetAccountId: 'acct_alpha', foreignOwnershipMode: 'preserve' });
+    const otherAfterPreserve = await getLiveWorkspace('acct_other');
+    const alphaAfterPreserve = await getLiveWorkspace('acct_alpha');
+    assert(
+      otherAfterPreserve.instruments.XAUUSD.scenarios.some((s) => s.id === 'lsc_foreign_1') &&
+        !alphaAfterPreserve.instruments.XAUUSD.scenarios.some((s) => s.id === 'lsc_foreign_1'),
+      'Backup restore foreignOwnershipMode=preserve keeps foreign Live workspace isolated under original owner'
+    );
+
+    // Policy = claim: transfers foreign Live watch into acct_alpha
+    await restoreBackup(foreignBackup, { targetAccountId: 'acct_alpha', foreignOwnershipMode: 'claim' });
+    const alphaAfterClaim = await getLiveWorkspace('acct_alpha');
+    assert(
+      alphaAfterClaim.instruments.XAUUSD.scenarios.some((s) => s.id === 'lsc_foreign_1'),
+      'Backup restore foreignOwnershipMode=claim merges foreign Live workspace into target scope'
+    );
+
+    // 5. Real Populated IndexedDB V1 -> V5 Upgrade & V4 -> V5 Upgrade (without data loss)
+    const recreateLegacyDb = async (version: number, seedFn: (db: IDBDatabase) => IDBTransaction) => {
+      closeDBConnection();
+      await new Promise<void>((res, rej) => {
+        const delReq = indexedDB.deleteDatabase('abmax_analysis_db');
+        delReq.onsuccess = () => res();
+        delReq.onerror = () => rej(delReq.error);
+      });
+      await new Promise<void>((res, rej) => {
+        const openReq = indexedDB.open('abmax_analysis_db', version);
+        openReq.onupgradeneeded = () => {
+          const legacyDb = openReq.result;
+          const rStore = legacyDb.createObjectStore('reports', { keyPath: 'id' });
+          rStore.createIndex('date', 'date', { unique: false });
+          rStore.createIndex('pair', 'pair', { unique: false });
+          rStore.createIndex('createdAt', 'createdAt', { unique: false });
+          legacyDb.createObjectStore('draft', { keyPath: 'id' });
+          const tStore = legacyDb.createObjectStore('templates', { keyPath: 'id' });
+          tStore.createIndex('name', 'name', { unique: false });
+          legacyDb.createObjectStore('images', { keyPath: 'id' });
+          legacyDb.createObjectStore('preferences', { keyPath: 'key' });
+          if (version >= 2) {
+            const jStore = legacyDb.createObjectStore('journal', { keyPath: 'id' });
+            jStore.createIndex('date', 'date', { unique: false });
+            jStore.createIndex('createdAt', 'createdAt', { unique: false });
+            jStore.createIndex('pair', 'pair', { unique: false });
+            jStore.createIndex('session', 'session', { unique: false });
+            legacyDb.createObjectStore('journal_draft', { keyPath: 'id' });
+          }
+          if (version >= 4) {
+            const sStore = legacyDb.createObjectStore('strategies', { keyPath: 'id' });
+            sStore.createIndex('userId', 'userId', { unique: false });
+            sStore.createIndex('name', 'name', { unique: false });
+          }
+        };
+        openReq.onsuccess = () => {
+          const legacyDb = openReq.result;
+          const tx = seedFn(legacyDb);
+          tx.oncomplete = () => {
+            legacyDb.close();
+            res();
+          };
+          tx.onerror = () => {
+            legacyDb.close();
+            rej(tx.error);
+          };
+        };
+        openReq.onerror = () => rej(openReq.error);
+      });
+    };
+
+    // Test Populated V1 -> V5 Upgrade
+    await recreateLegacyDb(1, (v1Db) => {
+      const tx = v1Db.transaction(['reports', 'draft', 'templates', 'images'], 'readwrite');
+      tx.objectStore('reports').put({
+        ...createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG),
+        id: 'rep_v1_legacy',
+        title: 'Populated V1 Report',
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+        status: 'Original',
+        isModified: false,
+      });
+      tx.objectStore('draft').put({
+        ...createInitialAnalysisData('EURUSD', DEFAULT_VISIBILITY_CONFIG),
+        id: 'active_draft',
+        overallNotes: 'V1 unsaved draft',
+      });
+      tx.objectStore('templates').put({
+        id: 'tmpl_v1',
+        name: 'V1 Setup',
+        createdAt: 1700000000000,
+        updatedAt: 1700000000000,
+        data: createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG),
+      });
+      tx.objectStore('images').put({
+        id: 'img_v1',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
+        label: 'V1 Chart',
+        createdAt: 1700000000000,
+      });
+      return tx;
+    });
+
+    const upgradedV1Reports = await getAllReports();
+    const upgradedV1Draft = await getDraft();
+    const upgradedV1Templates = await getAllTemplates();
+    const upgradedV1Image = await getImage('img_v1');
+    const upgradedV1Live = await getLiveWorkspace('local');
+    assert(
+      upgradedV1Reports.some((r) => r.id === 'rep_v1_legacy' && r.title === 'Populated V1 Report') &&
+        upgradedV1Draft?.overallNotes === 'V1 unsaved draft' &&
+        upgradedV1Templates.some((t) => t.id === 'tmpl_v1') &&
+        Boolean(upgradedV1Image?.startsWith('data:image/png')) &&
+        Boolean(upgradedV1Live.instruments.BTCUSD),
+      'Populated IndexedDB V1 -> V5 upgrade preserves all reports, draft, templates, images and adds V5 Live workspace'
+    );
+
+    // Test Populated V4 -> V5 Upgrade
+    await recreateLegacyDb(4, (v4Db) => {
+      const tx = v4Db.transaction(['reports', 'journal', 'journal_draft', 'strategies'], 'readwrite');
+      tx.objectStore('reports').put({
+        ...createInitialAnalysisData('BTCUSD', DEFAULT_VISIBILITY_CONFIG),
+        id: 'rep_v4_legacy',
+        title: 'Populated V4 Report',
+        createdAt: 1710000000000,
+        updatedAt: 1710000000000,
+        status: 'Original',
+        isModified: false,
+      });
+      tx.objectStore('journal').put({
+        id: 'jrn_v4_legacy',
+        userId: 'acct_v4',
+        title: 'V4 Journal Entry',
+        date: '2026-10-01',
+        time: '09:30',
+        session: 'London',
+        pair: 'XAUUSD',
+        entryType: 'Daily Journal',
+        tags: ['v4'],
+        lessons: ['Patience'],
+        images: [],
+        createdAt: 1710000000000,
+        updatedAt: 1710000000000,
+      });
+      tx.objectStore('journal_draft').put({
+        id: 'active_journal_draft_acct_v4',
+        data: { title: 'V4 Journal Draft In Flight' },
+      });
+      tx.objectStore('strategies').put({
+        id: 'str_v4_legacy',
+        userId: 'acct_v4',
+        name: 'V4 Breakout Model',
+        description: 'Existing V4 strategy',
+        rules: ['Wait for sweep'],
+        entryCriteria: 'M5 MSS',
+        invalidationCriteria: 'Opposite BOS',
+        favoriteTimeframes: ['Daily', '1H', '5M'],
+        favoritePairs: ['XAUUSD'],
+        tags: ['MSS'],
+        status: 'active',
+        createdAt: 1710000000000,
+        updatedAt: 1710000000000,
+      });
+      return tx;
+    });
+
+    const upgradedV4Reports = await getAllReports();
+    const upgradedV4Journal = await getAllJournalEntries();
+    const upgradedV4Draft = await getJournalDraft('acct_v4');
+    const upgradedV4Strategies = await getStrategiesForScope('acct_v4');
+    const upgradedV4Live = await getLiveWorkspace('acct_v4');
+    assert(
+      upgradedV4Reports.some((r) => r.id === 'rep_v4_legacy') &&
+        upgradedV4Journal.some((j) => j.id === 'jrn_v4_legacy' && j.title === 'V4 Journal Entry') &&
+        (upgradedV4Draft as any)?.title === 'V4 Journal Draft In Flight' &&
+        upgradedV4Strategies.some((s) => s.id === 'str_v4_legacy') &&
+        Boolean(upgradedV4Live.instruments.XAUUSD),
+      'Populated IndexedDB V4 -> V5 upgrade preserves all reports, journal entries, scoped drafts, and strategies cleanly'
+    );
+
+    // =========================================================================
+    // PART XI-A: SETTINGS -> INSTRUMENTS (DEFAULTS, CUSTOM, ISOLATION, BACKUP, LIVE FEED)
+    // =========================================================================
+    console.log('\n--- Part XI-A: Settings -> Instruments Verification ---');
+
+    const defaultEnabled = getEnabledInstrumentSymbols(DEFAULT_INSTRUMENTS_CONFIG);
+    assert(
+      defaultEnabled.length === 3 &&
+        defaultEnabled.includes('XAUUSD') &&
+        defaultEnabled.includes('EURUSD') &&
+        defaultEnabled.includes('BTCUSD'),
+      'Default instruments are XAUUSD, EURUSD, and BTCUSD'
+    );
+
+    const vGbp = validateInstrumentSymbol(' gbp/usd ');
+    const vUs30 = validateInstrumentSymbol('us30');
+    const vAapl = validateInstrumentSymbol('aapl');
+    const vBad = validateInstrumentSymbol('x');
+    assert(
+      vGbp.valid && vGbp.symbol === 'GBPUSD' && vUs30.valid && vUs30.symbol === 'US30' && vAapl.valid && vAapl.symbol === 'AAPL' && !vBad.valid,
+      'Instrument symbol validation normalizes valid symbols and rejects undersized input'
+    );
+
+    // Prevent disabling all instruments cleanly
+    const allDisabledAttempt = normalizeInstrumentsConfig({
+      items: DEFAULT_INSTRUMENTS_CONFIG.items.map((i) => ({ ...i, enabled: false })),
+    });
+    assert(
+      getEnabledInstrumentSymbols(allDisabledAttempt).length >= 1,
+      'At least one instrument stays enabled if caller attempts disabling all instruments'
+    );
+
+    // Account ownership isolation for instruments config
+    const acctInstA = 'acct_inst_a';
+    const acctInstB = 'acct_inst_b';
+    await saveUserInstrumentsConfig(
+      {
+        items: [
+          ...DEFAULT_INSTRUMENTS_CONFIG.items,
+          { symbol: 'GBPUSD', category: 'Forex', enabled: true, isDefault: false, supportsLiveFeed: false },
+          { symbol: 'US30', category: 'Indices', enabled: true, isDefault: false, supportsLiveFeed: false },
+        ],
+      },
+      acctInstA
+    );
+    const loadedInstA = await getUserInstrumentsConfig(acctInstA);
+    const loadedInstB = await getUserInstrumentsConfig(acctInstB);
+    assert(
+      getEnabledInstrumentSymbols(loadedInstA).includes('GBPUSD') &&
+        getEnabledInstrumentSymbols(loadedInstA).includes('US30') &&
+        !getEnabledInstrumentSymbols(loadedInstB).includes('GBPUSD') &&
+        !getEnabledInstrumentSymbols(loadedInstB).includes('US30'),
+      'Custom instruments are strictly isolated by account ownership scope'
+    );
+
+    // Backup & Restore compatibility
+    const instBackup = await createFullBackup(acctInstA);
+    assert(
+      Boolean(instBackup.scopedInstrumentsConfigs?.[acctInstA]?.items.some((i) => i.symbol === 'US30')) &&
+        Boolean(instBackup.preferences.instrumentsConfig?.items.some((i) => i.symbol === 'GBPUSD')),
+      'JSON backup includes scopedInstrumentsConfigs and active preferences.instrumentsConfig'
+    );
+
+    await restoreBackup(instBackup, {
+      targetAccountId: 'acct_inst_skip_target',
+      foreignOwnershipMode: 'skip',
+    });
+    const skippedInstTarget = await getUserInstrumentsConfig('acct_inst_skip_target');
+    assert(
+      !getEnabledInstrumentSymbols(skippedInstTarget).includes('US30'),
+      'Restore with foreignOwnershipMode=skip does not leak foreign account instruments'
+    );
+
+    await restoreBackup(instBackup, {
+      targetAccountId: 'acct_inst_claim_target',
+      foreignOwnershipMode: 'claim',
+    });
+    const claimedInstTarget = await getUserInstrumentsConfig('acct_inst_claim_target');
+    assert(
+      getEnabledInstrumentSymbols(claimedInstTarget).includes('US30') &&
+        getEnabledInstrumentSymbols(claimedInstTarget).includes('GBPUSD'),
+      'Restore with foreignOwnershipMode=claim restores custom instruments into target scope'
+    );
+
+    // Historical record preservation + selector fallback when disabled + honest Live disclosure
+    const disabledGbpCfg = normalizeInstrumentsConfig({
+      items: [
+        ...DEFAULT_INSTRUMENTS_CONFIG.items,
+        { symbol: 'GBPUSD', category: 'Forex', enabled: false, isDefault: false, supportsLiveFeed: false },
+      ],
+    });
+    await saveReportDirectly({
+      ...createInitialAnalysisData('GBPUSD', DEFAULT_VISIBILITY_CONFIG),
+      id: 'rep_hist_gbpusd',
+      title: 'Historical GBPUSD Analysis',
+      createdAt: 1720000000000,
+      updatedAt: 1720000000000,
+      status: 'Original',
+      isModified: false,
+    });
+    const histGbpReport = await getReportById('rep_hist_gbpusd');
+    const selectorOptsWithDisabled = getSelectorInstrumentOptions(disabledGbpCfg, [histGbpReport?.pair]);
+    assert(
+      histGbpReport?.pair === 'GBPUSD' &&
+        selectorOptsWithDisabled.some((o) => o.symbol === 'GBPUSD' && o.isInactive && o.label.includes('Disabled / Historical')),
+      'Historical custom-instrument reports remain intact and selectable with Disabled/Historical label'
+    );
+
+    const gbpQuoteAttempt = await fetchPublicQuoteForPair('GBPUSD');
+    const us30QuoteAttempt = await fetchPublicQuoteForPair('US30');
+    assert(
+      gbpQuoteAttempt.price === null &&
+        gbpQuoteAttempt.priceType === 'manual' &&
+        gbpQuoteAttempt.status === 'disconnected' &&
+        gbpQuoteAttempt.provider === 'Manual observation required' &&
+        us30QuoteAttempt.price === null &&
+        us30QuoteAttempt.priceType === 'manual' &&
+        us30QuoteAttempt.status === 'disconnected' &&
+        Boolean(us30QuoteAttempt.error?.includes('US30')),
+      'Live public quote fetcher refuses to fabricate live feeds for custom instruments (GBPUSD, US30)'
+    );
+
+    // =========================================================================
+    // PART XI-B: PROTECTED FULL ACCOUNT-DATA RESET (MOCKED BACKEND + REAL IDB)
+    // =========================================================================
+    console.log('\n--- Part XI-B: Protected Full Account-Data Reset Verification (Mocked Backend) ---');
+
+    // 1. Server capability unavailable check refuses execution cleanly
+    const mockUnavailableClient = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: null,
+              error: { code: 'PGRST205', message: 'Could not find the table public.user_reset_epochs' },
+            }),
+          }),
+        }),
+      }),
+      auth: {
+        getSession: async () => ({ data: { session: { access_token: 'mock_tok' } } }),
+      },
+    };
+    const mockFetch404 = (async () => ({ ok: false, status: 404, json: async () => ({}) })) as any;
+
+    const availUnavailable = await checkServerAccountResetAvailability('user_reset_target', {
+      client: mockUnavailableClient,
+      fetchImpl: mockFetch404,
+      baseUrl: 'https://mock.supabase.invalid',
+      anonKey: 'mock_anon',
+    });
+    assert(
+      !availUnavailable.available &&
+        !availUnavailable.schemaDeployed &&
+        !availUnavailable.edgeFunctionDeployed &&
+        availUnavailable.missingSteps.length === 2,
+      'checkServerAccountResetAvailability reports unavailable when Edge Function & schema migration are missing'
+    );
+
+    // Seed data for target user AND foreign user AND guest user AND preserve auth localStorage keys
+    const targetUser = {
+      id: 'user_reset_target',
+      email: 'target@example.com',
+      last_sign_in_at: new Date().toISOString(),
+    } as any;
+    const foreignUserId = 'acct_foreign_safe';
+
+    localStorage.setItem('abmax_supabase_auth', JSON.stringify({ access_token: 'keep_me' }));
+    localStorage.setItem('abmax_remember_login', 'true');
+    localStorage.setItem('abmax_session_v2_user_reset_target', JSON.stringify({ activeView: 'analysis' }));
+    localStorage.setItem('abmax_session_v2_acct_foreign_safe', JSON.stringify({ activeView: 'reports' }));
+
+    const targetImgId = await saveImage('data:image/png;base64,TARGETONLY', 'target_chart.png');
+    const foreignImgId = await saveImage('data:image/png;base64,FOREIGNSAFE', 'foreign_chart.png');
+    const sharedImgId = await saveImage('data:image/png;base64,SHAREDSAFE', 'shared_chart.png');
+
+    await saveReportDirectly({
+      ...createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG),
+      id: 'rep_reset_target_1',
+      accountId: 'user_reset_target',
+      overallNotes: `![c](${targetImgId})`,
+      timeframes: {
+        ...createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG).timeframes,
+        Monthly: { ...createEmptyTimeframeData('Monthly'), chartImageId: targetImgId },
+      },
+      createdAt: 1730000000000,
+      updatedAt: 1730000000000,
+      status: 'Original',
+      isModified: false,
+    });
+    await saveReportDirectly({
+      ...createInitialAnalysisData('EURUSD', DEFAULT_VISIBILITY_CONFIG),
+      id: 'rep_foreign_safe_1',
+      accountId: foreignUserId,
+      timeframes: {
+        ...createInitialAnalysisData('EURUSD', DEFAULT_VISIBILITY_CONFIG).timeframes,
+        Daily: { ...createEmptyTimeframeData('Daily'), chartImageId: foreignImgId },
+        Weekly: { ...createEmptyTimeframeData('Weekly'), chartImageId: sharedImgId },
+      },
+      createdAt: 1730000000000,
+      updatedAt: 1730000000000,
+      status: 'Original',
+      isModified: false,
+    });
+
+    await saveJournalEntry({
+      id: 'jrn_target_reset',
+      userId: 'user_reset_target',
+      title: 'Target Private Note',
+      date: '2026-10-10',
+      time: '10:00',
+      session: 'London',
+      pair: 'GBPUSD',
+      entryType: 'my-journal',
+      images: [{ id: sharedImgId, dataUrl: 'data:image/png;base64,SHAREDSAFE', createdAt: 1730000000000 }],
+      createdAt: 1730000000000,
+      updatedAt: 1730000000000,
+    });
+    await saveJournalEntry({
+      id: 'jrn_foreign_safe',
+      userId: foreignUserId,
+      title: 'Foreign Private Note',
+      date: '2026-10-10',
+      time: '11:00',
+      session: 'NY AM',
+      pair: 'XAUUSD',
+      entryType: 'my-journal',
+      createdAt: 1730000000000,
+      updatedAt: 1730000000000,
+    });
+    await saveStrategy({
+      id: 'str_target_reset',
+      userId: 'user_reset_target',
+      name: 'Target Strat',
+      description: '',
+      entryRules: 'M5 MSS',
+      invalidationConditions: 'Opposite BOS',
+      tags: [],
+      createdAt: 1730000000000,
+      updatedAt: 1730000000000,
+    });
+    await saveStrategy({
+      id: 'str_foreign_safe',
+      userId: foreignUserId,
+      name: 'Foreign Strat',
+      description: '',
+      entryRules: 'H1 Sweep',
+      invalidationConditions: 'Opposite BOS',
+      tags: [],
+      createdAt: 1730000000000,
+      updatedAt: 1730000000000,
+    });
+    await saveJournalDraft({ title: 'Target Unfinished Draft' }, 'user_reset_target');
+    await saveJournalDraft({ title: 'Foreign Unfinished Draft' }, foreignUserId);
+    await saveUserInstrumentsConfig(
+      { items: [...DEFAULT_INSTRUMENTS_CONFIG.items, { symbol: 'NAS100', category: 'Indices', enabled: true }] },
+      'user_reset_target'
+    );
+    await saveUserInstrumentsConfig(
+      { items: [...DEFAULT_INSTRUMENTS_CONFIG.items, { symbol: 'USDJPY', category: 'Forex', enabled: true }] },
+      foreignUserId
+    );
+    await saveLiveWorkspace(createInitialLiveWorkspace('user_reset_target', ['XAUUSD', 'GBPUSD']), 'user_reset_target');
+    await saveLiveWorkspace(createInitialLiveWorkspace(foreignUserId, ['XAUUSD', 'USDJPY']), foreignUserId);
+
+    // 2. Refusal checks before reset
+    const refusedUnavailable = await executeProtectedAccountReset({
+      user: targetUser,
+      confirmationPhrase: REQUIRED_RESET_CONFIRMATION,
+      freshAuth: { verified: true, method: 'password', verifiedAt: Date.now(), reauthPassword: 'pw' },
+      client: mockUnavailableClient,
+      fetchImpl: mockFetch404,
+      baseUrl: 'https://mock.supabase.invalid',
+      anonKey: 'mock_anon',
+    });
+    assert(
+      !refusedUnavailable.success && refusedUnavailable.unavailable === true && Boolean(await getReportById('rep_reset_target_1')),
+      'executeProtectedAccountReset refuses when server endpoint/schema unavailable and leaves data intact'
+    );
+
+    const staleAuthResult = await executeProtectedAccountReset({
+      user: targetUser,
+      confirmationPhrase: REQUIRED_RESET_CONFIRMATION,
+      freshAuth: { verified: true, method: 'oauth_recent', verifiedAt: Date.now() - 10 * 60 * 1000 },
+    });
+    assert(!staleAuthResult.success, 'executeProtectedAccountReset rejects expired fresh authentication (>5 min)');
+
+    const badPhraseResult = await executeProtectedAccountReset({
+      user: targetUser,
+      confirmationPhrase: 'reset all my data',
+      freshAuth: { verified: true, method: 'password', verifiedAt: Date.now() },
+    });
+    assert(
+      !validateResetConfirmationPhrase('reset all my data') && !badPhraseResult.success,
+      'executeProtectedAccountReset rejects wrong confirmation phrase'
+    );
+
+    const expiredOauthCheck = await verifyFreshAuthForReset({
+      user: { ...targetUser, last_sign_in_at: new Date(Date.now() - 15 * 60 * 1000).toISOString() },
+      mode: 'oauth_recent',
+    });
+    const wrongPwCheck = await verifyFreshAuthForReset({
+      user: targetUser,
+      mode: 'password',
+      password: 'wrong',
+      verifyPasswordFn: async () => ({ ok: false, error: 'Invalid credentials' }),
+    });
+    assert(!expiredOauthCheck.ok && !wrongPwCheck.ok, 'Fresh auth gate rejects expired OAuth session and bad password');
+
+    // 3. [MOCK-TESTED] Approved server-side + local scoped reset leaves foreign users & auth identity intact
+    const mockDeployedClient = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({ data: { reset_epoch: 0 }, error: null }),
+          }),
+        }),
+      }),
+      auth: {
+        getSession: async () => ({ data: { session: { access_token: 'mock_valid_jwt' } } }),
+      },
+    };
+    let mockServerPostCalled = false;
+    const mockFetchDeployed = (async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        mockServerPostCalled = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            resetEpoch: 1,
+            resetAt: new Date().toISOString(),
+            deletedCounts: { analyses: 1, drafts: 1, templates: 0, user_preferences: 1 },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, deployed: true, action: 'reset-account-data' }),
+      };
+    }) as any;
+
+    const resetSuccess = await executeProtectedAccountReset({
+      user: targetUser,
+      confirmationPhrase: REQUIRED_RESET_CONFIRMATION,
+      freshAuth: { verified: true, method: 'password', verifiedAt: Date.now(), reauthPassword: 'pw' },
+      client: mockDeployedClient,
+      fetchImpl: mockFetchDeployed,
+      baseUrl: 'https://mock.supabase.invalid',
+      anonKey: 'mock_anon',
+    });
+
+    const afterTargetReport = await getReportById('rep_reset_target_1');
+    const afterForeignReport = await getReportById('rep_foreign_safe_1');
+    const afterTargetJournal = await getJournalEntryById('jrn_target_reset');
+    const afterForeignJournal = await getJournalEntryById('jrn_foreign_safe');
+    const afterTargetStrat = await getStrategyById('str_target_reset');
+    const afterForeignStrat = await getStrategyById('str_foreign_safe');
+    const afterTargetDraft = await getJournalDraft('user_reset_target');
+    const afterForeignDraft = await getJournalDraft(foreignUserId);
+    const afterTargetInst = await getUserInstrumentsConfig('user_reset_target');
+    const afterForeignInst = await getUserInstrumentsConfig(foreignUserId);
+    const afterTargetImg = await getImage(targetImgId);
+    const afterForeignImg = await getImage(foreignImgId);
+    const afterSharedImg = await getImage(sharedImgId);
+    const targetEpochAfter = await getLocalAccountResetEpoch('user_reset_target');
+
+    assert(
+      mockServerPostCalled &&
+        resetSuccess.success &&
+        resetSuccess.resetEpoch === 1 &&
+        targetEpochAfter === 1 &&
+        afterTargetReport === null &&
+        afterTargetJournal === null &&
+        afterTargetStrat === null &&
+        afterTargetDraft === null &&
+        !getEnabledInstrumentSymbols(afterTargetInst).includes('NAS100') &&
+        afterTargetImg === null &&
+        localStorage.getItem('abmax_supabase_auth') !== null &&
+        localStorage.getItem('abmax_remember_login') === 'true' &&
+        localStorage.getItem('abmax_session_v2_user_reset_target') === null &&
+        afterForeignReport !== null &&
+        afterForeignJournal !== null &&
+        afterForeignStrat !== null &&
+        (afterForeignDraft as any)?.title === 'Foreign Unfinished Draft' &&
+        getEnabledInstrumentSymbols(afterForeignInst).includes('USDJPY') &&
+        afterForeignImg !== null &&
+        afterSharedImg !== null &&
+        localStorage.getItem('abmax_session_v2_acct_foreign_safe') !== null,
+      '[MOCK-TESTED] Full account-data reset wipes ONLY target user data and images while preserving login identity and foreign users/shared images'
+    );
+
+    // 4. [MOCK-TESTED] Stale offline Device B blocked by authoritative server reset epoch
+    await saveReportDirectly({
+      ...createInitialAnalysisData('XAUUSD', DEFAULT_VISIBILITY_CONFIG),
+      id: 'rep_stale_device_b',
+      accountId: 'user_reset_target',
+      title: 'Stale Pre-Reset Device B Report',
+      createdAt: 1720000000000,
+      updatedAt: 1720000000000,
+      status: 'Original',
+      isModified: false,
+    });
+    await setLocalAccountResetEpoch('user_reset_target', 0);
+
+    let cloudAnalysesUpsertCalled = false;
+    const mockDeviceBCloud = {
+      from: (table: string) => {
+        if (table === 'analyses') {
+          cloudAnalysesUpsertCalled = true;
+        }
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () =>
+                table === 'user_reset_epochs'
+                  ? { data: { reset_epoch: 2 }, error: null }
+                  : { data: null, error: null },
+            }),
+          }),
+        };
+      },
+    };
+
+    const staleReportToUpload = (await getReportById('rep_stale_device_b'))!;
+    // Upload attempt while localEpoch=0 must hit the barrier inside uploadReportToCloud, reject cleanly, and wipe stale local records without touching analyses!
+    const staleUploadAttempt = await uploadReportToCloud('user_reset_target', staleReportToUpload, mockDeviceBCloud);
+    assert(
+      !cloudAnalysesUpsertCalled &&
+        staleUploadAttempt.success === false &&
+        staleUploadAttempt.conflict === true &&
+        (await getLocalAccountResetEpoch('user_reset_target')) === 2 &&
+        (await getReportById('rep_stale_device_b')) === null,
+      '[MOCK-TESTED] Stale offline Device B sees remote reset_epoch=2, blocks upload before hitting analyses, and purges stale pre-reset records'
+    );
+
+    await setLocalAccountResetEpoch('user_reset_target', 1);
+    const barrierCheck = await enforceRemoteResetBarrier('user_reset_target', mockDeviceBCloud);
+    assert(
+      barrierCheck.resetDetected &&
+        barrierCheck.remoteEpoch === 2 &&
+        (await getLocalAccountResetEpoch('user_reset_target')) === 2,
+      '[MOCK-TESTED] enforceRemoteResetBarrier advances Device B local epoch from 1 -> 2 cleanly'
+    );
+
+    void getLocalResetScopeCounts;
+    void uploadDraftToCloud;
+    void clearDraftFromCloud;
+    void resetCloudDraftVersionTracking;
   } catch (err) {
     assert(false, 'Test Suite execution failure', (err as Error).message);
   }

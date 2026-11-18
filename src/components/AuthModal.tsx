@@ -28,6 +28,7 @@ import {
   setCloudVerifiedState,
 } from '../services/supabaseDiagnostic';
 import { formatAuthError } from '../utils/authErrorUtils';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -140,6 +141,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
     }
   }, [isOpen, user]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (isRecoveryLinkExpired) clearRecoveryLinkExpired();
+        if (isPasswordRecovery) clearPasswordRecovery();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const unregBack = registerBackHandler(() => {
+      if (isRecoveryLinkExpired) clearRecoveryLinkExpired();
+      if (isPasswordRecovery) clearPasswordRecovery();
+      onClose();
+    });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      unregBack();
+    };
+  }, [isOpen, isRecoveryLinkExpired, isPasswordRecovery, clearRecoveryLinkExpired, clearPasswordRecovery, onClose]);
 
   if (!isOpen) return null;
 

@@ -24,18 +24,27 @@ import {
   Key,
   BookOpen,
   TrendingUp,
+  Layers,
+  Plus,
+  Trash2,
+  ShieldAlert,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BackupModal } from './BackupModal';
+import { AccountResetModal } from './AccountResetModal';
 import {
   createDefaultPerTimeframeFields,
   DEFAULT_DEEP_FIELDS_VISIBILITY,
+  DEFAULT_INSTRUMENTS_CONFIG,
   DEFAULT_JOURNAL_VISIBILITY_CONFIG,
   DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
   DEFAULT_VISIBILITY_CONFIG,
+  InstrumentCategory,
+  InstrumentsConfig,
   JournalVisibilityConfig,
+  normalizeInstrumentsConfig,
   normalizeJournalVisibilityConfig,
   normalizePerformanceVisibilityConfig,
   normalizeReportVisibilityConfig,
@@ -45,6 +54,7 @@ import {
   ReportVisibilityConfig,
   TimeframeDeepFieldsVisibility,
   TimeframeId,
+  validateInstrumentSymbol,
   WorkspaceVisibilityConfig,
 } from '../types/journal';
 import {
@@ -54,6 +64,7 @@ import {
   saveUserPerformanceVisibilityConfig,
 } from '../services/db';
 import { uploadPreferencesToCloud } from '../services/cloudSync';
+import { registerBackHandler } from '../utils/backNavigation';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -71,7 +82,10 @@ interface SettingsModalProps {
   onChangeJournalVisibilityConfig?: (config: JournalVisibilityConfig) => void;
   performanceVisibilityConfig?: PerformanceVisibilityConfig;
   onChangePerformanceVisibilityConfig?: (config: PerformanceVisibilityConfig) => void;
-  initialTab?: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility';
+  instrumentsConfig?: InstrumentsConfig;
+  onChangeInstrumentsConfig?: (config: InstrumentsConfig) => void;
+  onAccountDataReset?: () => Promise<void> | void;
+  initialTab?: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments';
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -90,10 +104,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChangeJournalVisibilityConfig,
   performanceVisibilityConfig = DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   onChangePerformanceVisibilityConfig,
+  instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
+  onChangeInstrumentsConfig,
+  onAccountDataReset,
   initialTab,
 }) => {
   const { user, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState<'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility'>(initialTab || 'general');
+  const [activeTab, setActiveTab] = useState<'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments'>(initialTab || 'general');
 
   useEffect(() => {
     if (initialTab) {
@@ -106,6 +123,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [selectedEditorTf, setSelectedEditorTf] = useState<TimeframeId>('Monthly');
   const [selectedReportTf, setSelectedReportTf] = useState<TimeframeId>('Monthly');
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [newSymbolInput, setNewSymbolInput] = useState('');
+  const [newNameInput, setNewNameInput] = useState('');
+  const [newCategoryInput, setNewCategoryInput] = useState<InstrumentCategory>('Forex');
+  const [instrumentError, setInstrumentError] = useState<string | null>(null);
   const [copiedBase64, setCopiedBase64] = useState(false);
   const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState<boolean>(() => {
     return typeof localStorage !== 'undefined' ? localStorage.getItem('abmax_auto_sync_disabled') !== 'true' : true;
@@ -144,22 +166,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }, 50);
 
       const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && !isBackupModalOpen && !isResetModalOpen) {
+          e.preventDefault();
           onClose();
         }
       };
 
       window.addEventListener('keydown', handleKeyDown);
+      const unregBack = registerBackHandler(() => onClose());
 
       return () => {
         document.body.style.overflow = originalOverflow;
         window.removeEventListener('keydown', handleKeyDown);
+        unregBack();
         if (previouslyFocusedRef.current && typeof previouslyFocusedRef.current.focus === 'function') {
           previouslyFocusedRef.current.focus();
         }
       };
     }
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, isBackupModalOpen, isResetModalOpen]);
 
   if (!isOpen) return null;
 
@@ -667,6 +692,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <TrendingUp className="w-3.5 h-3.5" />
             Performance Sections
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('instruments')}
+            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
+              activeTab === 'instruments'
+                ? 'border-emerald-600 text-emerald-theme'
+                : 'border-transparent text-app-secondary hover:text-app-main'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            Instruments
+          </button>
         </div>
 
         {/* Settings Content - Scrollable */}
@@ -879,6 +916,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <Download className="w-3.5 h-3.5 text-amber-500" />
                       <span>Download Keystore (.keystore)</span>
                     </a>
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 6: PROTECTED FULL ACCOUNT-DATA RESET */}
+              <section className="space-y-2.5">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span>Full Account-Data Reset</span>
+                </div>
+
+                <div className="p-3.5 rounded-lg border border-rose-300/70 dark:border-rose-900/70 bg-rose-50/40 dark:bg-rose-950/15 space-y-2.5">
+                  <p className="text-[11px] text-app-secondary leading-relaxed">
+                    Permanently erase all cloud and local records for your active account (reports, templates, screenshots, Journal, My Journal, Strategies, Live notes, custom instruments, and drafts) while preserving your login identity and other users&rsquo; data. Requires fresh authentication, optional backup check, exact confirmation, and live server reset deployment.
+                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] text-app-secondary">
+                      {user
+                        ? `Account scope: ${user.email || user.id}`
+                        : 'Sign in with your account to review or run a full account-data reset.'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!user}
+                      onClick={() => setIsResetModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                      <span>Review Full Account Reset...</span>
+                    </button>
                   </div>
                 </div>
               </section>
@@ -1523,6 +1590,248 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               )}
             </div>
           )}
+
+          {/* SECTION: INSTRUMENTS CONFIGURATION */}
+          {activeTab === 'instruments' && (() => {
+            const normalizedCfg = normalizeInstrumentsConfig(instrumentsConfig);
+            const enabledCount = normalizedCfg.items.filter((i) => i.enabled).length;
+
+            const handleAddInstrument = (e: React.FormEvent) => {
+              e.preventDefault();
+              setInstrumentError(null);
+              const validation = validateInstrumentSymbol(newSymbolInput);
+              if (!validation.valid) {
+                setInstrumentError(validation.error || 'Invalid instrument symbol.');
+                return;
+              }
+              if (normalizedCfg.items.some((i) => i.symbol === validation.symbol)) {
+                setInstrumentError(`${validation.symbol} is already configured.`);
+                return;
+              }
+              const nextCfg = normalizeInstrumentsConfig({
+                items: [
+                  ...normalizedCfg.items,
+                  {
+                    symbol: validation.symbol,
+                    name: newNameInput.trim() || undefined,
+                    category: newCategoryInput,
+                    enabled: true,
+                    isDefault: false,
+                    supportsLiveFeed: false,
+                    createdAt: Date.now(),
+                  },
+                ],
+              });
+              onChangeInstrumentsConfig?.(nextCfg);
+              setNewSymbolInput('');
+              setNewNameInput('');
+            };
+
+            const handleToggleInstrumentEnabled = (symbol: string) => {
+              setInstrumentError(null);
+              const target = normalizedCfg.items.find((i) => i.symbol === symbol);
+              if (!target) return;
+              if (target.enabled && enabledCount <= 1) {
+                setInstrumentError('At least one instrument must remain enabled.');
+                return;
+              }
+              const nextCfg = normalizeInstrumentsConfig({
+                items: normalizedCfg.items.map((item) =>
+                  item.symbol === symbol ? { ...item, enabled: !item.enabled } : item
+                ),
+              });
+              onChangeInstrumentsConfig?.(nextCfg);
+            };
+
+            const handleRemoveCustomInstrument = (symbol: string) => {
+              setInstrumentError(null);
+              const target = normalizedCfg.items.find((i) => i.symbol === symbol);
+              if (!target || target.isDefault) return;
+              const remaining = normalizedCfg.items.filter((i) => i.symbol !== symbol);
+              const nextCfg = normalizeInstrumentsConfig({ items: remaining });
+              onChangeInstrumentsConfig?.(nextCfg);
+            };
+
+            const handleRestoreInstrumentDefaults = () => {
+              setInstrumentError(null);
+              const customOnly = normalizedCfg.items.filter((i) => !i.isDefault);
+              const nextCfg = normalizeInstrumentsConfig({
+                items: [
+                  ...DEFAULT_INSTRUMENTS_CONFIG.items.map((d) => ({ ...d, enabled: true })),
+                  ...customOnly,
+                ],
+              });
+              onChangeInstrumentsConfig?.(nextCfg);
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="p-3 rounded-lg bg-emerald-pale/60 border border-emerald-500/30 text-[11px] text-app-main leading-relaxed space-y-1">
+                  <div className="font-bold text-emerald-theme">
+                    Custom Instruments &amp; Price Feed Disclosure
+                  </div>
+                  <p className="text-app-secondary">
+                    Enabled instruments (including custom Forex, Indices, Stocks, Commodities, or Crypto symbols) appear across Analysis, Reports filters, Journal, Performance breakdown, and Live workspace tabs. Historical reports, journal entries, and Live notes remain preserved even if an instrument is disabled or removed.
+                  </p>
+                  <p className="text-app-secondary">
+                    <strong className="text-app-main">Note on Live Feeds:</strong> Adding an instrument does not imply a live price feed exists. Only <code className="font-mono font-bold">BTCUSD</code> has Coinbase public spot polling; all other instruments default to manual price observation in Live.
+                  </p>
+                </div>
+
+                {/* Add Instrument Form */}
+                <form
+                  onSubmit={handleAddInstrument}
+                  className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-2.5"
+                >
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                    Add Custom Instrument
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                    <div className="sm:col-span-4">
+                      <label className="block text-[10px] font-semibold text-app-secondary mb-1">
+                        Symbol *
+                      </label>
+                      <input
+                        type="text"
+                        value={newSymbolInput}
+                        onChange={(e) => setNewSymbolInput(e.target.value)}
+                        placeholder="GBPUSD, US30, AAPL"
+                        aria-label="New instrument symbol"
+                        className="w-full px-2.5 py-1.5 rounded bg-app-main border border-app text-xs font-mono uppercase text-app-main"
+                      />
+                    </div>
+                    <div className="sm:col-span-4">
+                      <label className="block text-[10px] font-semibold text-app-secondary mb-1">
+                        Label (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={newNameInput}
+                        onChange={(e) => setNewNameInput(e.target.value)}
+                        placeholder="British Pound / USD"
+                        aria-label="New instrument name"
+                        className="w-full px-2.5 py-1.5 rounded bg-app-main border border-app text-xs text-app-main"
+                      />
+                    </div>
+                    <div className="sm:col-span-4">
+                      <label className="block text-[10px] font-semibold text-app-secondary mb-1">
+                        Category
+                      </label>
+                      <select
+                        value={newCategoryInput}
+                        onChange={(e) => setNewCategoryInput(e.target.value as InstrumentCategory)}
+                        aria-label="New instrument category"
+                        className="w-full px-2.5 py-1.5 rounded bg-app-main border border-app text-xs text-app-main"
+                      >
+                        <option value="Forex">Forex</option>
+                        <option value="Indices">Indices</option>
+                        <option value="Stocks">Stocks</option>
+                        <option value="Commodities">Commodities</option>
+                        <option value="Crypto">Crypto</option>
+                        <option value="Custom">Custom</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    {instrumentError ? (
+                      <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                        {instrumentError}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-app-secondary">
+                        Normalized automatically to uppercase (slashes &amp; spaces stripped).
+                      </span>
+                    )}
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold bg-emerald-theme hover:bg-emerald-theme-hover text-white cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Instrument</span>
+                    </button>
+                  </div>
+                </form>
+
+                {/* Active & Configured Instruments List */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-app-secondary">
+                      Configured Instruments ({enabledCount} enabled of {normalizedCfg.items.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRestoreInstrumentDefaults}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-app-secondary hover:text-app-main bg-app-field border border-app rounded cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Re-enable Defaults</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {normalizedCfg.items.map((item) => (
+                      <div
+                        key={item.symbol}
+                        className={`flex items-center justify-between gap-2 p-2.5 rounded-lg border text-xs ${
+                          item.enabled
+                            ? 'bg-app-main border-emerald-500/40'
+                            : 'bg-app-field/60 border-app opacity-75'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold font-mono text-app-main">{item.symbol}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-app-secondary border border-app text-[10px] font-medium text-app-secondary">
+                              {item.category}
+                            </span>
+                            {item.isDefault && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-pale text-emerald-theme text-[10px] font-semibold">
+                                Default
+                              </span>
+                            )}
+                            <span className="text-[10px] text-app-secondary">
+                              {item.supportsLiveFeed ? 'Public spot (BTC-USD) / Manual' : 'Manual observation'}
+                            </span>
+                          </div>
+                          {item.name && (
+                            <div className="text-[10px] text-app-secondary truncate mt-0.5">
+                              {item.name}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleInstrumentEnabled(item.symbol)}
+                            aria-label={`${item.enabled ? 'Disable' : 'Enable'} ${item.symbol}`}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold border transition-colors cursor-pointer ${
+                              item.enabled
+                                ? 'bg-emerald-theme text-white border-emerald-600'
+                                : 'bg-app-field text-app-secondary border-app hover:text-app-main'
+                            }`}
+                          >
+                            {item.enabled ? 'Enabled' : 'Disabled'}
+                          </button>
+                          {!item.isDefault && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCustomInstrument(item.symbol)}
+                              aria-label={`Remove ${item.symbol}`}
+                              title="Remove custom instrument (historical records remain preserved)"
+                              className="p-1.5 rounded text-app-secondary hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Footer */}
@@ -1541,6 +1850,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         isOpen={isBackupModalOpen}
         onClose={() => setIsBackupModalOpen(false)}
         onDataChanged={() => {}}
+      />
+
+      <AccountResetModal
+        isOpen={isResetModalOpen}
+        onClose={() => setIsResetModalOpen(false)}
+        onResetCompleted={onAccountDataReset}
       />
     </div>
   );
