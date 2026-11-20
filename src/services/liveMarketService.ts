@@ -7,11 +7,10 @@ import {
   LiveWorkspaceData,
   PlannedScenario,
   TradingPair,
+  normalizeInstrumentSymbol,
 } from '../types/journal';
 import { deepClone } from '../utils/analysisUtils';
 import { getLiveWorkspace, saveLiveWorkspace } from './db';
-import { getVerifiedFeedForInstrument, normalizeInstrumentSymbol } from './instruments';
-import type { InstrumentDefinition } from '../types/journal';
 
 /**
  * Checks whether a quote is stale or unavailable for automatic trigger evaluation.
@@ -203,14 +202,12 @@ export function evaluateLiveScenarioConditions(
  */
 export async function fetchPublicQuoteForPair(
   pair: string,
-  staleThresholdMs: number = 60000,
-  instrument?: InstrumentDefinition | null
+  staleThresholdMs: number = 60000
 ): Promise<LiveQuoteState> {
   const normalized = normalizeInstrumentSymbol(pair || '');
   const now = Date.now();
-  const feed = getVerifiedFeedForInstrument(instrument || normalized);
 
-  if (feed.supported && feed.providerId === 'coinbase_btc_usd') {
+  if (normalized === 'BTCUSD') {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       return {
         mode: 'public_rest',
@@ -301,7 +298,7 @@ export async function fetchPublicQuoteForPair(
 
   return {
     mode: 'public_rest',
-    provider: 'Manual observation only',
+    provider: 'Manual observation required',
     price: null,
     priceType: 'manual',
     providerTimestamp: null,
@@ -309,7 +306,7 @@ export async function fetchPublicQuoteForPair(
     fetchedAt: now,
     status: 'disconnected',
     staleThresholdMs,
-    error: `Live feed not connected for ${normalized}. Custom and unmapped instruments support analysis and manual price observations only.`,
+    error: `Live feed not connected for ${normalized || 'selected instrument'}. Only BTCUSD has a public spot feed; custom and unmapped instruments use manual price observation.`,
   };
 }
 
