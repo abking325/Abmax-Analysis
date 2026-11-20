@@ -92,7 +92,7 @@ interface PerformanceViewProps {
   onOpenReport?: (reportId: string) => void;
   userId?: string | null;
   performanceVisibilityConfig?: PerformanceVisibilityConfig;
-  onOpenSettings?: (tab?: 'general' | 'theme' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
+  onOpenSettings?: (tab?: 'general' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
   instrumentsConfig?: InstrumentsConfig;
 }
 
@@ -273,6 +273,47 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
     const winRate = closedDecided > 0 ? Math.round((win / closedDecided) * 100) : null;
 
     return { win, loss, be, open, unknown, closedDecided, winRate };
+  }, [allTrades]);
+
+  // Setup Validity Breakdown (strictly independent of Win/Loss outcomes)
+  const setupValidityStats = useMemo(() => {
+    let valid = 0;
+    let invalid = 0;
+    let notReviewed = 0;
+    let validWins = 0;
+    let validLosses = 0;
+    let invalidWins = 0;
+    let invalidLosses = 0;
+
+    for (const t of allTrades) {
+      const o = (t.outcome || '').toLowerCase();
+      if (t.setupValidity === 'Valid') {
+        valid++;
+        if (o === 'win') validWins++;
+        else if (o === 'loss') validLosses++;
+      } else if (t.setupValidity === 'Invalid') {
+        invalid++;
+        if (o === 'win') invalidWins++;
+        else if (o === 'loss') invalidLosses++;
+      } else {
+        notReviewed++;
+      }
+    }
+
+    const reviewed = valid + invalid;
+    const validityRate = reviewed > 0 ? Math.round((valid / reviewed) * 100) : null;
+
+    return {
+      valid,
+      invalid,
+      notReviewed,
+      reviewed,
+      validityRate,
+      validWins,
+      validLosses,
+      invalidWins,
+      invalidLosses,
+    };
   }, [allTrades]);
 
   // Distributions by Pair, Session, and Direction
@@ -677,6 +718,57 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
         </div>
       )}
 
+      {/* Setup Validity Summary (Independent of Trade Outcomes) */}
+      {performanceVisibilityConfig.disciplineCompliance !== false && (
+        <div className="p-4 sm:p-5 rounded-xl border border-app bg-app-main shadow-2xs space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="font-bold text-sm text-app-main">Setup Validity Review</div>
+              <p className="text-[11px] text-app-secondary">
+                Tracks whether trade setups met rules independently of Win/Loss outcomes (valid setups can result in losses).
+              </p>
+            </div>
+            <span className="text-xs font-semibold text-app-secondary">
+              {setupValidityStats.validityRate !== null
+                ? `${setupValidityStats.validityRate}% Valid of ${setupValidityStats.reviewed} reviewed`
+                : 'No validity reviews yet'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+            <div className="p-3 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-300 dark:border-emerald-800 space-y-0.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-emerald-700 dark:text-emerald-300">Valid Setups</span>
+                <span className="text-lg font-extrabold text-emerald-700 dark:text-emerald-300">{setupValidityStats.valid}</span>
+              </div>
+              <div className="text-[11px] text-app-secondary">
+                Outcomes: {setupValidityStats.validWins}W · {setupValidityStats.validLosses}L
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-rose-50/50 dark:bg-rose-950/20 border border-rose-300 dark:border-rose-800 space-y-0.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-rose-700 dark:text-rose-300">Invalid Setups</span>
+                <span className="text-lg font-extrabold text-rose-700 dark:text-rose-300">{setupValidityStats.invalid}</span>
+              </div>
+              <div className="text-[11px] text-app-secondary">
+                Outcomes: {setupValidityStats.invalidWins}W · {setupValidityStats.invalidLosses}L
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-app-field border border-app space-y-0.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-app-secondary">Not Reviewed</span>
+                <span className="text-lg font-extrabold text-app-main">{setupValidityStats.notReviewed}</span>
+              </div>
+              <div className="text-[11px] text-app-secondary">
+                Pending setup quality tag
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Secondary Distributions: Sessions, Pairs, Setup Breakdown, Mistakes */}
       {showDistributionsGrid && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
@@ -850,6 +942,11 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
               <div>
                 <strong className="text-app-main">Copied &amp; Conflict Reports: </strong>
                 Analyses and trades are tracked and deduplicated by their permanent unique IDs (<code>tradeMap</code> by <code>trade.id</code>). Copying or editing an analysis never duplicates trade counts or skews historical statistics.
+              </div>
+
+              <div>
+                <strong className="text-app-main">Setup Validity &amp; Planned R:R: </strong>
+                Setup validity (<em>Valid setup</em> / <em>Invalid setup</em> / <em>Not reviewed</em>) is tracked independently from trade outcome (<em>Win</em> / <em>Loss</em> / <em>Break-even</em>). Valid setups that hit Stop Loss remain counted as Valid setups, while Planned R:R intent is never mixed into realized outcome statistics.
               </div>
 
               <div>

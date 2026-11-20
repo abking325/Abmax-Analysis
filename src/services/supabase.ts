@@ -64,6 +64,7 @@ export const authStorage = {
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseKey, {
       auth: {
+        flowType: 'pkce',
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
@@ -73,16 +74,40 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
     })
   : null;
 
+export const NATIVE_OAUTH_CALLBACK_URL = 'com.abmax.analysis://auth/callback';
+
 /**
- * Returns the active standalone website redirect URL for confirmation and password resets.
- * On native mobile or localhost development, routes to the production web app to prevent broken https://localhost links.
+ * Returns the active website redirect URL for email confirmations / password resets.
+ * On native mobile Capacitor origins (capacitor:// or ionic://), routes to the production web app.
+ * On localhost/preview/production web origins, preserves the active web origin + pathname cleanly.
  */
 export function getAppRedirectUrl(): string {
   const siteUrl = (env.VITE_SITE_URL || '').trim() || 'https://abmax-analysis.pages.dev';
   if (typeof window === 'undefined' || !window.location) return siteUrl;
   const origin = window.location.origin;
-  if (!origin || origin.includes('localhost') || origin.startsWith('capacitor://') || origin.startsWith('ionic://')) {
+  if (
+    !origin ||
+    origin === 'https://localhost' ||
+    origin === 'http://localhost' ||
+    origin.startsWith('capacitor://') ||
+    origin.startsWith('ionic://') ||
+    origin === 'file://'
+  ) {
     return siteUrl;
   }
-  return origin;
+  const cleanPath = window.location.pathname && window.location.pathname !== '/'
+    ? window.location.pathname
+    : '';
+  return `${origin}${cleanPath}`;
 }
+
+/**
+ * Returns the exact OAuth redirect URL for Google Sign-In on Native vs Web.
+ */
+export function getOAuthRedirectUrl(isNative: boolean): string {
+  if (isNative) {
+    return NATIVE_OAUTH_CALLBACK_URL;
+  }
+  return getAppRedirectUrl();
+}
+

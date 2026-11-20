@@ -1,16 +1,19 @@
 import React, { useState } from 'react';
 import {
+  JournalLaunchContext,
   ReportPresentationConfig,
   SavedReport,
   TimeframeId,
   TIMEFRAME_ORDER,
   getPersonalBiasLabel,
   isHigherPersonalBiasTimeframe,
+  normalizeStructureDirectionAndConfirmation,
 } from '../types/journal';
 import {
   calculateOverallAlignment,
   findMatchingValues,
   formatReadableAnalysisDate,
+  formatTradeCombinedStatus,
   isDeepAnalysisAligned,
   getTimeframeStructureAlignment,
   getTimeframePairAlignments,
@@ -24,6 +27,7 @@ import {
   Maximize2,
   Edit,
   Trash2,
+  BookOpen,
 } from 'lucide-react';
 import { RecordedTrade } from '../types/journal';
 
@@ -33,6 +37,8 @@ interface OrganizedReportViewProps {
   onOpenViewer?: (url: string, title: string) => void;
   onEditTrade?: (trade: RecordedTrade) => void;
   onRemoveTrade?: (tradeId: string) => void;
+  onLaunchJournalFromTrade?: (ctx: Omit<JournalLaunchContext, 'requestId'>) => void;
+  linkedJournalCountByTradeId?: Record<string, number>;
   presentationConfig?: ReportPresentationConfig;
 }
 
@@ -53,6 +59,8 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
   onOpenViewer,
   onEditTrade,
   onRemoveTrade,
+  onLaunchJournalFromTrade,
+  linkedJournalCountByTradeId = {},
   presentationConfig,
 }) => {
   const [expandedCharts, setExpandedCharts] = useState<Record<string, boolean>>({});
@@ -162,21 +170,37 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
       isHigherPersonalBiasTimeframe(tfId) &&
       Boolean(tf.personalBiasNotes && tf.personalBiasNotes.trim()) &&
       tfVis?.personalBiasNotes !== false;
+    const swingNorm = normalizeStructureDirectionAndConfirmation(
+      tf.swing.direction,
+      tf.swing.confirmation
+    );
+    const internalNorm = normalizeStructureDirectionAndConfirmation(
+      tf.internal.direction,
+      tf.internal.confirmation
+    );
+    const fractalNorm = normalizeStructureDirectionAndConfirmation(
+      tf.fractal.direction,
+      tf.fractal.confirmation
+    );
+
     const hasPriceLoc = Boolean(tf.priceLocation?.location || tf.priceLocation?.levelRange) && tfVis?.priceLocation !== false;
     const hasSwing = Boolean(
-      tf.swing.direction ||
+      swingNorm.direction ||
+      swingNorm.confirmation ||
       tf.swing.high?.trim() ||
       tf.swing.low?.trim() ||
       tf.swing.bosAt?.trim()
     ) && tfVis?.swingStructure !== false;
     const hasInternal = Boolean(
-      tf.internal.direction ||
+      internalNorm.direction ||
+      internalNorm.confirmation ||
       tf.internal.high?.trim() ||
       tf.internal.low?.trim() ||
       tf.internal.ibosAt?.trim()
     ) && tfVis?.internalStructure !== false;
     const hasFractal = Boolean(
-      tf.fractal.direction ||
+      fractalNorm.direction ||
+      fractalNorm.confirmation ||
       tf.fractal.fractalBosAt?.trim()
     ) && tfVis?.fractalStructure !== false;
     const showSupply = Boolean(tf.supplyLevels && tf.supplyLevels.length > 0) && tfVis?.supplyLevels !== false;
@@ -361,14 +385,15 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     </span>
                     <span
                       className={`font-semibold ${
-                        tf.swing.direction === 'Bullish'
+                        swingNorm.direction === 'Bullish'
                           ? 'text-emerald-700'
-                          : tf.swing.direction === 'Bearish'
+                          : swingNorm.direction === 'Bearish'
                           ? 'text-rose-700'
                           : 'text-gray-700'
                       }`}
                     >
-                      {tf.swing.direction || '—'}
+                      {swingNorm.direction || '—'}
+                      {swingNorm.confirmation ? ` (${swingNorm.confirmation})` : ''}
                     </span>
                     <span className="text-gray-300">·</span>
                     <span className="text-gray-700">High: {tf.swing.high || '—'}</span>
@@ -387,14 +412,15 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     </span>
                     <span
                       className={`font-semibold ${
-                        tf.internal.direction === 'Bullish'
+                        internalNorm.direction === 'Bullish'
                           ? 'text-emerald-700'
-                          : tf.internal.direction === 'Bearish'
+                          : internalNorm.direction === 'Bearish'
                           ? 'text-rose-700'
                           : 'text-gray-700'
                       }`}
                     >
-                      {tf.internal.direction || '—'}
+                      {internalNorm.direction || '—'}
+                      {internalNorm.confirmation ? ` (${internalNorm.confirmation})` : ''}
                     </span>
                     <span className="text-gray-300">·</span>
                     <span className="text-gray-700">High: {tf.internal.high || '—'}</span>
@@ -413,14 +439,15 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                     </span>
                     <span
                       className={`font-semibold ${
-                        tf.fractal.direction === 'Bullish'
+                        fractalNorm.direction === 'Bullish'
                           ? 'text-emerald-700'
-                          : tf.fractal.direction === 'Bearish'
+                          : fractalNorm.direction === 'Bearish'
                           ? 'text-rose-700'
                           : 'text-gray-700'
                       }`}
                     >
-                      {tf.fractal.direction || '—'}
+                      {fractalNorm.direction || '—'}
+                      {fractalNorm.confirmation ? ` (${fractalNorm.confirmation})` : ''}
                     </span>
                     <span className="text-gray-300">·</span>
                     <span className="text-gray-700">
@@ -993,20 +1020,18 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      {trd.outcome && (
-                        <span
-                          className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase ${
-                            trd.outcome === 'Win'
-                              ? 'bg-emerald-100 text-emerald-900 border-emerald-400'
-                              : trd.outcome === 'Loss'
-                              ? 'bg-rose-100 text-rose-900 border-rose-400'
-                              : 'bg-gray-100 text-gray-800 border-gray-300'
-                          }`}
-                        >
-                          {trd.outcome}
-                        </span>
-                      )}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`text-[9px] font-bold px-2 py-0.5 rounded border ${
+                          trd.setupValidity === 'Valid'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                            : trd.setupValidity === 'Invalid'
+                            ? 'bg-rose-50 text-rose-800 border-rose-300'
+                            : 'bg-gray-100 text-gray-700 border-gray-300'
+                        }`}
+                      >
+                        {formatTradeCombinedStatus(trd)}
+                      </span>
                       <span
                         className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
                           trd.rulesFollowed !== false
@@ -1017,6 +1042,37 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                         {trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken'}
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
+                        {onLaunchJournalFromTrade && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onLaunchJournalFromTrade({
+                                targetPhase: trd.outcome === 'Open' ? 'inTrade' : 'postTrade',
+                                mode: 'create',
+                                linkedReportId: trd.sourceReportId || report.id,
+                                linkedReportTitle:
+                                  trd.sourceReportTitle || report.title || `${report.pair} Analysis`,
+                                linkedScenarioId: trd.scenarioId,
+                                linkedScenarioLabel: trd.scenarioLabel,
+                                linkedTradeId: trd.id,
+                                pair: trd.pair || report.pair,
+                                session: trd.session || report.session,
+                                strategy: trd.strategy || trd.strategySnapshot?.name,
+                                date: trd.date || report.date,
+                                time: trd.time,
+                                outcome: trd.outcome,
+                              })
+                            }
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-300 transition-colors cursor-pointer"
+                            title="Log journal note for this trade"
+                          >
+                            <BookOpen className="w-2.5 h-2.5" />
+                            Journal
+                            {(linkedJournalCountByTradeId[trd.id] || 0) > 0
+                              ? ` (${linkedJournalCountByTradeId[trd.id]})`
+                              : ''}
+                          </button>
+                        )}
                         {onEditTrade && (
                           <button
                             type="button"
@@ -1088,9 +1144,28 @@ export const OrganizedReportView: React.FC<OrganizedReportViewProps> = ({
                         Exit: <strong className="text-gray-900">{trd.exitPrice}</strong>
                       </span>
                     )}
+                    {trd.plannedRRChoice && (
+                      <span>
+                        Planned R:R:{' '}
+                        <strong className="text-gray-900">
+                          {trd.plannedRRChoice === 'Custom'
+                            ? trd.plannedRRRatio || 'Custom'
+                            : trd.plannedRRChoice}
+                        </strong>
+                      </span>
+                    )}
                     {trd.riskReward && (
                       <span>
                         R:R: <strong className="text-gray-900">{trd.riskReward}</strong>
+                      </span>
+                    )}
+                    {trd.closedDate && (
+                      <span>
+                        Closed:{' '}
+                        <strong className="text-gray-900">
+                          {trd.closedDate}
+                          {trd.closedTime ? ` ${trd.closedTime}` : ''}
+                        </strong>
                       </span>
                     )}
                   </div>

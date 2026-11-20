@@ -19,11 +19,14 @@ import {
   ChevronDown,
   ChevronUp,
   Activity,
+  BookOpen,
 } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import {
   DEFAULT_REPORT_PRESENTATION,
   DEFAULT_REPORT_VISIBILITY,
+  JournalEntry,
+  JournalLaunchContext,
   PlannedScenario,
   RecordedTrade,
   ReportPresentationConfig,
@@ -32,17 +35,21 @@ import {
   TIMEFRAME_ORDER,
   TimeframeId,
   TradingPair,
+  TradeOutcome,
   getPersonalBiasLabel,
   isHigherPersonalBiasTimeframe,
+  normalizeStructureDirectionAndConfirmation,
 } from '../types/journal';
 import {
+  getAllJournalEntries,
   getUserReportPresentationConfig,
-  saveUserReportPresentationConfig,
+  isJournalEntryOwnedByScope,
 } from '../services/db';
 import {
   calculateOverallAlignment,
   findMatchingValues,
   formatReadableAnalysisDate,
+  formatTradeCombinedStatus,
   getTimeframeStructureAlignment,
   getTimeframePairAlignments,
 } from '../utils/analysisUtils';
@@ -67,6 +74,8 @@ interface ReportDetailsModalProps {
   onCopy: (report: SavedReport) => void;
   onDelete: (id: string) => void;
   onUpdateReport?: (updated: SavedReport) => Promise<void>;
+  onLaunchJournalFromTrade?: (ctx: Omit<JournalLaunchContext, 'requestId'>) => void;
+  onSavePreparationJournal?: (entry: JournalEntry) => Promise<void>;
   initialTradeDraft?: any;
   onTradeDraftChange?: (draft: any) => void;
 }
@@ -80,6 +89,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   onCopy,
   onDelete,
   onUpdateReport,
+  onLaunchJournalFromTrade,
+  onSavePreparationJournal,
   initialTradeDraft,
   onTradeDraftChange,
 }) => {
@@ -113,6 +124,9 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [copiedToLiveScenarioId, setCopiedToLiveScenarioId] = useState<string | null>(null);
   const [copyToLiveError, setCopyToLiveError] = useState<string | null>(null);
+  const [linkedJournalCountByTradeId, setLinkedJournalCountByTradeId] = useState<Record<string, number>>({});
+  const [quickUpdatedTradeId, setQuickUpdatedTradeId] = useState<string | null>(null);
+  const [quickOutcomeSavingId, setQuickOutcomeSavingId] = useState<string | null>(null);
 
   const modalContainerRef = useRef<HTMLDivElement>(null);
   const bodyContainerRef = useRef<HTMLDivElement>(null);
@@ -191,22 +205,71 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
     onViewModeChangeRef.current = onViewModeChange;
   }, [onViewModeChange]);
 
-  // Load presentation config and ensure Normal details view is default
+  // Load presentation config, scoped journal counts, and ensure Normal details view is default
   useEffect(() => {
     if (isOpen) {
       getUserReportPresentationConfig().then((cfg) => {
         setPresentationConfig(cfg);
       });
+      getAllJournalEntries()
+        .then((entries) => {
+          const counts: Record<string, number> = {};
+          for (const e of entries) {
+            if (!isJournalEntryOwnedByScope(e, user?.id)) continue;
+            if (e.entryType === 'my_journal' || e.entryType === 'my-journal') continue;
+            const tid = e.linkedTradeId || e.preTrade?.linkedTradeId || e.postTrade?.tradeId;
+            if (tid) {
+              counts[tid] = (counts[tid] || 0) + 1;
+            }
+          }
+          setLinkedJournalCountByTradeId(counts);
+        })
+        .catch(() => {});
       setViewMode('standard');
       onViewModeChangeRef.current?.('standard');
       setOverrideShowAll(false);
       setPdfError(null);
       setScenarioTradeDraft(null);
       setInvalidatingScenarioId(null);
+      setQuickUpdatedTradeId(null);
     } else {
       setPdfError(null);
+      setQuickUpdatedTradeId(null);
     }
-  }, [isOpen]);
+  }, [isOpen, report?.id, user?.id]);
+
+  const handleQuickOutcome = async (trade: RecordedTrade, nextOutcome: TradeOutcome) => {
+    if (!onUpdateReport || !report || quickOutcomeSavingId === trade.id) return;
+    setQuickOutcomeSavingId(trade.id);
+    try {
+      const now = Date.now();
+      const closedDate = new Date().toISOString().slice(0, 10);
+      const closedTime = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      const updatedTrades = (report.trades || []).map((t) => {
+        if (t.id !== trade.id) return t;
+        return {
+          ...t,
+          outcome: nextOutcome,
+          closedAt: nextOutcome === 'Open' ? undefined : t.closedAt || now,
+          closedDate: nextOutcome === 'Open' ? undefined : t.closedDate || closedDate,
+          closedTime: nextOutcome === 'Open' ? undefined : t.closedTime || closedTime,
+          updatedAt: now,
+        };
+      });
+      await onUpdateReport({
+        ...report,
+        trades: updatedTrades,
+        updatedAt: now,
+      });
+      setQuickUpdatedTradeId(trade.id);
+    } finally {
+      setQuickOutcomeSavingId(null);
+    }
+  };
 
   const secVis: ReportVisibilityConfig = overrideShowAll
     ? DEFAULT_REPORT_VISIBILITY
@@ -766,6 +829,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                       setIsTakeTradeOpen(true);
                     }}
                     onRemoveTrade={handleDeleteTrade}
+                    onLaunchJournalFromTrade={onLaunchJournalFromTrade}
+                    linkedJournalCountByTradeId={linkedJournalCountByTradeId}
                     presentationConfig={{ ...presentationConfig, sectionVisibility: secVis }}
                   />
                   {renderReportActions()}
@@ -872,32 +937,46 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                             if (secVis.timeframes && secVis.timeframes[tf] === false) return null;
                             const tfData = report.timeframes[tf];
                             const b = tfData?.overallBias;
-                            const sDir = tfData?.swing?.direction;
-                            const iDir = tfData?.internal?.direction;
-                            const fDir = tfData?.fractal?.direction;
+                            const sNorm = normalizeStructureDirectionAndConfirmation(
+                              tfData?.swing?.direction,
+                              tfData?.swing?.confirmation
+                            );
+                            const iNorm = normalizeStructureDirectionAndConfirmation(
+                              tfData?.internal?.direction,
+                              tfData?.internal?.confirmation
+                            );
+                            const fNorm = normalizeStructureDirectionAndConfirmation(
+                              tfData?.fractal?.direction,
+                              tfData?.fractal?.confirmation
+                            );
 
-                            const renderMiniBadge = (prefix: 'S' | 'I' | 'F', dir?: string) => {
-                              const norm = dir === 'Not sure' ? 'Waiting' : dir;
-                              const isBull = norm === 'Bullish';
-                              const isBear = norm === 'Bearish';
-                              const isNeut = norm === 'Neutral';
-                              const isWait = norm === 'Waiting';
+                            const renderMiniBadge = (
+                              prefix: 'S' | 'I' | 'F',
+                              norm: ReturnType<typeof normalizeStructureDirectionAndConfirmation>
+                            ) => {
+                              const isBull = norm.direction === 'Bullish';
+                              const isBear = norm.direction === 'Bearish';
+                              const isNeut = norm.direction === 'Neutral';
+                              const isWait = norm.confirmation === 'Waiting';
 
-                              const badgeStyle = isBull
+                              const badgeStyle = isWait && !norm.direction
+                                ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40'
+                                : isBull
                                 ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/40'
                                 : isBear
                                 ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300 border-rose-500/40'
                                 : isNeut
                                 ? 'bg-slate-300/40 text-slate-700 dark:text-slate-300 border-slate-400/40'
-                                : isWait
-                                ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40'
                                 : 'bg-app-field/60 text-app-secondary border-app/60';
 
-                              const fullLabel = prefix === 'S'
-                                ? `Swing: ${norm || 'Unset'}`
-                                : prefix === 'I'
-                                ? `Internal: ${norm || 'Unset'}`
-                                : `Fractal: ${norm || 'Unset'}`;
+                              const namePrefix =
+                                prefix === 'S' ? 'Swing' : prefix === 'I' ? 'Internal' : 'Fractal';
+                              const fullLabel = `${namePrefix}: ${norm.direction || 'Unset'}${
+                                norm.confirmation ? ` (${norm.confirmation})` : ''
+                              }`;
+
+                              const shortDir = norm.direction ? norm.direction.slice(0, 4) : isWait ? 'Wait' : '—';
+                              const shortConf = norm.confirmation === 'Waiting' && norm.direction ? '·W' : '';
 
                               return (
                                 <span
@@ -905,7 +984,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   className={`inline-flex items-center gap-0.5 px-1 py-0.2 text-[9px] font-mono font-bold rounded border ${badgeStyle}`}
                                 >
                                   <span>{prefix}:</span>
-                                  <span>{norm ? (norm === 'Waiting' ? 'Wait' : norm.slice(0, 4)) : '—'}</span>
+                                  <span>{`${shortDir}${shortConf}`}</span>
                                 </span>
                               );
                             };
@@ -935,9 +1014,9 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                 </div>
                                 {hasAnyStructureVisible && (
                                   <div className="flex items-center gap-1 pt-0.5 border-t border-app/30">
-                                    {showSwing && renderMiniBadge('S', sDir)}
-                                    {showInternal && renderMiniBadge('I', iDir)}
-                                    {showFractal && renderMiniBadge('F', fDir)}
+                                    {showSwing && renderMiniBadge('S', sNorm)}
+                                    {showInternal && renderMiniBadge('I', iNorm)}
+                                    {showFractal && renderMiniBadge('F', fNorm)}
                                   </div>
                                 )}
                               </div>
@@ -1096,19 +1175,61 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                               )}
 
                             {/* Timeframe analytical details */}
+                            {(() => {
+                              const swingNorm = normalizeStructureDirectionAndConfirmation(
+                                data.swing?.direction,
+                                data.swing?.confirmation
+                              );
+                              const internalNorm = normalizeStructureDirectionAndConfirmation(
+                                data.internal?.direction,
+                                data.internal?.confirmation
+                              );
+                              const fractalNorm = normalizeStructureDirectionAndConfirmation(
+                                data.fractal?.direction,
+                                data.fractal?.confirmation
+                              );
+                              return (
                             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 text-[11px] text-app-secondary pt-1">
-                              {tfFields?.swingStructure !== false && (data.swing?.high || data.swing?.low) && (
-                                <div>
-                                  <span className="font-semibold text-app-main block">Swing:</span>
-                                  <span>H: {data.swing.high || '—'} / L: {data.swing.low || '—'}</span>
-                                </div>
-                              )}
-                              {tfFields?.internalStructure !== false && (data.internal?.high || data.internal?.low) && (
-                                <div>
-                                  <span className="font-semibold text-app-main block">Internal:</span>
-                                  <span>H: {data.internal.high || '—'} / L: {data.internal.low || '—'}</span>
-                                </div>
-                              )}
+                              {tfFields?.priceLocation !== false &&
+                                (data.priceLocation?.location || data.priceLocation?.levelRange) && (
+                                  <div>
+                                    <span className="font-semibold text-app-main block">Price Location:</span>
+                                    <span>
+                                      {data.priceLocation.location || '—'}
+                                      {data.priceLocation.levelRange ? ` (${data.priceLocation.levelRange})` : ''}
+                                    </span>
+                                  </div>
+                                )}
+                              {tfFields?.swingStructure !== false &&
+                                (swingNorm.direction || swingNorm.confirmation || data.swing?.high || data.swing?.low) && (
+                                  <div>
+                                    <span className="font-semibold text-app-main block">
+                                      Swing{swingNorm.direction ? ` — ${swingNorm.direction}` : ''}
+                                      {swingNorm.confirmation ? ` (${swingNorm.confirmation})` : ''}:
+                                    </span>
+                                    <span>H: {data.swing.high || '—'} / L: {data.swing.low || '—'}</span>
+                                  </div>
+                                )}
+                              {tfFields?.internalStructure !== false &&
+                                (internalNorm.direction || internalNorm.confirmation || data.internal?.high || data.internal?.low) && (
+                                  <div>
+                                    <span className="font-semibold text-app-main block">
+                                      Internal{internalNorm.direction ? ` — ${internalNorm.direction}` : ''}
+                                      {internalNorm.confirmation ? ` (${internalNorm.confirmation})` : ''}:
+                                    </span>
+                                    <span>H: {data.internal.high || '—'} / L: {data.internal.low || '—'}</span>
+                                  </div>
+                                )}
+                              {tfFields?.fractalStructure !== false &&
+                                (fractalNorm.direction || fractalNorm.confirmation || data.fractal?.fractalBosAt) && (
+                                  <div>
+                                    <span className="font-semibold text-app-main block">
+                                      Fractal{fractalNorm.direction ? ` — ${fractalNorm.direction}` : ''}
+                                      {fractalNorm.confirmation ? ` (${fractalNorm.confirmation})` : ''}:
+                                    </span>
+                                    <span>BOS: {data.fractal?.fractalBosAt || '—'}</span>
+                                  </div>
+                                )}
                               {tfFields?.liquidityLevels !== false && (data.liquidityLevels || []).length > 0 && (
                                 <div>
                                   <span className="font-semibold text-app-main block">Liquidity Levels:</span>
@@ -1146,6 +1267,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                 </div>
                               )}
                             </div>
+                              );
+                            })()}
 
                             {data.note && (
                               <div className="text-app-main text-xs pt-1 border-t border-app/60">
@@ -1467,13 +1590,16 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
 
                       {report.trades && report.trades.length > 0 ? (
                         <div className="space-y-2.5">
-                          {report.trades.map((trd, idx) => (
+                          {report.trades.map((trd, idx) => {
+                            const linkedCount = linkedJournalCountByTradeId[trd.id] || 0;
+                            const isScenarioLinked = Boolean(trd.scenarioId);
+                            return (
                             <div
                               key={trd.id || idx}
                               className="p-3 rounded-lg border border-app bg-app-field space-y-2 text-xs"
                             >
                               <div className="flex items-center justify-between gap-2 flex-wrap">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <span
                                     className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
                                       trd.direction === 'Buy'
@@ -1485,6 +1611,15 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   </span>
                                   <span className="font-bold text-app-main">
                                     {trd.scenarioLabel || 'Planned Execution'}
+                                  </span>
+                                  <span
+                                    className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${
+                                      isScenarioLinked
+                                        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                                        : 'bg-slate-200/70 dark:bg-slate-800 text-app-secondary border-app'
+                                    }`}
+                                  >
+                                    {isScenarioLinked ? 'Scenario' : 'Discretionary'}
                                   </span>
                                   {(trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy) && (
                                     <span className="text-app-secondary text-[11px]">
@@ -1501,22 +1636,18 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                   )}
                                 </div>
 
-                                <div className="flex items-center gap-2">
-                                  {trd.outcome && (
-                                    <span
-                                      className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${
-                                        trd.outcome === 'Win'
-                                          ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border-emerald-400'
-                                          : trd.outcome === 'Loss'
-                                          ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-200 border-rose-400'
-                                          : trd.outcome === 'Break-even'
-                                          ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200 border-amber-400'
-                                          : 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-200 border-blue-400'
-                                      }`}
-                                    >
-                                      {trd.outcome}
-                                    </span>
-                                  )}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span
+                                    className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                      trd.setupValidity === 'Valid'
+                                        ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700'
+                                        : trd.setupValidity === 'Invalid'
+                                        ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-700'
+                                        : 'bg-app-main text-app-secondary border-app'
+                                    }`}
+                                  >
+                                    {formatTradeCombinedStatus(trd)}
+                                  </span>
                                   {onUpdateReport && (
                                     <div className="flex items-center gap-1.5 shrink-0">
                                       <button
@@ -1587,12 +1718,163 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                     Exit: <strong className="text-app-main">{trd.exitPrice}</strong>
                                   </span>
                                 )}
+                                {trd.plannedRRChoice && (
+                                  <span>
+                                    Planned R:R:{' '}
+                                    <strong className="text-app-main">
+                                      {trd.plannedRRChoice === 'Custom'
+                                        ? trd.plannedRRRatio || 'Custom'
+                                        : trd.plannedRRChoice}
+                                    </strong>
+                                  </span>
+                                )}
                                 {trd.riskReward && (
                                   <span>
                                     R:R: <strong className="text-app-main">{trd.riskReward}</strong>
                                   </span>
                                 )}
+                                {trd.closedDate && (
+                                  <span>
+                                    Closed:{' '}
+                                    <strong className="text-app-main">
+                                      {trd.closedDate}
+                                      {trd.closedTime ? ` ${trd.closedTime}` : ''}
+                                    </strong>
+                                  </span>
+                                )}
                               </div>
+
+                              {/* Quick Outcome Update & Trade-Journal Deep Linking */}
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                {onUpdateReport && (
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[10px] font-semibold uppercase tracking-wider text-app-secondary">
+                                      Quick Outcome:
+                                    </span>
+                                    {(['Win', 'Loss', 'Break-even'] as TradeOutcome[]).map((qOut) => (
+                                      <button
+                                        key={qOut}
+                                        type="button"
+                                        disabled={quickOutcomeSavingId === trd.id}
+                                        onClick={() => handleQuickOutcome(trd, qOut)}
+                                        className={`px-2 py-1 min-h-[30px] text-[10px] font-bold rounded border transition-colors cursor-pointer disabled:opacity-50 ${
+                                          trd.outcome === qOut
+                                            ? qOut === 'Win'
+                                              ? 'bg-emerald-600 text-white border-emerald-600'
+                                              : qOut === 'Loss'
+                                              ? 'bg-rose-600 text-white border-rose-600'
+                                              : 'bg-amber-600 text-white border-amber-600'
+                                            : 'bg-app-main text-app-main border-app hover:bg-app-secondary'
+                                        }`}
+                                      >
+                                        {qOut}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {onLaunchJournalFromTrade && (
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onLaunchJournalFromTrade({
+                                          targetPhase: 'inTrade',
+                                          mode: 'create',
+                                          linkedReportId: trd.sourceReportId || report.id,
+                                          linkedReportTitle:
+                                            trd.sourceReportTitle || report.title || `${report.pair} Analysis`,
+                                          linkedScenarioId: trd.scenarioId,
+                                          linkedScenarioLabel: trd.scenarioLabel,
+                                          linkedTradeId: trd.id,
+                                          pair: trd.pair || report.pair,
+                                          session: trd.session || report.session,
+                                          strategy: trd.strategy || trd.strategySnapshot?.name,
+                                          date: trd.date || report.date,
+                                          time: trd.time,
+                                          outcome: trd.outcome,
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1 px-2 py-1 min-h-[30px] text-[10px] font-semibold bg-app-main hover:bg-app-secondary text-app-main border border-app rounded cursor-pointer transition-colors"
+                                    >
+                                      <BookOpen className="w-3 h-3 text-emerald-theme" />
+                                      <span>Add in-trade journal</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onLaunchJournalFromTrade({
+                                          targetPhase: 'postTrade',
+                                          mode: 'create',
+                                          linkedReportId: trd.sourceReportId || report.id,
+                                          linkedReportTitle:
+                                            trd.sourceReportTitle || report.title || `${report.pair} Analysis`,
+                                          linkedScenarioId: trd.scenarioId,
+                                          linkedScenarioLabel: trd.scenarioLabel,
+                                          linkedTradeId: trd.id,
+                                          pair: trd.pair || report.pair,
+                                          session: trd.session || report.session,
+                                          strategy: trd.strategy || trd.strategySnapshot?.name,
+                                          date: trd.date || report.date,
+                                          time: trd.time,
+                                          outcome: trd.outcome,
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1 px-2 py-1 min-h-[30px] text-[10px] font-semibold bg-emerald-pale hover:bg-emerald-pale/80 text-emerald-theme border border-emerald-500/30 rounded cursor-pointer transition-colors"
+                                    >
+                                      <span>Add review</span>
+                                    </button>
+                                    {linkedCount > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          onLaunchJournalFromTrade({
+                                            targetPhase: 'postTrade',
+                                            mode: 'view_linked',
+                                            filterTradeId: trd.id,
+                                            linkedReportId: trd.sourceReportId || report.id,
+                                            linkedTradeId: trd.id,
+                                            pair: trd.pair || report.pair,
+                                          })
+                                        }
+                                        className="inline-flex items-center gap-1 px-2 py-1 min-h-[30px] text-[10px] font-semibold bg-app-main hover:bg-app-secondary text-emerald-theme border border-app rounded cursor-pointer transition-colors"
+                                      >
+                                        <span>View linked journal entries ({linkedCount})</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              {quickUpdatedTradeId === trd.id && onLaunchJournalFromTrade && (
+                                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-700 dark:text-emerald-300">
+                                  <span>Outcome updated to {trd.outcome}.</span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onLaunchJournalFromTrade({
+                                        targetPhase: 'postTrade',
+                                        mode: 'create',
+                                        linkedReportId: trd.sourceReportId || report.id,
+                                        linkedReportTitle:
+                                          trd.sourceReportTitle || report.title || `${report.pair} Analysis`,
+                                        linkedScenarioId: trd.scenarioId,
+                                        linkedScenarioLabel: trd.scenarioLabel,
+                                        linkedTradeId: trd.id,
+                                        pair: trd.pair || report.pair,
+                                        session: trd.session || report.session,
+                                        strategy: trd.strategy || trd.strategySnapshot?.name,
+                                        date: trd.date || report.date,
+                                        time: trd.time,
+                                        outcome: trd.outcome,
+                                      })
+                                    }
+                                    className="font-bold underline cursor-pointer"
+                                  >
+                                    Add review in Journal
+                                  </button>
+                                </div>
+                              )}
 
                               {trd.notes && (
                                 <div className="text-app-secondary whitespace-pre-wrap italic pt-0.5 text-[11px]">
@@ -1600,7 +1882,8 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
                                 </div>
                               )}
                             </div>
-                          ))}
+                          );
+                          })}
                         </div>
                       ) : (
                         <p className="text-xs text-app-secondary italic">No trades recorded for this report.</p>
@@ -1659,6 +1942,7 @@ export const ReportDetailsModal: React.FC<ReportDetailsModalProps> = ({
             report={report}
             tradeToEdit={editingTrade}
             onSaveTrade={handleSaveTrade}
+            onSavePreparationJournal={onSavePreparationJournal}
             initialTradeDraft={scenarioTradeDraft || initialTradeDraft}
             onTradeDraftChange={onTradeDraftChange}
             userId={user?.id}

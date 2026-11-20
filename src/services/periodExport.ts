@@ -16,6 +16,7 @@ import {
   resolveAllReportImages,
 } from './pdfExport';
 import { exportBlobOrDownload } from '../utils/nativeExport';
+import { formatSetupValidityBadge } from '../utils/analysisUtils';
 
 export interface PeriodExportOptions {
   startDate: string; // YYYY-MM-DD
@@ -73,6 +74,9 @@ export function calculatePeriodPerformance(trades: RecordedTrade[]) {
   let wins = 0;
   let losses = 0;
   let breakevens = 0;
+  let validSetups = 0;
+  let invalidSetups = 0;
+  let unreviewedValidity = 0;
 
   for (const t of trades) {
     if (t.rulesFollowed === true) rulesFollowed++;
@@ -83,6 +87,10 @@ export function calculatePeriodPerformance(trades: RecordedTrade[]) {
     if (out === 'win') wins++;
     else if (out === 'loss') losses++;
     else if (out === 'breakeven' || out === 'break-even') breakevens++;
+
+    if (t.setupValidity === 'Valid') validSetups++;
+    else if (t.setupValidity === 'Invalid') invalidSetups++;
+    else unreviewedValidity++;
   }
 
   const reviewedTrades = rulesFollowed + rulesBroken;
@@ -102,6 +110,9 @@ export function calculatePeriodPerformance(trades: RecordedTrade[]) {
     breakevens,
     decidedTrades,
     winRate,
+    validSetups,
+    invalidSetups,
+    unreviewedValidity,
   };
 }
 
@@ -418,14 +429,26 @@ export async function generatePeriodPdfBlob(
 
         const trdStrategy = trd.strategy || trd.strategySnapshot?.name || trd.scenarioSnapshot?.strategy;
         const rulesText = trd.rulesFollowed !== false ? 'Rules Followed' : 'Rules Broken';
+        const plannedRRText = trd.plannedRRChoice
+          ? `Planned R:R: ${trd.plannedRRChoice === 'Custom' && trd.plannedRRRatio ? trd.plannedRRRatio : trd.plannedRRChoice}`
+          : '';
+        const setupValidityText = trd.setupValidity
+          ? `Setup: ${formatSetupValidityBadge(trd.setupValidity)}`
+          : '';
+        const closedText = trd.closedDate
+          ? `Closed: ${trd.closedDate}${trd.closedTime ? ` ${trd.closedTime}` : ''}`
+          : '';
         const details = [
           trdStrategy ? `Strategy: ${trdStrategy}` : '',
           trd.session ? `Session: ${trd.session}` : '',
           trd.timeframeTaken ? `TF: ${trd.timeframeTaken}` : '',
           trd.entryPrice ? `Entry: ${trd.entryPrice}` : '',
           trd.exitPrice ? `Exit: ${trd.exitPrice}` : '',
+          plannedRRText,
           trd.riskReward ? `R:R: ${trd.riskReward}` : '',
+          setupValidityText,
           trd.outcome ? `Outcome: ${trd.outcome}` : '',
+          closedText,
           rulesText,
         ].filter(Boolean);
 

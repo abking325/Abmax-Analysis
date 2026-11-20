@@ -6,10 +6,12 @@ import {
   TimeframeId,
   getPersonalBiasLabel,
   isHigherPersonalBiasTimeframe,
+  normalizeStructureDirectionAndConfirmation,
 } from '../types/journal';
 import {
   calculateOverallAlignment,
   findMatchingValues,
+  formatSetupValidityBadge,
   isDeepAnalysisAligned,
 } from '../utils/analysisUtils';
 import { exportBlobOrDownload } from '../utils/nativeExport';
@@ -466,13 +468,27 @@ export async function generateReportPdfBlob({
       doc.text(shortBias, bx + 1.2, curY + 6.8);
 
       // Deep structure indicator if available: S / I / F
-      const sDir = tfData?.swing?.direction;
-      const iDir = tfData?.internal?.direction;
-      const fDir = tfData?.fractal?.direction;
-      const sText = sDir ? `S:${sDir.slice(0, 1)}` : '';
-      const iText = iDir ? `I:${iDir.slice(0, 1)}` : '';
-      const fText = fDir ? `F:${fDir.slice(0, 1)}` : '';
-      const deepTags = [sText, iText, fText].filter(Boolean).join(' ');
+      const sNorm = normalizeStructureDirectionAndConfirmation(
+        tfData?.swing?.direction,
+        tfData?.swing?.confirmation
+      );
+      const iNorm = normalizeStructureDirectionAndConfirmation(
+        tfData?.internal?.direction,
+        tfData?.internal?.confirmation
+      );
+      const fNorm = normalizeStructureDirectionAndConfirmation(
+        tfData?.fractal?.direction,
+        tfData?.fractal?.confirmation
+      );
+      const fmtMini = (tag: string, n: ReturnType<typeof normalizeStructureDirectionAndConfirmation>) => {
+        if (!n.direction && !n.confirmation) return '';
+        const dCh = n.direction ? n.direction.slice(0, 1) : '?';
+        const cCh = n.confirmation === 'Waiting' ? '(W)' : '';
+        return `${tag}:${dCh}${cCh}`;
+      };
+      const deepTags = [fmtMini('S', sNorm), fmtMini('I', iNorm), fmtMini('F', fNorm)]
+        .filter(Boolean)
+        .join(' ');
 
       if (deepTags) {
         doc.setFont('helvetica', 'normal');
@@ -510,12 +526,15 @@ export async function generateReportPdfBlob({
     const hasPersonalBias =
       isHigherPersonalBiasTimeframe(tf) && Boolean(d.personalBiasNotes && d.personalBiasNotes.trim());
     const hasBias = Boolean(d.overallBias || d.biasSpecific || hasPersonalBias);
+    const sNorm = normalizeStructureDirectionAndConfirmation(d.swing?.direction, d.swing?.confirmation);
+    const iNorm = normalizeStructureDirectionAndConfirmation(d.internal?.direction, d.internal?.confirmation);
+    const fNorm = normalizeStructureDirectionAndConfirmation(d.fractal?.direction, d.fractal?.confirmation);
     const hasPriceLoc = Boolean(d.priceLocation?.location || d.priceLocation?.levelRange);
-    const hasSwing = Boolean(d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt);
+    const hasSwing = Boolean(sNorm.direction || sNorm.confirmation || d.swing.high || d.swing.low || d.swing.bosAt);
     const hasInternal = Boolean(
-      d.internal.direction || d.internal.high || d.internal.low || d.internal.ibosAt
+      iNorm.direction || iNorm.confirmation || d.internal.high || d.internal.low || d.internal.ibosAt
     );
-    const hasFractal = Boolean(d.fractal.direction || d.fractal.fractalBosAt);
+    const hasFractal = Boolean(fNorm.direction || fNorm.confirmation || d.fractal.fractalBosAt);
     const hasStructuredLevels = Boolean(
       (d.supplyLevels && d.supplyLevels.length > 0) ||
       (d.demandLevels && d.demandLevels.length > 0) ||
@@ -617,11 +636,15 @@ export async function generateReportPdfBlob({
     }
 
     // 3. Swing
+    const swingNorm = normalizeStructureDirectionAndConfirmation(
+      d.swing?.direction,
+      d.swing?.confirmation
+    );
     const swingHasContent = Boolean(
-      d.swing.direction || d.swing.high || d.swing.low || d.swing.bosAt
+      swingNorm.direction || swingNorm.confirmation || d.swing.high || d.swing.low || d.swing.bosAt
     );
     if (swingHasContent) {
-      const sDir = d.swing.direction || '—';
+      const sDir = `${swingNorm.direction || '—'}${swingNorm.confirmation ? ` (${swingNorm.confirmation})` : ''}`;
       const sHigh = d.swing.high ? d.swing.high : '—';
       const sLow = d.swing.low ? d.swing.low : '—';
       const sBos = d.swing.bosAt ? d.swing.bosAt : '—';
@@ -632,11 +655,15 @@ export async function generateReportPdfBlob({
     }
 
     // 4. Internal
+    const internalNorm = normalizeStructureDirectionAndConfirmation(
+      d.internal?.direction,
+      d.internal?.confirmation
+    );
     const internalHasContent = Boolean(
-      d.internal.direction || d.internal.high || d.internal.low || d.internal.ibosAt
+      internalNorm.direction || internalNorm.confirmation || d.internal.high || d.internal.low || d.internal.ibosAt
     );
     if (internalHasContent) {
-      const iDir = d.internal.direction || '—';
+      const iDir = `${internalNorm.direction || '—'}${internalNorm.confirmation ? ` (${internalNorm.confirmation})` : ''}`;
       const iHigh = d.internal.high ? d.internal.high : '—';
       const iLow = d.internal.low ? d.internal.low : '—';
       const iBos = d.internal.ibosAt ? d.internal.ibosAt : '—';
@@ -647,9 +674,15 @@ export async function generateReportPdfBlob({
     }
 
     // 5. Fractal
-    const fractalHasContent = Boolean(d.fractal.direction || d.fractal.fractalBosAt);
+    const fractalNorm = normalizeStructureDirectionAndConfirmation(
+      d.fractal?.direction,
+      d.fractal?.confirmation
+    );
+    const fractalHasContent = Boolean(
+      fractalNorm.direction || fractalNorm.confirmation || d.fractal.fractalBosAt
+    );
     if (fractalHasContent) {
-      const fDir = d.fractal.direction || '—';
+      const fDir = `${fractalNorm.direction || '—'}${fractalNorm.confirmation ? ` (${fractalNorm.confirmation})` : ''}`;
       const fBos = d.fractal.fractalBosAt ? d.fractal.fractalBosAt : '—';
       items.push({
         type: 'body',
@@ -657,12 +690,21 @@ export async function generateReportPdfBlob({
       });
     }
 
-    // 6. Deep alignment
-    if (d.swing.direction && d.internal.direction && d.fractal.direction) {
+    // 6. Deep alignment (Waiting confirmation never treated as aligned)
+    if (swingNorm.direction && internalNorm.direction && fractalNorm.direction) {
       if (isDeepAnalysisAligned(d)) {
         items.push({
           type: 'body',
-          text: `Deep alignment: Aligned (${d.swing.direction})`,
+          text: `Deep alignment: Aligned (${swingNorm.direction})`,
+        });
+      } else if (
+        swingNorm.confirmation === 'Waiting' ||
+        internalNorm.confirmation === 'Waiting' ||
+        fractalNorm.confirmation === 'Waiting'
+      ) {
+        items.push({
+          type: 'body',
+          text: 'Deep alignment: Waiting confirmation',
         });
       } else {
         items.push({
@@ -1154,6 +1196,13 @@ export async function generateReportPdfBlob({
       let trdOffset = marginX;
       trdOffset = drawTradeToken(`• ${trdDir.toUpperCase()}`, dirColor, trdOffset);
       trdOffset = drawTradeToken(`— ${trd.scenarioLabel || 'Execution'}`, theme.primaryText, trdOffset);
+      const validityLabel = formatSetupValidityBadge(trd.setupValidity);
+      const validityColor = trd.setupValidity === 'Valid'
+        ? getPdfStatusColor('Bullish', theme.isDark)
+        : trd.setupValidity === 'Invalid'
+        ? getPdfStatusColor('Bearish', theme.isDark)
+        : theme.secondaryText;
+      trdOffset = drawTradeToken(`[${validityLabel}]`, validityColor, trdOffset);
       if (trd.outcome) {
         trdOffset = drawTradeToken(`[${trd.outcome}]`, outcomeColor, trdOffset);
       }
@@ -1178,7 +1227,14 @@ export async function generateReportPdfBlob({
       if (trd.stopLoss) priceParts.push(`SL: ${trd.stopLoss}`);
       if (trd.takeProfit) priceParts.push(`TP: ${trd.takeProfit}`);
       if (trd.exitPrice) priceParts.push(`Exit: ${trd.exitPrice}`);
+      if (trd.plannedRRChoice) {
+        const plannedText = trd.plannedRRChoice === 'Custom' ? trd.plannedRRRatio || 'Custom' : trd.plannedRRChoice;
+        priceParts.push(`Planned R:R: ${plannedText}`);
+      }
       if (trd.riskReward) priceParts.push(`R:R: ${trd.riskReward}`);
+      if (trd.closedDate) {
+        priceParts.push(`Closed: ${trd.closedDate}${trd.closedTime ? ` ${trd.closedTime}` : ''}`);
+      }
 
       if (priceParts.length > 0) {
         const priceLines = doc.splitTextToSize(priceParts.join('  •  '), usableWidth - 3);

@@ -42,6 +42,7 @@ import {
   normalizeWorkspaceVisibilityConfig,
 } from '../types/journal';
 import {
+  areRequiredTimeframesConfirmedAligned,
   calculateOverallAlignment,
   deepClone,
   formatDateInTimezone,
@@ -321,6 +322,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       setIsBoundToReport(bound);
       isBoundRef.current = bound;
       lastSavedSnapshotRef.current = '';
+      prevConfirmedAlignedRef.current = null;
+      setAlignmentCelebrationBanner(null);
     }
   }, [initialData, initialIsBoundReport, isEditingExistingReport]);
 
@@ -538,6 +541,32 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
 
   // Alignment Calculation using enabled timeframes
   const alignment = calculateOverallAlignment(data.timeframes, enabledTimeframes);
+  const confirmedAlignment = areRequiredTimeframesConfirmedAligned(
+    data.timeframes,
+    enabledTimeframes
+  );
+  const [alignmentCelebrationBanner, setAlignmentCelebrationBanner] = useState<{
+    bias: 'Bullish' | 'Bearish';
+    count: number;
+  } | null>(null);
+  const prevConfirmedAlignedRef = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    const isNowAligned = confirmedAlignment.aligned;
+    if (prevConfirmedAlignedRef.current === null) {
+      prevConfirmedAlignedRef.current = isNowAligned;
+      return;
+    }
+    if (!prevConfirmedAlignedRef.current && isNowAligned && confirmedAlignment.bias) {
+      setAlignmentCelebrationBanner({
+        bias: confirmedAlignment.bias,
+        count: enabledTimeframes.length,
+      });
+    } else if (!isNowAligned) {
+      setAlignmentCelebrationBanner(null);
+    }
+    prevConfirmedAlignedRef.current = isNowAligned;
+  }, [confirmedAlignment.aligned, confirmedAlignment.bias, enabledTimeframes.length]);
 
   // Timeframe expansion toggle
   // Keep the same timeframe header visible after collapse or save, preventing jump to scenarios or bottom
@@ -1520,6 +1549,11 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
       }
 
       draftVersionRef.current++;
+      prevConfirmedAlignedRef.current = areRequiredTimeframesConfirmedAligned(
+        nextAnalysis.timeframes,
+        enabledTimeframes
+      ).aligned;
+      setAlignmentCelebrationBanner(null);
       dataRef.current = nextAnalysis;
       setData(nextAnalysis);
       onAnalysisDataChangeRef.current?.(nextAnalysis);
@@ -1573,6 +1607,8 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
     pendingSaveIdRef.current = null;
     const defaultPair = getEnabledInstrumentSymbols(instrumentsConfig)[0] || 'XAUUSD';
     const fresh = createInitialAnalysisData(defaultPair, activeVisibility);
+    prevConfirmedAlignedRef.current = false;
+    setAlignmentCelebrationBanner(null);
     dataRef.current = fresh;
     setData(fresh);
     setIsBoundToReport(false);
@@ -1636,6 +1672,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
           </label>
           <input
             type="text"
+            spellCheck
+            autoCorrect="on"
+            autoCapitalize="sentences"
             value={data.title || ''}
             onChange={(e) => updateAnalysis((prev) => ({ ...prev, title: e.target.value }))}
             placeholder="Optional — name this analysis"
@@ -1809,6 +1848,46 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
         </div>
       </div>
 
+      {/* Dismissible Alignment Celebration Banner (triggers once per false->true confirmed alignment transition) */}
+      {alignmentCelebrationBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="alignment-celebration-banner"
+          className={`mb-5 p-3.5 sm:p-4 rounded-lg border shadow-xs flex items-start justify-between gap-3 animate-in fade-in duration-200 motion-reduce:animate-none ${
+            alignmentCelebrationBanner.bias === 'Bullish'
+              ? 'bg-emerald-50 dark:bg-emerald-950/35 border-emerald-500/50 text-emerald-950 dark:text-emerald-100'
+              : 'bg-rose-50 dark:bg-rose-950/35 border-rose-500/50 text-rose-950 dark:text-rose-100'
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            <CheckCircle
+              className={`w-5 h-5 shrink-0 mt-0.5 ${
+                alignmentCelebrationBanner.bias === 'Bullish'
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-rose-600 dark:text-rose-400'
+              }`}
+            />
+            <div className="space-y-0.5">
+              <div className="text-sm font-bold">
+                All active timeframes aligned — {alignmentCelebrationBanner.bias}
+              </div>
+              <p className="text-xs opacity-90">
+                Directional bias and confirmed market structure now match across your {alignmentCelebrationBanner.count} enabled timeframes. Stay patient for your planned scenario trigger and risk rules.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAlignmentCelebrationBanner(null)}
+            aria-label="Dismiss alignment banner"
+            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer shrink-0 -m-1.5"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* 4-11: Timeframe Sections in exact order (Monthly, Weekly, Daily, 4H, 1H, 15M, 5M, 1M) with bold ~3px separators */}
       <div className="space-y-3 mb-6">
         {enabledTimeframes.map((tf, idx) => {
@@ -1969,6 +2048,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                             </label>
                             <input
                               type="text"
+                              inputMode="decimal"
                               value={editOcLevel}
                               onChange={(e) => setEditOcLevel(e.target.value)}
                               placeholder="Enter opening price (e.g. 5500.25)"
@@ -2096,6 +2176,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
                     </label>
                     <input
                       type="text"
+                      inputMode="decimal"
                       value={newOcLevel}
                       onChange={(e) => setNewOcLevel(e.target.value)}
                       placeholder="Enter opening price (e.g. 5500.25)"
@@ -2140,6 +2221,9 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({
             </label>
             <textarea
               rows={4}
+              spellCheck
+              autoCorrect="on"
+              autoCapitalize="sentences"
               value={data.overallNotes}
               onChange={(e) =>
                 updateAnalysis((prev) => ({ ...prev, overallNotes: e.target.value }))

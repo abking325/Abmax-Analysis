@@ -78,7 +78,7 @@ interface MyJournalSectionProps {
   userId?: string | null;
   visibilityConfig?: JournalVisibilityConfig;
   onRefresh: () => Promise<void>;
-  onOpenSettings?: (tab?: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility') => void;
+  onOpenSettings?: (tab?: 'general' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
 }
 
 export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
@@ -690,6 +690,9 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
           <Search className="w-3.5 h-3.5 text-app-secondary absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
+            spellCheck
+            autoCorrect="on"
+            autoCapitalize="sentences"
             placeholder="Search personal notes..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -798,6 +801,9 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
                 </label>
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   placeholder="e.g. Pre-market psychological check-in"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
@@ -881,6 +887,9 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
               </label>
               <textarea
                 rows={6}
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 placeholder="Write freely: observations on market behavior, rules to remember, discipline checks, mental state, emotional obstacles, or post-session reflections..."
@@ -921,6 +930,9 @@ export const MyJournalSection: React.FC<MyJournalSectionProps> = ({
                 <div className="flex items-center gap-2 pt-1 max-w-sm">
                   <input
                     type="text"
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     placeholder="Add custom tag..."
                     value={customTagInput}
                     onChange={(e) => setCustomTagInput(e.target.value)}

@@ -79,6 +79,9 @@ export const MajorLiquiditySection: React.FC<MajorLiquidityProps> = ({
               </label>
               <textarea
                 rows={3}
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={watchlist}
                 onChange={(e) => onChangeWatchlist?.(e.target.value)}
                 placeholder="List the important liquidity levels and observations to watch today…"

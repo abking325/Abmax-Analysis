@@ -27,6 +27,8 @@ import {
   DEFAULT_PERFORMANCE_VISIBILITY_CONFIG,
   DEFAULT_VISIBILITY_CONFIG,
   InstrumentsConfig,
+  JournalEntry,
+  JournalLaunchContext,
   JournalVisibilityConfig,
   PerformanceVisibilityConfig,
   SavedReport,
@@ -46,6 +48,7 @@ import {
   getUserPerformanceVisibilityConfig,
   getUserVisibilityConfig,
   saveDraft,
+  saveJournalEntry,
   saveReport,
   saveTemplate,
   saveUserInstrumentsConfig,
@@ -75,18 +78,26 @@ import {
 } from './utils/backNavigation';
 
 function MainApp() {
-  const { user, isPasswordRecovery, isRecoveryLinkExpired } = useAuth();
+  const { user, isPasswordRecovery, isRecoveryLinkExpired, oauthError, consumeOAuthReturnView } = useAuth();
   const accountId = user?.id || 'local';
   const initialSession = sessionManager.loadSession(accountId);
 
   // Fresh cold launch or full reload always lands on HOME; in-memory app switching/resuming preserves state
   const [activeView, setActiveView] = useState<ActiveView>('home');
 
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
     const saved = localStorage.getItem('abmax_theme');
-    if (saved === 'dark' || saved === 'light') return saved;
+    if (saved === 'dark' || saved === 'light' || saved === 'system') return saved;
     return 'light';
   });
+
+  const [systemPrefersDark, setSystemPrefersDark] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  const effectiveTheme: 'light' | 'dark' =
+    theme === 'system' ? (systemPrefersDark ? 'dark' : 'light') : theme;
 
   const [visibilityConfig, setVisibilityConfig] = useState<WorkspaceVisibilityConfig>(() => {
     return JSON.parse(JSON.stringify(DEFAULT_VISIBILITY_CONFIG));
@@ -105,7 +116,7 @@ function MainApp() {
   });
 
   const [settingsInitialTab, setSettingsInitialTab] = useState<
-    'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments'
+    'general' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments'
   >('general');
 
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData>(() =>
@@ -171,6 +182,10 @@ function MainApp() {
   const [isReportDetailsOpen, setIsReportDetailsOpen] = useState(false);
   const [isOrganizedReportViewActive, setIsOrganizedReportViewActive] = useState(false);
   const [reportDetailsCloseTrigger, setReportDetailsCloseTrigger] = useState(0);
+
+  // Trade <-> Journal deep-link request coordination
+  const [journalLaunchRequest, setJournalLaunchRequest] = useState<JournalLaunchContext | null>(null);
+  const journalLaunchSeqRef = useRef(0);
 
   // Animation pause state (persisted in localStorage)
   const [isAnimationPaused, setIsAnimationPaused] = useState<boolean>(() => {
@@ -265,23 +280,36 @@ function MainApp() {
     });
   };
 
-  // If URL has recovery token (password reset link) or expired token error, open auth modal immediately
+  // Open AuthModal automatically for password recovery, expired link, or OAuth errors returned via redirect
   useEffect(() => {
-    if (isPasswordRecovery || isRecoveryLinkExpired) {
+    if (isPasswordRecovery || isRecoveryLinkExpired || oauthError) {
       setIsAuthModalOpen(true);
     }
-  }, [isPasswordRecovery, isRecoveryLinkExpired]);
+  }, [isPasswordRecovery, isRecoveryLinkExpired, oauthError]);
 
-  // Sync theme to HTML class & localStorage
+  // Watch OS system color-scheme changes when theme === 'system'
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
+    setSystemPrefersDark(mq.matches);
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', handler);
+      return () => mq.removeEventListener('change', handler);
+    }
+    return undefined;
+  }, []);
+
+  // Sync effective theme to HTML class & persist chosen preference to localStorage
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === 'dark') {
+    if (effectiveTheme === 'dark') {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
     }
     localStorage.setItem('abmax_theme', theme);
-  }, [theme]);
+  }, [theme, effectiveTheme]);
 
   const handleCloseReportDetails = useCallback(() => {
     setIsReportDetailsOpen(false);
@@ -345,6 +373,26 @@ function MainApp() {
     sessionManager.flushNow();
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }, [activeView, handleCloseReportDetails, isBoundToReport, isEditingExistingReport, isReportDetailsOpen]);
+
+  const handleLaunchJournalFromTrade = useCallback(
+    (ctx: Omit<JournalLaunchContext, 'requestId'>) => {
+      journalLaunchSeqRef.current += 1;
+      setJournalLaunchRequest({
+        ...ctx,
+        requestId: journalLaunchSeqRef.current,
+      });
+      void navigateTo('journal');
+    },
+    [navigateTo]
+  );
+
+  const handleConsumeJournalLaunchRequest = useCallback(() => {
+    setJournalLaunchRequest(null);
+  }, []);
+
+  const handleSavePreparationJournal = useCallback(async (entry: JournalEntry) => {
+    await saveJournalEntry(entry);
+  }, []);
 
   const currentAnalysisRef = useRef(currentAnalysis);
   useEffect(() => {
@@ -624,10 +672,22 @@ function MainApp() {
     };
   }, []);
 
-  // Handle user authentication change: fetch cloud data & check migration offer
+  // Handle user authentication change: restore return view after OAuth, fetch cloud data & check migration offer
   useEffect(() => {
     const userId = user?.id;
     if (!userId) return;
+
+    const returnView = consumeOAuthReturnView();
+    if (
+      returnView === 'home' ||
+      returnView === 'analysis' ||
+      returnView === 'reports' ||
+      returnView === 'journal' ||
+      returnView === 'performance' ||
+      returnView === 'live'
+    ) {
+      setActiveView(returnView);
+    }
 
     let isMounted = true;
     const syncAccountData = async () => {
@@ -792,7 +852,7 @@ function MainApp() {
   };
 
   const handleOpenSettingsWithTab = (
-    tab: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments' = 'general'
+    tab: 'general' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments' = 'general'
   ) => {
     setSettingsInitialTab(tab);
     setIsSettingsModalOpen(true);
@@ -810,7 +870,10 @@ function MainApp() {
   };
 
   const toggleTheme = () => {
-    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+    setTheme((prev) => {
+      const currentEffective = prev === 'system' ? (systemPrefersDark ? 'dark' : 'light') : prev;
+      return currentEffective === 'light' ? 'dark' : 'light';
+    });
   };
 
   const isSavedDraftBoundToReport = Boolean(
@@ -1093,11 +1156,13 @@ function MainApp() {
         </div>
       )}
 
-      {/* Compact Header with scroll hide / reveal & Settings Control */}
+      {/* Compact Header with scroll hide / reveal, Theme Switch & Settings Control */}
       <Header
         activeView={activeView}
         onNavigate={navigateTo}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
+        effectiveTheme={effectiveTheme}
+        onToggleTheme={toggleTheme}
         hasUnsavedDraft={hasResumableSession}
         hidden={isOrganizedReportViewActive}
         isReportDetailsOpen={isReportDetailsOpen}
@@ -1184,6 +1249,8 @@ function MainApp() {
             }}
             onNavigateToJournal={() => navigateTo('journal')}
             onNavigateToPerformance={() => navigateTo('performance')}
+            onLaunchJournalFromTrade={handleLaunchJournalFromTrade}
+            onSavePreparationJournal={handleSavePreparationJournal}
             instrumentsConfig={instrumentsConfig}
           />
         )}
@@ -1192,6 +1259,10 @@ function MainApp() {
           <LiveView
             userId={user?.id}
             instrumentsConfig={instrumentsConfig}
+            reports={reportsList}
+            onUpdateReport={handleUpdateReportDirectly}
+            onLaunchJournalFromTrade={handleLaunchJournalFromTrade}
+            onSavePreparationJournal={handleSavePreparationJournal}
             onOpenReport={(reportId) => {
               const matched = reportsList.find((r) => r.id === reportId);
               sessionStateRef.current.reportsUI = {
@@ -1220,6 +1291,8 @@ function MainApp() {
             journalVisibilityConfig={journalVisibilityConfig}
             onOpenSettings={handleOpenSettingsWithTab}
             instrumentsConfig={instrumentsConfig}
+            journalLaunchRequest={journalLaunchRequest}
+            onConsumeJournalLaunchRequest={handleConsumeJournalLaunchRequest}
           />
         )}
 
@@ -1286,13 +1359,16 @@ function MainApp() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         onOpenMigration={() => setIsMigrationModalOpen(true)}
+        activeView={activeView}
       />
 
-      {/* Settings Modal (Account, Theme Chooser, Admin Panel Workspace Visibility, Candle Animation) */}
+      {/* Settings Modal (Account, Theme under General, Admin Panel Workspace Visibility, Candle Animation) */}
       <SettingsModal
         isOpen={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
         theme={theme}
+        effectiveTheme={effectiveTheme}
+        onChangeTheme={setTheme}
         onToggleTheme={toggleTheme}
         onOpenAccount={() => setIsAuthModalOpen(true)}
         isAnimationPaused={isAnimationPaused}

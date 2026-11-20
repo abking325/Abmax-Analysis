@@ -64,9 +64,11 @@ import {
   setLocalAccountResetEpoch,
   getLocalResetScopeCounts,
   clearLocalAccountDataForReset,
+  getScopedContextualSuggestions,
   closeDBConnection,
 } from '../services/db';
 import { supabase } from '../services/supabase';
+import { parseOAuthCallbackParams, formatAuthError } from '../utils/authErrorUtils';
 import {
   registerBackHandler,
   dispatchTopmostBackHandler,
@@ -98,6 +100,8 @@ import {
   normalizeInstrumentsConfig,
   getEnabledInstrumentSymbols,
   getSelectorInstrumentOptions,
+  normalizeStructureDirectionAndConfirmation,
+  normalizeReadinessStates,
 } from '../types/journal';
 import { getPdfStatusColor, generateReportPdfBlob } from '../services/pdfExport';
 import { exportPeriodReport, generatePeriodPdfBlob, extractDeduplicatedTrades, calculatePeriodPerformance } from '../services/periodExport';
@@ -150,6 +154,15 @@ import {
   formatDateInTimezone,
   formatTimeInTimezone,
   hasMeaningfulAnalysisWork,
+  areRequiredTimeframesConfirmedAligned,
+  getTimeframeStructureAlignment,
+  computeLiveRRFromPrices,
+  checkPlannedRRMismatch,
+  calculateTakeProfitForPlannedRR,
+  formatSetupValidityBadge,
+  formatTradeCombinedStatus,
+  sanitizeDecimalInput,
+  parseLocaleDecimal,
 } from '../utils/analysisUtils';
 import {
   isQuoteStale,
@@ -5234,17 +5247,23 @@ async function runTests() {
     );
 
     const idxGeneral = settingsSrc.indexOf("setActiveTab('general')");
-    const idxTheme = settingsSrc.indexOf("setActiveTab('theme')");
+    const idxThemeTab = settingsSrc.indexOf("setActiveTab('theme')");
     const idxWorkspace = settingsSrc.indexOf("setActiveTab('admin')");
     const idxJournalVis = settingsSrc.indexOf("setActiveTab('journal_visibility')");
     const idxPerfVis = settingsSrc.indexOf("setActiveTab('performance_visibility')");
+    const idxInstruments = settingsSrc.indexOf("setActiveTab('instruments')");
     assert(
-      idxGeneral !== -1 &&
-        idxGeneral < idxTheme &&
-        idxTheme < idxWorkspace &&
+      idxThemeTab === -1 &&
+        idxGeneral !== -1 &&
+        idxGeneral < idxWorkspace &&
         idxWorkspace < idxJournalVis &&
-        idxJournalVis < idxPerfVis,
-      'Settings tabs ordered exactly: General -> Theme -> Workspace -> Journal Sections -> Performance Sections'
+        idxJournalVis < idxPerfVis &&
+        idxPerfVis < idxInstruments &&
+        settingsSrc.includes("onChangeTheme('light')") &&
+        settingsSrc.includes("onChangeTheme('dark')") &&
+        settingsSrc.includes("onChangeTheme('system')") &&
+        headerSrc.includes('onToggleTheme'),
+      'Standalone Theme tab removed (moved inside Settings General + Header toggle); remaining tabs ordered: General -> Workspace -> Journal Sections -> Performance Sections -> Instruments'
     );
 
     const idxTabTrading = journalSrc.indexOf("setMainJournalTab('trading-journal')");
@@ -6452,6 +6471,261 @@ async function runTests() {
     void uploadDraftToCloud;
     void clearDraftFromCloud;
     void resetCloudDraftVersionTracking;
+
+    // =========================================================================
+    // 13. STAGE 1–7 POLISH VERIFICATION
+    // =========================================================================
+
+    // 13.1 Legacy combined structure migration & separated Direction + Confirmation
+    const legWaitOnly = normalizeStructureDirectionAndConfirmation('Waiting', undefined);
+    const legWait = normalizeStructureDirectionAndConfirmation('Bearish (Waiting)' as any, undefined);
+    const legConf = normalizeStructureDirectionAndConfirmation('Bullish (Confirmed)' as any, undefined);
+    const legPlain = normalizeStructureDirectionAndConfirmation('Neutral', 'Confirmed');
+    assert(
+      legWaitOnly.direction === '' &&
+        legWaitOnly.confirmation === 'Waiting' &&
+        legWait.direction === 'Bearish' &&
+        legWait.confirmation === 'Waiting' &&
+        legConf.direction === 'Bullish' &&
+        legConf.confirmation === 'Confirmed' &&
+        legPlain.direction === 'Neutral' &&
+        legPlain.confirmation === 'Confirmed',
+      'normalizeStructureDirectionAndConfirmation splits legacy combined strings & canonicalizes status cleanly'
+    );
+
+    // 13.2 Timeframe alignment vs Waiting confirmation gating
+    const tfWaitData = createEmptyTimeframeData('Daily');
+    tfWaitData.overallBias = 'Bearish';
+    tfWaitData.swing = { ...tfWaitData.swing, direction: 'Bearish', confirmation: 'Confirmed' };
+    tfWaitData.internal = { ...tfWaitData.internal, direction: 'Bearish', confirmation: 'Waiting' };
+    tfWaitData.fractal = { ...tfWaitData.fractal, direction: 'Bearish', confirmation: 'Confirmed' };
+    const tfWaitStatus = getTimeframeStructureAlignment(tfWaitData);
+    assert(
+      tfWaitStatus.status === 'incomplete' &&
+        tfWaitStatus.label === 'Waiting confirmation' &&
+        !isDeepAnalysisAligned(tfWaitData),
+      'Any structure in Waiting confirmation produces Waiting confirmation status and blocks Deep Analysis Aligned'
+    );
+
+    const alignedTfMap = createInitialAnalysisData('XAUUSD').timeframes;
+    (['Monthly', 'Weekly'] as TimeframeId[]).forEach((tf) => {
+      alignedTfMap[tf] = {
+        ...createEmptyTimeframeData(tf),
+        overallBias: 'Bearish',
+        swing: { direction: 'Bearish', confirmation: 'Confirmed', high: '', low: '', bosAt: '', history: [] },
+        internal: { direction: 'Bearish', confirmation: 'Confirmed', high: '', low: '', ibosAt: '', history: [] },
+        fractal: { direction: 'Bearish', confirmation: 'Confirmed', fractalBosAt: '', history: [] },
+      };
+    });
+    const waitingTfs = deepClone(alignedTfMap);
+    waitingTfs.Weekly.swing.confirmation = 'Waiting';
+    const checkWaiting = areRequiredTimeframesConfirmedAligned(waitingTfs, ['Monthly', 'Weekly']);
+    const checkConfirmed = areRequiredTimeframesConfirmedAligned(alignedTfMap, ['Monthly', 'Weekly']);
+    assert(
+      checkWaiting.aligned === false &&
+        checkConfirmed.aligned === true &&
+        checkConfirmed.bias === 'Bearish',
+      'areRequiredTimeframesConfirmedAligned enforces both matching directional bias and Confirmed structures'
+    );
+
+    // 13.3 Planned R:R, Live R:R computation, Calculate TP, decimal sanitization
+    assert(
+      sanitizeDecimalInput('2685.') === '2685.' &&
+        sanitizeDecimalInput('1.50') === '1.50' &&
+        sanitizeDecimalInput('1,25') === '1.25' &&
+        parseLocaleDecimal('2685,50') === 2685.5,
+      'Decimal sanitization preserves trailing decimals/zeros and converts locale commas'
+    );
+    const rrValid = computeLiveRRFromPrices({
+      direction: 'Buy',
+      entryPrice: '2680.00',
+      stopLoss: '2675.00',
+      takeProfit: '2690.00',
+    });
+    const rrInvalidSl = computeLiveRRFromPrices({
+      direction: 'Buy',
+      entryPrice: '2680.00',
+      stopLoss: '2685.00',
+      takeProfit: '2695.00',
+    });
+    const tpCalc = calculateTakeProfitForPlannedRR({
+      direction: 'Buy',
+      entryPrice: '2680.00',
+      stopLoss: '2675.00',
+      targetMultiplier: 2,
+    });
+    const rrMismatchYes = checkPlannedRRMismatch({
+      plannedRRChoice: '1:3',
+      computedRatio: rrValid.ratio,
+    });
+    const rrMismatchNo = checkPlannedRRMismatch({
+      plannedRRChoice: '1:2',
+      computedRatio: rrValid.ratio,
+    });
+    assert(
+      rrValid.ratio === 2 &&
+        rrValid.formatted === '1:2' &&
+        rrInvalidSl.validRisk === false &&
+        Boolean(rrInvalidSl.invalidReason) &&
+        tpCalc === '2690.00' &&
+        rrMismatchYes.hasMismatch === true &&
+        rrMismatchNo.hasMismatch === false,
+      'Live R:R, Buy/Sell Stop Loss validation, explicit Calculate TP, and non-destructive mismatch check behave accurately'
+    );
+
+    // 13.4 Setup Validity remains strictly independent from Win/Loss outcomes
+    const validLossTrade: Pick<RecordedTrade, 'setupValidity' | 'outcome'> = {
+      setupValidity: 'Valid',
+      outcome: 'Loss',
+    };
+    const invalidWinTrade: Pick<RecordedTrade, 'setupValidity' | 'outcome'> = {
+      setupValidity: 'Invalid',
+      outcome: 'Win',
+    };
+    assert(
+      formatSetupValidityBadge('Valid') === 'Valid setup' &&
+        formatTradeCombinedStatus(validLossTrade) === 'Valid setup · Loss' &&
+        formatTradeCombinedStatus(invalidWinTrade) === 'Invalid setup · Win',
+      'Setup Validity badges render independently of Win/Loss outcomes'
+    );
+
+    // 13.5 Google OAuth callback parser & error sanitization
+    const pkceParsed = parseOAuthCallbackParams('com.abmax.analysis://auth/callback?code=pkce_code_123');
+    const hashParsed = parseOAuthCallbackParams(
+      'https://example.app/#access_token=secret_acc_tok&refresh_token=secret_ref_tok&type=recovery'
+    );
+    const cancelParsed = parseOAuthCallbackParams(
+      'com.abmax.analysis://auth/callback?error=access_denied&error_description=The+user+canceled+sign+in'
+    );
+    const formattedCancel = formatAuthError({
+      message: `${cancelParsed.error || ''}: ${cancelParsed.errorDescription || ''}`,
+    });
+    const formattedRedirectErr = formatAuthError({
+      message: 'redirect_uri_mismatch with access_token=leaked_secret_xyz',
+    });
+    assert(
+      pkceParsed.code === 'pkce_code_123' &&
+        pkceParsed.hasAuthPayload &&
+        hashParsed.accessToken === 'secret_acc_tok' &&
+        hashParsed.refreshToken === 'secret_ref_tok' &&
+        hashParsed.type === 'recovery' &&
+        cancelParsed.error === 'access_denied' &&
+        formattedCancel.headline.toLowerCase().includes('cancelled') &&
+        formattedRedirectErr.headline.toLowerCase().includes('redirect') &&
+        !formattedRedirectErr.headline.includes('leaked_secret_xyz') &&
+        !(formattedRedirectErr.details || '').includes('leaked_secret_xyz'),
+      'parseOAuthCallbackParams and formatAuthError parse PKCE/hash/cancellation safely without leaking tokens'
+    );
+
+    // 13.6 Journal 3-mood cap & Scoped contextual suggestions isolation (excluding My Journal + foreign accounts)
+    const cappedMoods = normalizeReadinessStates({
+      readinessStates: ['Optimal / Calm', 'Focused', 'Anxious', 'Fatigued', 'Distracted'],
+    });
+    assert(
+      cappedMoods.length === 3 &&
+        cappedMoods[0] === 'Optimal / Calm' &&
+        cappedMoods[2] === 'Anxious',
+      'normalizeReadinessStates caps emotional readiness selection at maximum 3 states'
+    );
+
+    await saveJournalEntry({
+      id: 'jrn_scope_owner_trade',
+      userId: 'user_suggest_a',
+      entryType: 'post_trade',
+      date: '2026-11-20',
+      time: '09:00',
+      pair: 'XAUUSD',
+      session: 'London',
+      title: 'Scoped Public Setup',
+      preTrade: { setupTag: 'OwnerSweepSetup' },
+      postTrade: { mistakeTags: ['OwnerMistakeTag'], lessonTags: ['OwnerLessonTag'] },
+      tags: ['OwnerTag'],
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+    await saveJournalEntry({
+      id: 'jrn_scope_owner_private',
+      userId: 'user_suggest_a',
+      entryType: 'my_journal',
+      date: '2026-11-20',
+      time: '09:30',
+      pair: 'GBPUSD',
+      session: 'London',
+      title: 'Private My Journal Must Never Suggest',
+      preTrade: { setupTag: 'PRIVATE_MY_JOURNAL_SECRET_SETUP' },
+      tags: ['PRIVATE_MY_JOURNAL_TAG'],
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+    await saveJournalEntry({
+      id: 'jrn_scope_foreign_user',
+      userId: 'user_suggest_b',
+      entryType: 'post_trade',
+      date: '2026-11-20',
+      time: '10:00',
+      pair: 'NAS100',
+      session: 'NY AM',
+      title: 'Foreign User Setup',
+      preTrade: { setupTag: 'FOREIGN_USER_SECRET_SETUP' },
+      tags: ['FOREIGN_USER_TAG'],
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+    const sugA = await getScopedContextualSuggestions('user_suggest_a');
+    assert(
+      sugA.setupTags.includes('OwnerSweepSetup') &&
+        sugA.mistakeTags.includes('OwnerMistakeTag') &&
+        sugA.lessonTags.includes('OwnerLessonTag') &&
+        sugA.tags.includes('OwnerTag') &&
+        !sugA.setupTags.includes('PRIVATE_MY_JOURNAL_SECRET_SETUP') &&
+        !sugA.tags.includes('PRIVATE_MY_JOURNAL_TAG') &&
+        !sugA.usedInstruments.includes('GBPUSD') &&
+        !sugA.setupTags.includes('FOREIGN_USER_SECRET_SETUP') &&
+        !sugA.tags.includes('FOREIGN_USER_TAG') &&
+        !sugA.usedInstruments.includes('NAS100'),
+      'getScopedContextualSuggestions respects account ownership and strictly excludes My Journal entries & foreign users'
+    );
+
+    // 13.7 Source Contracts across Stage 4–7 components
+    const idxEq = tfSectionSrc.indexOf('Equilibrium / Price Location');
+    const idxTfNote = tfSectionSrc.indexOf('data-testid={`timeframe-note-${timeframe}`}');
+    assert(
+      idxEq !== -1 &&
+        idxTfNote !== -1 &&
+        idxEq < idxTfNote &&
+        tfSectionSrc.includes('aria-label={`Collapse ${timeframe} Deep Analysis`}'),
+      'TimeframeSection places Equilibrium / Price Location directly above Timeframe Note and puts Collapse neatly in footer'
+    );
+    const reportsViewPolishSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/ReportsView.tsx'), 'utf8');
+    const perfViewPolishSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/PerformanceView.tsx'), 'utf8');
+    assert(
+      journalSrc.includes("const JOURNAL_PHASE_STORAGE_KEY = 'abmax_journal_phase_open_state'") &&
+        journalSrc.includes('1. Daily Preparation') &&
+        journalSrc.includes('2. Pre-Trade Checklist') &&
+        journalSrc.includes('3. In-Trade Management') &&
+        journalSrc.includes('4. Review &amp; Discipline') &&
+        journalSrc.includes('5. Daily Reflection') &&
+        journalSrc.includes('spellCheck'),
+      'JournalView implements vertical 5-phase collapsible sections with persistent toggle state & keyboard spelling hints'
+    );
+    assert(
+      reportsViewPolishSrc.includes('isJournalEntryOwnedByScope') &&
+        reportsViewPolishSrc.includes("entry.entryType !== 'my-journal'") &&
+        reportsViewPolishSrc.includes("'my_journal'"),
+      'ReportsView filters Journal Reports strictly by active account ownership and excludes My Journal entries'
+    );
+    assert(
+      perfViewPolishSrc.includes('Setup Validity Review') &&
+        perfViewPolishSrc.includes('setupValidityStats'),
+      'PerformanceView tracks Setup Validity independently of Win/Loss outcomes'
+    );
+    assert(
+      liveViewSrc.includes('Load Report Reference') &&
+        liveViewSrc.includes('Record Trade') &&
+        !liveViewSrc.includes('Convert to Report') &&
+        !liveViewSrc.includes('Convert to Trade'),
+      'LiveView exposes Load Report Reference and independent Record Trade without Convert to Report / Trade'
+    );
   } catch (err) {
     assert(false, 'Test Suite execution failure', (err as Error).message);
   }

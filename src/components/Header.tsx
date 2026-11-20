@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Moon, Sun } from 'lucide-react';
 import { NavigationDrawer } from './NavigationDrawer';
 
 export type ActiveView = 'home' | 'analysis' | 'reports' | 'journal' | 'performance' | 'live';
@@ -7,6 +8,8 @@ interface HeaderProps {
   activeView: ActiveView;
   onNavigate: (view: ActiveView) => void;
   onOpenSettings: () => void;
+  effectiveTheme?: 'light' | 'dark';
+  onToggleTheme?: () => void;
   hasUnsavedDraft?: boolean;
   hidden?: boolean;
   isReportDetailsOpen?: boolean;
@@ -16,6 +19,8 @@ export const Header: React.FC<HeaderProps> = ({
   activeView,
   onNavigate,
   onOpenSettings,
+  effectiveTheme = 'light',
+  onToggleTheme,
   hidden = false,
   isReportDetailsOpen = false,
 }) => {
@@ -85,6 +90,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   // Tab index for interactive elements: -1 when hidden so hidden elements cannot be focused
   const buttonTabIndex = isVisible ? 0 : -1;
+  const isDark = effectiveTheme === 'dark';
 
   if (hidden) {
     return null;
@@ -108,7 +114,7 @@ export const Header: React.FC<HeaderProps> = ({
           isVisible ? 'header-visible shadow-2xs' : 'header-hidden pointer-events-none'
         }`}
       >
-        <div className="w-full px-3 sm:px-6 py-1.5 sm:py-2 flex items-center justify-between gap-x-2 sm:gap-x-4 pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))]">
+        <div className="w-full px-2 sm:px-6 py-1.5 sm:py-2 flex items-center justify-between gap-x-1 sm:gap-x-4 pl-[max(0.5rem,env(safe-area-inset-left,0px))] pr-[max(0.5rem,env(safe-area-inset-right,0px))]">
           {/* Left: Brand Zone - Two-line wordmark with right-aligned smaller Analysis */}
           <button
             type="button"
@@ -118,10 +124,10 @@ export const Header: React.FC<HeaderProps> = ({
             title="AbMax Analysis - Go to Home"
             aria-label="AbMax Analysis Home"
           >
-            <span className="font-extrabold text-[21px] sm:text-[25px] leading-none tracking-tight text-emerald-theme whitespace-nowrap block">
+            <span className="font-extrabold text-[19px] sm:text-[25px] leading-none tracking-tight text-emerald-theme whitespace-nowrap block">
               AbMax
             </span>
-            <span className="text-[9px] sm:text-[10px] font-semibold tracking-[0.18em] uppercase text-app-secondary dark:text-slate-400 -mt-0.5 block self-end whitespace-nowrap">
+            <span className="text-[8px] sm:text-[10px] font-semibold tracking-[0.16em] sm:tracking-[0.18em] uppercase text-app-secondary dark:text-slate-400 -mt-0.5 block self-end whitespace-nowrap">
               Analysis
             </span>
           </button>
@@ -132,7 +138,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('home')}
-              className={`px-2 sm:px-3 py-1.5 min-h-[36px] text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
+              className={`px-1.5 sm:px-3 py-1.5 min-h-[36px] text-[11px] sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
                 activeView === 'home'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -145,7 +151,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('analysis')}
-              className={`px-2 sm:px-3 py-1.5 min-h-[36px] text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
+              className={`px-1.5 sm:px-3 py-1.5 min-h-[36px] text-[11px] sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
                 activeView === 'analysis'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -158,7 +164,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               tabIndex={buttonTabIndex}
               onClick={() => onNavigate('reports')}
-              className={`px-2 sm:px-3 py-1.5 min-h-[36px] text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
+              className={`px-1.5 sm:px-3 py-1.5 min-h-[36px] text-[11px] sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-emerald-500 cursor-pointer ${
                 activeView === 'reports'
                   ? 'bg-emerald-pale text-emerald-theme font-semibold'
                   : 'text-app-secondary hover:text-app-main hover:bg-app-field'
@@ -168,8 +174,42 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </nav>
 
-          {/* Right: Three-line Hamburger Menu Button with >=44x44px Tap Target */}
-          <div className="flex items-center shrink-0 z-20">
+          {/* Right: Compact iPhone-style Theme Switch + Hamburger Menu Button */}
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0 z-20">
+            {onToggleTheme && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isDark}
+                aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                title={isDark ? 'Dark mode active — switch to Light' : 'Light mode active — switch to Dark'}
+                tabIndex={buttonTabIndex}
+                onClick={onToggleTheme}
+                className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0"
+              >
+                <span
+                  aria-hidden="true"
+                  className={`relative inline-flex items-center w-[42px] h-[24px] rounded-full transition-colors duration-200 border ${
+                    isDark
+                      ? 'bg-emerald-600 border-emerald-500'
+                      : 'bg-slate-200 border-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-flex items-center justify-center w-[18px] h-[18px] rounded-full bg-white shadow-xs transition-transform duration-200 ${
+                      isDark ? 'translate-x-[20px]' : 'translate-x-[2px]'
+                    }`}
+                  >
+                    {isDark ? (
+                      <Moon className="w-2.5 h-2.5 text-emerald-700" />
+                    ) : (
+                      <Sun className="w-2.5 h-2.5 text-amber-500" />
+                    )}
+                  </span>
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               tabIndex={buttonTabIndex}
@@ -210,3 +250,4 @@ export const Header: React.FC<HeaderProps> = ({
     </>
   );
 };
+

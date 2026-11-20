@@ -1,10 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, TrendingUp, AlertCircle, Edit3, Image as ImageIcon } from 'lucide-react';
 import {
+  X,
+  TrendingUp,
+  AlertCircle,
+  Edit3,
+  ChevronDown,
+  ChevronUp,
+  Calculator,
+  BookOpen,
+} from 'lucide-react';
+import {
+  EmotionalReadiness,
   ImageAttachment,
+  JournalEntry,
+  PlannedRRChoice,
   PlannedScenario,
   RecordedTrade,
   SavedReport,
+  SetupValidity,
   StrategySnapshot,
   TimeframeId,
   TradingSession,
@@ -14,7 +27,15 @@ import { ImageAttachmentManager } from './ImageAttachmentManager';
 import { ImageViewerModal } from './ImageViewerModal';
 import { StrategySelector } from './StrategySelector';
 import { registerBackHandler } from '../utils/backNavigation';
-import { deepClone } from '../utils/analysisUtils';
+import {
+  calculateTakeProfitForPlannedRR,
+  checkPlannedRRMismatch,
+  computeLiveRRFromPrices,
+  deepClone,
+  getPlannedRRTargetMultiplier,
+  sanitizeDecimalInput,
+} from '../utils/analysisUtils';
+import { normalizeAccountScope, saveJournalEntry } from '../services/db';
 
 interface TakeTradeModalProps {
   isOpen: boolean;
@@ -22,6 +43,7 @@ interface TakeTradeModalProps {
   report: SavedReport;
   tradeToEdit?: RecordedTrade | null;
   onSaveTrade: (trade: RecordedTrade) => Promise<void>;
+  onSavePreparationJournal?: (entry: JournalEntry) => Promise<void>;
   userId?: string | null;
   initialTradeDraft?: {
     selectedScenarioId: string;
@@ -33,17 +55,39 @@ interface TakeTradeModalProps {
     takeProfit: string;
     exitPrice: string;
     riskReward: string;
+    plannedRRChoice?: PlannedRRChoice | '';
+    plannedRRRatio?: string;
+    setupValidity?: SetupValidity;
     outcome: TradeOutcome;
     rulesFollowed: boolean;
     notes: string;
     tradeDate: string;
     tradeTime: string;
+    closedDate?: string;
+    closedTime?: string;
     strategy?: string;
     strategyId?: string;
     strategySnapshot?: StrategySnapshot;
+    sourceReportId?: string;
+    sourceReportTitle?: string;
   } | null;
   onTradeDraftChange?: (draft: any) => void;
 }
+
+const PLANNED_RR_PRESETS: PlannedRRChoice[] = ['1:1', '1:1.5', '1:2', '1:3', 'Custom'];
+const SETUP_VALIDITY_OPTIONS: Array<{ value: SetupValidity; label: string }> = [
+  { value: 'Valid', label: 'Valid' },
+  { value: 'Invalid', label: 'Invalid' },
+  { value: 'Not reviewed', label: 'Not reviewed' },
+];
+const PREP_READINESS_OPTIONS: EmotionalReadiness[] = [
+  'Optimal / Calm',
+  'Focused',
+  'Anxious',
+  'Fatigued',
+  'Overconfident',
+  'Distracted',
+];
 
 export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   isOpen,
@@ -51,6 +95,7 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   report,
   tradeToEdit = null,
   onSaveTrade,
+  onSavePreparationJournal,
   userId,
   initialTradeDraft,
   onTradeDraftChange,
@@ -76,6 +121,13 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   const [takeProfit, setTakeProfit] = useState(initialTradeDraft?.takeProfit || '');
   const [exitPrice, setExitPrice] = useState(initialTradeDraft?.exitPrice || '');
   const [riskReward, setRiskReward] = useState(initialTradeDraft?.riskReward || '');
+  const [plannedRRChoice, setPlannedRRChoice] = useState<PlannedRRChoice | ''>(
+    initialTradeDraft?.plannedRRChoice || ''
+  );
+  const [plannedRRRatio, setPlannedRRRatio] = useState(initialTradeDraft?.plannedRRRatio || '');
+  const [setupValidity, setSetupValidity] = useState<SetupValidity>(
+    initialTradeDraft?.setupValidity || 'Not reviewed'
+  );
   const [outcome, setOutcome] = useState<TradeOutcome>(initialTradeDraft?.outcome || 'Open');
   const [rulesFollowed, setRulesFollowed] = useState<boolean>(
     initialTradeDraft?.rulesFollowed !== undefined ? initialTradeDraft.rulesFollowed : true
@@ -89,6 +141,8 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   const [tradeTime, setTradeTime] = useState(() => {
     return initialTradeDraft?.tradeTime || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   });
+  const [closedDate, setClosedDate] = useState(initialTradeDraft?.closedDate || '');
+  const [closedTime, setClosedTime] = useState(initialTradeDraft?.closedTime || '');
   const [strategy, setStrategy] = useState<string>(initialTradeDraft?.strategy || '');
   const [strategyId, setStrategyId] = useState<string | undefined>(initialTradeDraft?.strategyId);
   const [strategySnapshot, setStrategySnapshot] = useState<StrategySnapshot | undefined>(() =>
@@ -96,7 +150,15 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   );
   const hasManualStrategyRef = useRef(false);
 
+  // Collapsible Preparation & Mindset state (optional)
+  const [isPrepOpen, setIsPrepOpen] = useState(false);
+  const [prepIntention, setPrepIntention] = useState('');
+  const [prepReadiness, setPrepReadiness] = useState<EmotionalReadiness>('');
+  const [prepNotes, setPrepNotes] = useState('');
+  const [alsoSavePrepToJournal, setAlsoSavePrepToJournal] = useState(false);
+
   const [isSaving, setIsSaving] = useState(false);
+  const isSavingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
 
@@ -120,11 +182,16 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         takeProfit,
         exitPrice,
         riskReward,
+        plannedRRChoice,
+        plannedRRRatio,
+        setupValidity,
         outcome,
         rulesFollowed,
         notes,
         tradeDate,
         tradeTime,
+        closedDate,
+        closedTime,
         strategy,
         strategyId,
         strategySnapshot,
@@ -143,11 +210,16 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
     takeProfit,
     exitPrice,
     riskReward,
+    plannedRRChoice,
+    plannedRRRatio,
+    setupValidity,
     outcome,
     rulesFollowed,
     notes,
     tradeDate,
     tradeTime,
+    closedDate,
+    closedTime,
     strategy,
     strategyId,
     strategySnapshot,
@@ -157,6 +229,11 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     hasManualStrategyRef.current = false;
+    setIsPrepOpen(false);
+    setPrepIntention('');
+    setPrepReadiness('');
+    setPrepNotes('');
+    setAlsoSavePrepToJournal(false);
 
     if (tradeToEdit) {
       // Editing existing trade: load tradeToEdit directly
@@ -169,12 +246,17 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       setTakeProfit(tradeToEdit.takeProfit || '');
       setExitPrice(tradeToEdit.exitPrice || '');
       setRiskReward(tradeToEdit.riskReward || '');
+      setPlannedRRChoice(tradeToEdit.plannedRRChoice || '');
+      setPlannedRRRatio(tradeToEdit.plannedRRRatio || '');
+      setSetupValidity(tradeToEdit.setupValidity || 'Not reviewed');
       setOutcome(tradeToEdit.outcome || 'Open');
       setRulesFollowed(tradeToEdit.rulesFollowed !== false);
       setNotes(tradeToEdit.notes || '');
       setImages(tradeToEdit.images ? JSON.parse(JSON.stringify(tradeToEdit.images)) : []);
       setTradeDate(tradeToEdit.date || report.date || new Date().toISOString().slice(0, 10));
       setTradeTime(tradeToEdit.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+      setClosedDate(tradeToEdit.closedDate || '');
+      setClosedTime(tradeToEdit.closedTime || '');
       setStrategy(tradeToEdit.strategy || tradeToEdit.strategySnapshot?.name || '');
       setStrategyId(tradeToEdit.strategyId);
       setStrategySnapshot(
@@ -210,12 +292,17 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
       setTakeProfit('');
       setExitPrice('');
       setRiskReward('');
+      setPlannedRRChoice('');
+      setPlannedRRRatio('');
+      setSetupValidity('Not reviewed');
       setOutcome('Open');
       setRulesFollowed(true);
       setNotes('');
       setImages([]);
       setTradeDate(report.date || new Date().toISOString().slice(0, 10));
       setTradeTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+      setClosedDate('');
+      setClosedTime('');
     }
     setError(null);
     setShowUnsavedWarning(false);
@@ -237,11 +324,16 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         takeProfit !== (tradeToEdit.takeProfit || '') ||
         exitPrice !== (tradeToEdit.exitPrice || '') ||
         riskReward !== (tradeToEdit.riskReward || '') ||
+        plannedRRChoice !== (tradeToEdit.plannedRRChoice || '') ||
+        plannedRRRatio !== (tradeToEdit.plannedRRRatio || '') ||
+        setupValidity !== (tradeToEdit.setupValidity || 'Not reviewed') ||
         outcome !== (tradeToEdit.outcome || 'Open') ||
         rulesFollowed !== (tradeToEdit.rulesFollowed !== false) ||
         notes !== (tradeToEdit.notes || '') ||
         tradeDate !== (tradeToEdit.date || '') ||
         tradeTime !== (tradeToEdit.time || '') ||
+        closedDate !== (tradeToEdit.closedDate || '') ||
+        closedTime !== (tradeToEdit.closedTime || '') ||
         strategy !== (tradeToEdit.strategy || tradeToEdit.strategySnapshot?.name || '') ||
         strategyId !== tradeToEdit.strategyId ||
         curImagesJson !== origImagesJson
@@ -253,6 +345,10 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
         takeProfit ||
         exitPrice ||
         notes ||
+        plannedRRChoice ||
+        plannedRRRatio ||
+        prepIntention ||
+        prepNotes ||
         images.length > 0 ||
         hasManualStrategyRef.current
     );
@@ -317,14 +413,60 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
   };
 
   const selectedScenario = scenarios.find((s) => s.id === selectedScenarioId);
+  const liveRR = computeLiveRRFromPrices({
+    direction,
+    entryPrice,
+    stopLoss,
+    takeProfit,
+  });
+  const targetMultiplier = getPlannedRRTargetMultiplier(plannedRRChoice, plannedRRRatio);
+  const calculatedTP =
+    targetMultiplier !== null
+      ? calculateTakeProfitForPlannedRR({
+          direction,
+          entryPrice,
+          stopLoss,
+          targetMultiplier,
+        })
+      : null;
+  const rrMismatch = checkPlannedRRMismatch({
+    plannedRRChoice: plannedRRChoice || undefined,
+    plannedRRRatio,
+    computedRatio: liveRR.ratio,
+  });
+
+  const handleOutcomeSelect = (nextOutcome: TradeOutcome) => {
+    setOutcome(nextOutcome);
+    if (nextOutcome && nextOutcome !== 'Open') {
+      if (!closedDate) {
+        setClosedDate(new Date().toISOString().slice(0, 10));
+      }
+      if (!closedTime) {
+        setClosedTime(
+          new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+        );
+      }
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSaving) return; // Prevent repeated submission
+    if (isSavingRef.current || isSaving) return; // Prevent synchronous & async repeated submission
+    isSavingRef.current = true;
     setIsSaving(true);
     setError(null);
 
     try {
+      const isClosedOutcome = Boolean(outcome && outcome !== 'Open');
+      const nowMs = Date.now();
+      const resolvedClosedDate = isClosedOutcome ? closedDate || new Date().toISOString().slice(0, 10) : undefined;
+      const resolvedClosedTime = isClosedOutcome
+        ? closedTime || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+        : undefined;
+      const resolvedClosedAt = isClosedOutcome
+        ? tradeToEdit?.closedAt || nowMs
+        : undefined;
+
       if (isEditing && tradeToEdit) {
         // Save Changes: Update existing trade with original ID and preserved timestamps/snapshots
         const updatedTrade: RecordedTrade = {
@@ -340,13 +482,19 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
           takeProfit: takeProfit.trim(),
           exitPrice: exitPrice.trim(),
           riskReward: riskReward.trim(),
+          plannedRRChoice: plannedRRChoice || undefined,
+          plannedRRRatio: plannedRRChoice === 'Custom' ? plannedRRRatio.trim() || undefined : undefined,
+          setupValidity,
           outcome,
           rulesFollowed,
           notes: notes.trim(),
           images,
           date: tradeDate,
           time: tradeTime,
-          updatedAt: Date.now(),
+          closedAt: resolvedClosedAt,
+          closedDate: resolvedClosedDate,
+          closedTime: resolvedClosedTime,
+          updatedAt: nowMs,
         };
 
         await onSaveTrade(updatedTrade);
@@ -366,7 +514,7 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
             : undefined;
 
         const newTrade: RecordedTrade = {
-          id: `trd_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          id: `trd_${nowMs}_${Math.random().toString(36).substring(2, 9)}`,
           scenarioId: selectedScenarioId !== 'manual' ? selectedScenarioId : undefined,
           scenarioLabel:
             selectedScenarioId !== 'manual' && selectedScenario
@@ -385,22 +533,71 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
           takeProfit: takeProfit.trim(),
           exitPrice: exitPrice.trim(),
           riskReward: riskReward.trim(),
+          plannedRRChoice: plannedRRChoice || undefined,
+          plannedRRRatio: plannedRRChoice === 'Custom' ? plannedRRRatio.trim() || undefined : undefined,
+          setupValidity,
           outcome,
           rulesFollowed,
           notes: notes.trim(),
           images,
           date: tradeDate,
           time: tradeTime,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
+          closedAt: resolvedClosedAt,
+          closedDate: resolvedClosedDate,
+          closedTime: resolvedClosedTime,
+          sourceReportId: initialTradeDraft?.sourceReportId || report.id,
+          sourceReportTitle: initialTradeDraft?.sourceReportTitle || report.title,
+          createdAt: nowMs,
+          updatedAt: nowMs,
         };
 
         await onSaveTrade(newTrade);
+
+        // Only persist optional linked preparation note when checkbox is checked AND trade submission succeeded
+        if (
+          alsoSavePrepToJournal &&
+          (prepIntention.trim() || prepNotes.trim() || prepReadiness)
+        ) {
+          const scopeOwner = normalizeAccountScope(userId);
+          const prepEntry: JournalEntry = {
+            id: `jrn_prep_${nowMs}_${Math.random().toString(36).substring(2, 7)}`,
+            userId: scopeOwner,
+            title: `Pre-Trade Prep — ${report.pair} (${newTrade.direction || 'Trade'})`,
+            entryType: 'prep',
+            date: tradeDate,
+            time: tradeTime,
+            timezone: report.timezone,
+            pair: report.pair,
+            session,
+            linkedReportId: initialTradeDraft?.sourceReportId || report.id,
+            linkedReportTitle: initialTradeDraft?.sourceReportTitle || report.title || `${report.pair} Analysis`,
+            linkedScenarioId: newTrade.scenarioId,
+            linkedScenarioLabel: newTrade.scenarioLabel,
+            linkedTradeId: newTrade.id,
+            ...(strategy.trim() ? { preTrade: { setupTag: strategy.trim() } } : {}),
+            prep: {
+              sessionIntention: prepIntention.trim() || undefined,
+              readinessState: prepReadiness || '',
+              readinessStates: prepReadiness ? [prepReadiness] : [],
+              dailyPlanNotes: prepNotes.trim() || undefined,
+            },
+            tags: ['Pre-Trade Prep'],
+            createdAt: nowMs,
+            updatedAt: nowMs,
+          };
+          if (onSavePreparationJournal) {
+            await onSavePreparationJournal(prepEntry);
+          } else {
+            await saveJournalEntry(prepEntry);
+          }
+        }
+
         onClose();
       }
     } catch (err) {
       setError((err as Error).message || 'Failed to save trade.');
     } finally {
+      isSavingRef.current = false;
       setIsSaving(false);
     }
   };
@@ -488,6 +685,95 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
             <div className="p-2.5 rounded bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
+            </div>
+          )}
+
+          {/* Optional Collapsible Preparation & Mindset Section */}
+          {!isEditing && (
+            <div className="rounded border border-app bg-app-secondary/30 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsPrepOpen((prev) => !prev)}
+                className="w-full px-3.5 py-2.5 min-h-[44px] flex items-center justify-between text-left hover:bg-app-field/50 transition-colors cursor-pointer"
+              >
+                <span className="flex items-center gap-2 text-xs font-bold text-app-main uppercase tracking-wider">
+                  <BookOpen className="w-3.5 h-3.5 text-emerald-theme" />
+                  <span>Preparation &amp; Mindset (Optional)</span>
+                </span>
+                {isPrepOpen ? (
+                  <ChevronUp className="w-4 h-4 text-app-secondary" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-app-secondary" />
+                )}
+              </button>
+
+              {isPrepOpen && (
+                <div className="p-3.5 pt-2 border-t border-app/60 space-y-3 bg-app-main/40">
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      Readiness / Mental State
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {PREP_READINESS_OPTIONS.map((opt) => (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => setPrepReadiness((prev) => (prev === opt ? '' : opt))}
+                          className={`px-2.5 py-1 min-h-[34px] text-[11px] font-medium rounded border cursor-pointer transition-colors ${
+                            prepReadiness === opt
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-app-field text-app-main border-app hover:bg-app-secondary'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      Pre-Trade Intention
+                    </label>
+                    <input
+                      type="text"
+                      value={prepIntention}
+                      onChange={(e) => setPrepIntention(e.target.value)}
+                      spellCheck
+                      autoCorrect="on"
+                      autoCapitalize="sentences"
+                      placeholder="Wait for candle close confirmation at key POI..."
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                      Preparation Note
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={prepNotes}
+                      onChange={(e) => setPrepNotes(e.target.value)}
+                      spellCheck
+                      autoCorrect="on"
+                      autoCapitalize="sentences"
+                      placeholder="Any mindset cue or pre-entry discipline reminder..."
+                      className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 resize-y"
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 text-[11px] font-medium text-app-main cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={alsoSavePrepToJournal}
+                      onChange={(e) => setAlsoSavePrepToJournal(e.target.checked)}
+                      className="w-4 h-4 text-emerald-600 rounded border-app cursor-pointer"
+                    />
+                    <span>Also save preparation note to Trading Journal</span>
+                  </label>
+                </div>
+              )}
             </div>
           )}
 
@@ -732,58 +1018,140 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
             </div>
           </div>
 
-          {/* Pricing Parameters */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-            <div>
-              <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                Entry Price
-              </label>
-              <input
-                type="text"
-                value={entryPrice}
-                onChange={(e) => setEntryPrice(e.target.value)}
-                placeholder="e.g. 2680.50"
-                className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
-              />
+          {/* Pricing Parameters & Planned R:R */}
+          <div className="space-y-3 p-3.5 rounded border border-app bg-app-secondary/20">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                  Entry Price
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={entryPrice}
+                  onChange={(e) => setEntryPrice(sanitizeDecimalInput(e.target.value))}
+                  placeholder="e.g. 2680.50"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                  Stop Loss
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={stopLoss}
+                  onChange={(e) => setStopLoss(sanitizeDecimalInput(e.target.value))}
+                  placeholder="e.g. 2676.00"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                  Take Profit
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={takeProfit}
+                  onChange={(e) => setTakeProfit(sanitizeDecimalInput(e.target.value))}
+                  placeholder="e.g. 2694.00"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                  Risk : Reward
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={riskReward}
+                  onChange={(e) => setRiskReward(e.target.value)}
+                  placeholder={liveRR.formatted || 'e.g. 1:3.0'}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                Stop Loss
-              </label>
-              <input
-                type="text"
-                value={stopLoss}
-                onChange={(e) => setStopLoss(e.target.value)}
-                placeholder="e.g. 2676.00"
-                className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-rose-500"
-              />
-            </div>
+            {/* Planned R:R Selector & Live Indicator */}
+            <div className="pt-2 border-t border-app/60 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-app-main">
+                  Planned R:R (Target only — separate from realized outcome)
+                </span>
+                {liveRR.formatted && (
+                  <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                    Price R:R: {liveRR.formatted}
+                  </span>
+                )}
+              </div>
 
-            <div>
-              <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                Take Profit
-              </label>
-              <input
-                type="text"
-                value={takeProfit}
-                onChange={(e) => setTakeProfit(e.target.value)}
-                placeholder="e.g. 2694.00"
-                className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
-              />
-            </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {PLANNED_RR_PRESETS.map((choice) => (
+                  <button
+                    key={choice}
+                    type="button"
+                    onClick={() =>
+                      setPlannedRRChoice((prev) => (prev === choice ? '' : choice))
+                    }
+                    className={`px-2.5 py-1 min-h-[34px] text-[11px] font-mono font-semibold rounded border transition-colors cursor-pointer ${
+                      plannedRRChoice === choice
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-app-field text-app-main border-app hover:bg-app-secondary'
+                    }`}
+                  >
+                    {choice}
+                  </button>
+                ))}
 
-            <div>
-              <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                Risk : Reward
-              </label>
-              <input
-                type="text"
-                value={riskReward}
-                onChange={(e) => setRiskReward(e.target.value)}
-                placeholder="e.g. 1:3.0"
-                className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
-              />
+                {plannedRRChoice === 'Custom' && (
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={plannedRRRatio}
+                    onChange={(e) => setPlannedRRRatio(e.target.value)}
+                    placeholder="e.g. 2.5 or 1:2.5"
+                    aria-label="Custom Planned R:R"
+                    className="w-28 px-2 py-1 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                  />
+                )}
+
+                {calculatedTP && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTakeProfit(calculatedTP);
+                      if (!riskReward.trim() && targetMultiplier !== null) {
+                        setRiskReward(`1:${targetMultiplier}`);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 min-h-[34px] text-[11px] font-semibold bg-app-main border border-emerald-500/40 text-emerald-theme hover:bg-emerald-pale rounded cursor-pointer transition-colors"
+                    title="Calculate and fill Take Profit using Entry, Stop Loss, and Planned R:R"
+                  >
+                    <Calculator className="w-3.5 h-3.5" />
+                    <span>Calculate TP ({calculatedTP})</span>
+                  </button>
+                )}
+              </div>
+
+              {liveRR.invalidReason && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{liveRR.invalidReason}</span>
+                </p>
+              )}
+
+              {rrMismatch.hasMismatch && rrMismatch.message && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 rounded p-2 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{rrMismatch.message}</span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -796,8 +1164,8 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
                   <button
                     key={st}
                     type="button"
-                    onClick={() => setOutcome(st)}
-                    className={`py-1 text-xs font-semibold rounded border transition-colors cursor-pointer ${
+                    onClick={() => handleOutcomeSelect(st)}
+                    className={`py-1.5 min-h-[36px] text-xs font-semibold rounded border transition-colors cursor-pointer ${
                       outcome === st
                         ? st === 'Win'
                           ? 'bg-emerald-600 text-white border-emerald-600'
@@ -821,11 +1189,73 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={exitPrice}
-                onChange={(e) => setExitPrice(e.target.value)}
+                onChange={(e) => setExitPrice(sanitizeDecimalInput(e.target.value))}
                 placeholder="e.g. 2692.20"
                 className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
               />
+            </div>
+          </div>
+
+          {/* Closed Date & Time when trade outcome is closed */}
+          {outcome && outcome !== 'Open' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded border border-app bg-app-secondary/20">
+              <div>
+                <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                  Closed Date
+                </label>
+                <input
+                  type="date"
+                  value={closedDate}
+                  onChange={(e) => setClosedDate(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                  Closed Time
+                </label>
+                <input
+                  type="text"
+                  value={closedTime}
+                  onChange={(e) => setClosedTime(e.target.value)}
+                  placeholder="HH:MM"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Setup Validity (independent of Win/Loss outcome) */}
+          <div className="p-3 rounded border border-app bg-app-secondary/30 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <div className="font-semibold text-app-main text-xs">Setup Validity</div>
+                <div className="text-[11px] text-app-secondary">
+                  Evaluate setup quality independently of outcome (a Valid setup can still hit SL).
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {SETUP_VALIDITY_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setSetupValidity(opt.value)}
+                    className={`px-2.5 py-1 min-h-[34px] text-[11px] font-semibold rounded border transition-colors cursor-pointer ${
+                      setupValidity === opt.value
+                        ? opt.value === 'Valid'
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : opt.value === 'Invalid'
+                          ? 'bg-rose-600 text-white border-rose-600'
+                          : 'bg-slate-600 text-white border-slate-600'
+                        : 'bg-app-field text-app-main border-app hover:bg-app-secondary'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -857,6 +1287,9 @@ export const TakeTradeModal: React.FC<TakeTradeModalProps> = ({
               rows={2}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
+              spellCheck
+              autoCorrect="on"
+              autoCapitalize="sentences"
               placeholder="Mental state, fill quality, slippage, management during news..."
               className="w-full px-3 py-2 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 resize-y"
             />

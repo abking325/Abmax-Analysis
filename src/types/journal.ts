@@ -14,7 +14,8 @@ export const TIMEFRAME_ORDER: TimeframeId[] = [
 export type OverallBias = 'Bullish' | 'Neutral' | 'Bearish' | 'Not sure' | '';
 
 export type StructureDirection = 'Bullish' | 'Bearish' | 'Neutral' | 'Waiting' | 'Not sure' | '';
-export type FractalDirection = 'Bullish' | 'Bearish' | 'Waiting' | '';
+export type FractalDirection = 'Bullish' | 'Bearish' | 'Neutral' | 'Waiting' | '';
+export type StructureConfirmation = 'Waiting' | 'Confirmed' | '';
 
 export interface StructureEvent {
   id: string; // e.g. "bos_..." or "mss_..." or "choch_..."
@@ -28,6 +29,7 @@ export interface StructureEvent {
   newActiveLevel?: string; // Resulting active Fractal level for CHoCH
   previousSnapshot?: {
     direction: StructureDirection | FractalDirection;
+    confirmation?: StructureConfirmation;
     high?: string;
     low?: string;
     brokenLevel?: string;
@@ -37,6 +39,7 @@ export interface StructureEvent {
 
 export interface SwingStructure {
   direction: StructureDirection;
+  confirmation?: StructureConfirmation;
   high: string;
   low: string;
   bosAt: string;
@@ -45,6 +48,7 @@ export interface SwingStructure {
 
 export interface InternalStructure {
   direction: StructureDirection;
+  confirmation?: StructureConfirmation;
   high: string;
   low: string;
   ibosAt: string;
@@ -53,8 +57,92 @@ export interface InternalStructure {
 
 export interface FractalStructure {
   direction: FractalDirection;
+  confirmation?: StructureConfirmation;
   fractalBosAt: string;
   history?: StructureEvent[];
+}
+
+/**
+ * Separates legacy combined direction strings ('Waiting', 'Not sure') into
+ * clean Direction + Confirmation without inventing Bullish/Bearish.
+ */
+export function normalizeStructureDirectionAndConfirmation(
+  rawDirection?: string | null,
+  rawConfirmation?: string | null
+): {
+  direction: 'Bullish' | 'Bearish' | 'Neutral' | '';
+  confirmation: StructureConfirmation;
+} {
+  const dir = (rawDirection || '').trim();
+  const conf = (rawConfirmation || '').trim();
+
+  const normalizedConf: StructureConfirmation =
+    conf === 'Confirmed' || conf === 'Waiting' ? conf : '';
+
+  if (dir === 'Bullish' || dir === 'Bearish' || dir === 'Neutral') {
+    return {
+      direction: dir,
+      confirmation: normalizedConf,
+    };
+  }
+  if (dir === 'Waiting' || dir === 'Not sure') {
+    return {
+      direction: '',
+      confirmation: normalizedConf || 'Waiting',
+    };
+  }
+  // Support any legacy parenthesized forms such as "Bearish (Waiting)" or "Bullish (Confirmed)"
+  const dirMatch = dir.match(/\b(Bullish|Bearish|Neutral)\b/i);
+  const parsedDir = dirMatch
+    ? ((dirMatch[1].charAt(0).toUpperCase() + dirMatch[1].slice(1).toLowerCase()) as
+        | 'Bullish'
+        | 'Bearish'
+        | 'Neutral')
+    : '';
+  const parsedConf: StructureConfirmation = normalizedConf
+    ? normalizedConf
+    : /\bwaiting\b/i.test(dir)
+    ? 'Waiting'
+    : /\bconfirmed\b/i.test(dir)
+    ? 'Confirmed'
+    : '';
+  return {
+    direction: parsedDir,
+    confirmation: parsedConf,
+  };
+}
+
+export function normalizeTimeframeStructures(tfData: TimeframeData): TimeframeData {
+  const swingNorm = normalizeStructureDirectionAndConfirmation(
+    tfData.swing?.direction,
+    tfData.swing?.confirmation
+  );
+  const internalNorm = normalizeStructureDirectionAndConfirmation(
+    tfData.internal?.direction,
+    tfData.internal?.confirmation
+  );
+  const fractalNorm = normalizeStructureDirectionAndConfirmation(
+    tfData.fractal?.direction,
+    tfData.fractal?.confirmation
+  );
+  return {
+    ...tfData,
+    swing: {
+      ...(tfData.swing || { high: '', low: '', bosAt: '' }),
+      direction: swingNorm.direction,
+      confirmation: swingNorm.confirmation,
+    },
+    internal: {
+      ...(tfData.internal || { high: '', low: '', ibosAt: '' }),
+      direction: internalNorm.direction,
+      confirmation: internalNorm.confirmation,
+    },
+    fractal: {
+      ...(tfData.fractal || { fractalBosAt: '' }),
+      direction: fractalNorm.direction,
+      confirmation: fractalNorm.confirmation,
+    },
+  };
 }
 
 export type PriceLocation = 'Discount' | 'Equilibrium' | 'Premium' | '';
@@ -399,6 +487,8 @@ export interface PlannedScenario {
 }
 
 export type TradeOutcome = 'Win' | 'Loss' | 'Break-even' | 'Open' | '';
+export type SetupValidity = 'Valid' | 'Invalid' | 'Not reviewed';
+export type PlannedRRChoice = '1:1' | '1:1.5' | '1:2' | '1:3' | 'Custom';
 
 export interface RecordedTrade {
   id: string; // stable UUID or unique id (e.g. trd_...)
@@ -426,12 +516,21 @@ export interface RecordedTrade {
   takeProfit?: string;
   exitPrice?: string;
   riskReward?: string;
+  plannedRRChoice?: PlannedRRChoice;
+  plannedRRRatio?: string;
+  setupValidity?: SetupValidity;
   outcome?: TradeOutcome;
   rulesFollowed?: boolean;
   notes?: string;
   images?: ImageAttachment[]; // Attached execution, entry, exit charts
   date: string; // YYYY-MM-DD
   time?: string;
+  closedAt?: number;
+  closedDate?: string;
+  closedTime?: string;
+  linkedJournalIds?: string[];
+  sourceReportId?: string;
+  sourceReportTitle?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1140,13 +1239,76 @@ export type JournalEntryType =
 
 export type MyJournalContext = 'Before Trading' | 'During Trading' | 'After Trading' | 'General' | 'No-Trade Day';
 
+export const IN_TRADE_MINDSET_PRESETS = [
+  'Calm',
+  'Focused',
+  'Patient',
+  'Confident',
+  'Anxious',
+  'Fearful',
+  'Impulsive',
+  'Distracted',
+  'Overconfident',
+  'Frustrated',
+] as const;
+
+export const IN_TRADE_OBSERVATION_PRESETS = [
+  'Urge to move the stop',
+  'Urge to close early',
+  'Fear of missing out',
+  'Revenge-trading urge',
+  'Hesitation',
+  'Following the plan',
+  'Comfortable with uncertainty',
+] as const;
+
 export type EmotionalReadiness = 'Optimal / Calm' | 'Focused' | 'Anxious' | 'Fatigued' | 'Overconfident' | 'Distracted' | '';
+
+export type JournalPhaseKey = 'prep' | 'preTrade' | 'inTrade' | 'postTrade' | 'reflection';
+
+export interface JournalLaunchContext {
+  requestId: number;
+  targetPhase: JournalPhaseKey;
+  mode?: 'create' | 'view_linked';
+  filterTradeId?: string;
+  linkedReportId?: string;
+  linkedReportTitle?: string;
+  linkedScenarioId?: string;
+  linkedScenarioLabel?: string;
+  linkedTradeId?: string;
+  pair?: TradingPair;
+  session?: TradingSession;
+  strategy?: string;
+  date?: string;
+  time?: string;
+  timezone?: string;
+  outcome?: string;
+  entryIdToEdit?: string;
+}
 
 export interface JournalPrep {
   sessionIntention?: string;
   readinessState?: EmotionalReadiness;
+  readinessStates?: EmotionalReadiness[];
   prioritizedRules?: string[];
   dailyPlanNotes?: string;
+}
+
+export function normalizeReadinessStates(prep?: JournalPrep): EmotionalReadiness[] {
+  if (!prep) return [];
+  const rawList =
+    Array.isArray(prep.readinessStates) && prep.readinessStates.length > 0
+      ? prep.readinessStates
+      : prep.readinessState
+      ? [prep.readinessState]
+      : [];
+  const deduped: EmotionalReadiness[] = [];
+  for (const item of rawList) {
+    if (item && !deduped.includes(item) && deduped.length < 3) {
+      deduped.push(item);
+    }
+  }
+  return deduped;
 }
 
 export interface JournalPreTrade {
@@ -1156,12 +1318,17 @@ export interface JournalPreTrade {
   plannedRiskR?: string;
   linkedReportId?: string;
   linkedScenarioId?: string;
+  linkedScenarioLabel?: string;
   linkedTradeId?: string;
+  timezone?: string;
 }
 
 export interface JournalInTrade {
+  mindsets?: string[];
+  mindsetOther?: string;
   managementDecisions?: string;
   planAdjustments?: string;
+  emotionalObservationTags?: string[];
   emotionalObservations?: string;
   timelineNotes?: Array<{ timestamp: number; note: string }>;
   screenshotImageIds?: string[];
@@ -1192,6 +1359,7 @@ export interface JournalEntry {
   title: string;
   date: string; // YYYY-MM-DD
   time?: string; // HH:MM
+  timezone?: string;
   session?: TradingSession;
   pair?: TradingPair;
   entryType: JournalEntryType;
@@ -1209,6 +1377,8 @@ export interface JournalEntry {
   imageUrl?: string;
   linkedReportId?: string;
   linkedReportTitle?: string;
+  linkedScenarioId?: string;
+  linkedScenarioLabel?: string;
   linkedTradeId?: string;
   createdAt: number;
   updatedAt: number;
@@ -1243,7 +1413,7 @@ export interface BackupData {
     liveWorkspaceOwners?: Record<string, number>;
   };
   preferences: {
-    theme: 'light' | 'dark';
+    theme: 'light' | 'dark' | 'system';
     visibilityConfig?: WorkspaceVisibilityConfig;
     presentationConfig?: ReportPresentationConfig;
     journalVisibilityConfig?: JournalVisibilityConfig;
@@ -1454,6 +1624,7 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
     },
     swing: {
       direction: '',
+      confirmation: '',
       high: '',
       low: '',
       bosAt: '',
@@ -1461,6 +1632,7 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
     },
     internal: {
       direction: '',
+      confirmation: '',
       high: '',
       low: '',
       ibosAt: '',
@@ -1468,6 +1640,7 @@ export function createEmptyTimeframeData(tf: TimeframeId): TimeframeData {
     },
     fractal: {
       direction: '',
+      confirmation: '',
       fractalBosAt: '',
       history: [],
     },

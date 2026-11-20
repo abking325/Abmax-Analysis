@@ -342,6 +342,9 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
                     </label>
                     <textarea
                       rows={2}
+                      spellCheck
+                      autoCorrect="on"
+                      autoCapitalize="sentences"
                       value={s.description}
                       onChange={(e) => handleUpdate(s.id, { description: e.target.value })}
                       placeholder="Expected market narrative..."
@@ -356,6 +359,9 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
                       </label>
                       <textarea
                         rows={2}
+                        spellCheck
+                        autoCorrect="on"
+                        autoCapitalize="sentences"
                         value={s.entryConditions}
                         onChange={(e) => handleUpdate(s.id, { entryConditions: e.target.value })}
                         placeholder="Confirmation trigger..."
@@ -368,6 +374,9 @@ export const EditScenariosModal: React.FC<EditScenariosModalProps> = ({
                       </label>
                       <textarea
                         rows={2}
+                        spellCheck
+                        autoCorrect="on"
+                        autoCapitalize="sentences"
                         value={s.invalidationConditions}
                         onChange={(e) =>
                           handleUpdate(s.id, { invalidationConditions: e.target.value })

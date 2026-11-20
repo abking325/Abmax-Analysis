@@ -1,12 +1,16 @@
 import {
   AnalysisData,
   OverallBias,
+  PlannedRRChoice,
+  RecordedTrade,
   SavedReport,
+  SetupValidity,
   TIMEFRAME_ORDER,
   TimeframeData,
   TimeframeId,
   MajorLiquidityItem,
   OpeningCandleEntry,
+  normalizeStructureDirectionAndConfirmation,
 } from '../types/journal';
 
 export interface AlignmentResult {
@@ -124,19 +128,37 @@ export function getReportBiasSummary(report: SavedReport): {
 
 /**
  * Checks if deep analysis in a timeframe is aligned:
- * Swing, Internal, and Fractal are complete and all Bullish or all Bearish.
+ * Swing, Internal, and Fractal are complete, not Waiting confirmation, and all Bullish or all Bearish.
  */
 export function isDeepAnalysisAligned(tfData: TimeframeData): boolean {
-  const swing = tfData.swing.direction;
-  const internal = tfData.internal.direction;
-  const fractal = tfData.fractal.direction;
+  const swing = normalizeStructureDirectionAndConfirmation(
+    tfData.swing?.direction,
+    tfData.swing?.confirmation
+  );
+  const internal = normalizeStructureDirectionAndConfirmation(
+    tfData.internal?.direction,
+    tfData.internal?.confirmation
+  );
+  const fractal = normalizeStructureDirectionAndConfirmation(
+    tfData.fractal?.direction,
+    tfData.fractal?.confirmation
+  );
 
-  if (!swing || !internal || !fractal) return false;
-  if (swing === 'Neutral' || internal === 'Neutral') return false;
+  if (!swing.direction || !internal.direction || !fractal.direction) return false;
+  if (swing.direction === 'Neutral' || internal.direction === 'Neutral' || fractal.direction === 'Neutral') {
+    return false;
+  }
+  if (
+    swing.confirmation === 'Waiting' ||
+    internal.confirmation === 'Waiting' ||
+    fractal.confirmation === 'Waiting'
+  ) {
+    return false;
+  }
 
   return (
-    (swing === 'Bullish' && internal === 'Bullish' && fractal === 'Bullish') ||
-    (swing === 'Bearish' && internal === 'Bearish' && fractal === 'Bearish')
+    (swing.direction === 'Bullish' && internal.direction === 'Bullish' && fractal.direction === 'Bullish') ||
+    (swing.direction === 'Bearish' && internal.direction === 'Bearish' && fractal.direction === 'Bearish')
   );
 }
 
@@ -434,7 +456,7 @@ export function generateReportsCsv(reports: SavedReport[]): string {
     const tradesText = (r.trades || [])
       .map(
         (t) =>
-          `[${t.direction || '-'} (${t.scenarioLabel || 'Trade'}${t.strategy || t.strategySnapshot?.name || t.scenarioSnapshot?.strategy ? ` | Strategy: ${t.strategy || t.strategySnapshot?.name || t.scenarioSnapshot?.strategy}` : ''}) | Entry: ${t.entryPrice || '-'} SL: ${t.stopLoss || '-'} TP: ${t.takeProfit || '-'} Outcome: ${t.outcome || '-'} Rules: ${t.rulesFollowed ? 'Followed' : 'Broken'}]`
+          `[${t.direction || '-'} (${t.scenarioLabel || 'Trade'}${t.strategy || t.strategySnapshot?.name || t.scenarioSnapshot?.strategy ? ` | Strategy: ${t.strategy || t.strategySnapshot?.name || t.scenarioSnapshot?.strategy}` : ''}) | Entry: ${t.entryPrice || '-'} SL: ${t.stopLoss || '-'} TP: ${t.takeProfit || '-'} Planned R:R: ${t.plannedRRChoice === 'Custom' ? t.plannedRRRatio || 'Custom' : t.plannedRRChoice || t.riskReward || '-'} Setup Validity: ${t.setupValidity || 'Not reviewed'} Outcome: ${t.outcome || '-'} Rules: ${t.rulesFollowed === false ? 'Broken' : 'Followed'}]`
       )
       .join('; ');
 
@@ -663,27 +685,47 @@ export function getTimeframeStructureAlignment(tfData?: TimeframeData | null): T
     };
   }
 
-  const swing = tfData.swing?.direction;
-  const internal = tfData.internal?.direction;
-  const fractal = tfData.fractal?.direction;
+  const swing = normalizeStructureDirectionAndConfirmation(
+    tfData.swing?.direction,
+    tfData.swing?.confirmation
+  );
+  const internal = normalizeStructureDirectionAndConfirmation(
+    tfData.internal?.direction,
+    tfData.internal?.confirmation
+  );
+  const fractal = normalizeStructureDirectionAndConfirmation(
+    tfData.fractal?.direction,
+    tfData.fractal?.confirmation
+  );
 
   // Missing or unselected required components
-  if (!swing || !internal || !fractal) {
+  if (!swing.direction || !internal.direction || !fractal.direction) {
     return {
       status: 'incomplete',
       label: 'Structure incomplete',
     };
   }
 
+  if (
+    swing.confirmation === 'Waiting' ||
+    internal.confirmation === 'Waiting' ||
+    fractal.confirmation === 'Waiting'
+  ) {
+    return {
+      status: 'incomplete',
+      label: 'Waiting confirmation',
+    };
+  }
+
   // Neutral is non-directional, therefore cannot form full bullish/bearish alignment
-  if (swing === 'Neutral' || internal === 'Neutral') {
+  if (swing.direction === 'Neutral' || internal.direction === 'Neutral' || fractal.direction === 'Neutral') {
     return {
       status: 'mixed',
       label: 'Mixed structure',
     };
   }
 
-  if (swing === 'Bullish' && internal === 'Bullish' && fractal === 'Bullish') {
+  if (swing.direction === 'Bullish' && internal.direction === 'Bullish' && fractal.direction === 'Bullish') {
     return {
       status: 'aligned',
       label: 'Structures aligned — Bullish',
@@ -691,7 +733,7 @@ export function getTimeframeStructureAlignment(tfData?: TimeframeData | null): T
     };
   }
 
-  if (swing === 'Bearish' && internal === 'Bearish' && fractal === 'Bearish') {
+  if (swing.direction === 'Bearish' && internal.direction === 'Bearish' && fractal.direction === 'Bearish') {
     return {
       status: 'aligned',
       label: 'Structures aligned — Bearish',
@@ -1066,5 +1108,277 @@ export function hasMeaningfulAnalysisWork(
   }
   return false;
 }
+
+/**
+ * Checks whether all active enabled timeframes are directional (all Bullish or all Bearish)
+ * AND Confirmed (no Waiting confirmation, no Neutral/Not sure bias, no conflicting/Waiting structure).
+ */
+export function areRequiredTimeframesConfirmedAligned(
+  timeframes?: Record<TimeframeId, TimeframeData> | null,
+  enabledTimeframes?: TimeframeId[]
+): {
+  aligned: boolean;
+  bias: 'Bullish' | 'Bearish' | null;
+  signature: string;
+} {
+  if (!timeframes) {
+    return { aligned: false, bias: null, signature: '' };
+  }
+
+  const activeTfs =
+    enabledTimeframes && enabledTimeframes.length > 0
+      ? enabledTimeframes
+      : TIMEFRAME_ORDER.filter((tf) => Boolean(timeframes[tf]));
+
+  if (activeTfs.length === 0) {
+    return { aligned: false, bias: null, signature: '' };
+  }
+
+  const overall = calculateOverallAlignment(timeframes, activeTfs);
+  if (overall.status !== 'ALIGNED' || !overall.bias) {
+    return { aligned: false, bias: null, signature: '' };
+  }
+
+  const targetBias = overall.bias;
+
+  for (const tf of activeTfs) {
+    const tfd = timeframes[tf];
+    if (!tfd) {
+      return { aligned: false, bias: null, signature: '' };
+    }
+    const layers = [
+      normalizeStructureDirectionAndConfirmation(tfd.swing?.direction, tfd.swing?.confirmation),
+      normalizeStructureDirectionAndConfirmation(tfd.internal?.direction, tfd.internal?.confirmation),
+      normalizeStructureDirectionAndConfirmation(tfd.fractal?.direction, tfd.fractal?.confirmation),
+    ];
+
+    for (const layer of layers) {
+      if (layer.confirmation === 'Waiting') {
+        return { aligned: false, bias: null, signature: '' };
+      }
+      if (layer.direction === 'Neutral') {
+        return { aligned: false, bias: null, signature: '' };
+      }
+      if (layer.direction && layer.direction !== targetBias) {
+        return { aligned: false, bias: null, signature: '' };
+      }
+    }
+  }
+
+  return {
+    aligned: true,
+    bias: targetBias,
+    signature: `${targetBias}:${activeTfs.join(',')}`,
+  };
+}
+
+/**
+ * Sanitizes decimal typing without deleting intermediate decimal points, leading '-',
+ * or trailing zeros. Converts locale commas to dots cleanly when typing.
+ */
+export function sanitizeDecimalInput(
+  raw: string,
+  options: { allowNegative?: boolean } = {}
+): string {
+  const allowNeg = Boolean(options.allowNegative);
+  let str = String(raw || '').replace(/,/g, '.').replace(/\s+/g, '');
+  let out = '';
+  let hasDot = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (ch >= '0' && ch <= '9') {
+      out += ch;
+    } else if (ch === '.' && !hasDot) {
+      hasDot = true;
+      out += '.';
+    } else if (ch === '-' && allowNeg && out.length === 0) {
+      out += '-';
+    }
+  }
+  return out;
+}
+
+/**
+ * Parses a locale-flexible decimal string safely. Returns null for empty or non-finite values.
+ */
+export function parseLocaleDecimal(raw?: string | number | null): number | null {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) ? raw : null;
+  }
+  if (!raw) return null;
+  const cleaned = String(raw).trim().replace(/,/g, '.');
+  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.') {
+    return null;
+  }
+  if (!/^-?\d*(\.\d*)?$/.test(cleaned)) {
+    return null;
+  }
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
+export function getPlannedRRTargetMultiplier(
+  choice?: PlannedRRChoice | string,
+  customRatio?: string
+): number | null {
+  if (!choice) return null;
+  if (choice === '1:1') return 1;
+  if (choice === '1:1.5') return 1.5;
+  if (choice === '1:2') return 2;
+  if (choice === '1:3') return 3;
+
+  const raw = (customRatio || choice || '').trim();
+  if (!raw) return null;
+  if (raw.includes(':')) {
+    const parts = raw.split(':');
+    if (parts.length === 2) {
+      const left = parseLocaleDecimal(parts[0]);
+      const right = parseLocaleDecimal(parts[1]);
+      if (left && right && left > 0 && right > 0) {
+        return right / left;
+      }
+    }
+    return null;
+  }
+  const single = parseLocaleDecimal(raw);
+  return single && single > 0 ? single : null;
+}
+
+export function computeLiveRRFromPrices(params: {
+  direction?: 'Buy' | 'Sell' | '';
+  entryPrice?: string;
+  stopLoss?: string;
+  takeProfit?: string;
+}): {
+  ratio: number | null;
+  formatted: string;
+  validRisk: boolean;
+  invalidReason?: string;
+} {
+  const entry = parseLocaleDecimal(params.entryPrice);
+  const sl = parseLocaleDecimal(params.stopLoss);
+  const tp = parseLocaleDecimal(params.takeProfit);
+
+  if (entry === null || sl === null) {
+    return { ratio: null, formatted: '', validRisk: false };
+  }
+
+  if (params.direction === 'Buy' && sl >= entry) {
+    return {
+      ratio: null,
+      formatted: '',
+      validRisk: false,
+      invalidReason: 'For Buy trades, Stop Loss must be below Entry price.',
+    };
+  }
+  if (params.direction === 'Sell' && sl <= entry) {
+    return {
+      ratio: null,
+      formatted: '',
+      validRisk: false,
+      invalidReason: 'For Sell trades, Stop Loss must be above Entry price.',
+    };
+  }
+
+  const risk = Math.abs(entry - sl);
+  if (risk <= 0) {
+    return { ratio: null, formatted: '', validRisk: false };
+  }
+
+  if (tp === null) {
+    return { ratio: null, formatted: '', validRisk: true };
+  }
+
+  if (params.direction === 'Buy' && tp <= entry) {
+    return {
+      ratio: null,
+      formatted: '',
+      validRisk: true,
+      invalidReason: 'For Buy trades, Take Profit should be above Entry price.',
+    };
+  }
+  if (params.direction === 'Sell' && tp >= entry) {
+    return {
+      ratio: null,
+      formatted: '',
+      validRisk: true,
+      invalidReason: 'For Sell trades, Take Profit should be below Entry price.',
+    };
+  }
+
+  const reward = Math.abs(tp - entry);
+  const ratio = Number((reward / risk).toFixed(2));
+  return {
+    ratio,
+    formatted: `1:${Number.isInteger(ratio) ? ratio : Number(ratio.toFixed(2))}`,
+    validRisk: true,
+  };
+}
+
+export function checkPlannedRRMismatch(params: {
+  plannedRRChoice?: PlannedRRChoice | string;
+  plannedRRRatio?: string;
+  computedRatio: number | null;
+  tolerance?: number;
+}): {
+  hasMismatch: boolean;
+  message?: string;
+} {
+  const target = getPlannedRRTargetMultiplier(params.plannedRRChoice, params.plannedRRRatio);
+  if (target === null || params.computedRatio === null) {
+    return { hasMismatch: false };
+  }
+  const tol = params.tolerance ?? 0.15;
+  if (Math.abs(params.computedRatio - target) > tol) {
+    return {
+      hasMismatch: true,
+      message: `Entered levels yield ~1:${Number(params.computedRatio.toFixed(2))}, which differs from your Planned R:R (1:${target}). Your entered prices stay untouched unless you calculate TP explicitly.`,
+    };
+  }
+  return { hasMismatch: false };
+}
+
+export function calculateTakeProfitForPlannedRR(params: {
+  direction: 'Buy' | 'Sell' | '';
+  entryPrice?: string;
+  stopLoss?: string;
+  targetMultiplier: number;
+}): string | null {
+  const entry = parseLocaleDecimal(params.entryPrice);
+  const sl = parseLocaleDecimal(params.stopLoss);
+  if (entry === null || sl === null || !params.direction || params.targetMultiplier <= 0) {
+    return null;
+  }
+  const risk = Math.abs(entry - sl);
+  if (risk <= 0) return null;
+  if (params.direction === 'Buy' && sl >= entry) return null;
+  if (params.direction === 'Sell' && sl <= entry) return null;
+
+  const entryStr = (params.entryPrice || '').trim().replace(/,/g, '.');
+  const slStr = (params.stopLoss || '').trim().replace(/,/g, '.');
+  const entryDecimals = entryStr.includes('.') ? entryStr.split('.')[1].length : 0;
+  const slDecimals = slStr.includes('.') ? slStr.split('.')[1].length : 0;
+  const precision = Math.min(6, Math.max(entryDecimals, slDecimals, 2));
+
+  const tp =
+    params.direction === 'Buy'
+      ? entry + risk * params.targetMultiplier
+      : entry - risk * params.targetMultiplier;
+  return tp.toFixed(precision);
+}
+
+export function formatSetupValidityBadge(validity?: SetupValidity | string): string {
+  if (validity === 'Valid') return 'Valid setup';
+  if (validity === 'Invalid') return 'Invalid setup';
+  return 'Not reviewed';
+}
+
+export function formatTradeCombinedStatus(trade: Pick<RecordedTrade, 'setupValidity' | 'outcome'>): string {
+  const validityLabel = formatSetupValidityBadge(trade.setupValidity);
+  const outcomeLabel = trade.outcome || 'Open';
+  return `${validityLabel} · ${outcomeLabel}`;
+}
+
 
 

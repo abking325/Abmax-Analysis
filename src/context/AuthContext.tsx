@@ -3,7 +3,16 @@ import { User, Session, AuthError } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
 import { Browser } from '@capacitor/browser';
 import { App } from '@capacitor/app';
-import { supabase, isSupabaseConfigured, getAppRedirectUrl, REMEMBER_ME_STORAGE_KEY } from '../services/supabase';
+import {
+  supabase,
+  isSupabaseConfigured,
+  getAppRedirectUrl,
+  getOAuthRedirectUrl,
+  REMEMBER_ME_STORAGE_KEY,
+} from '../services/supabase';
+import { parseOAuthCallbackParams } from '../utils/authErrorUtils';
+
+const OAUTH_RETURN_VIEW_KEY = 'abmax_oauth_return_view';
 
 interface AuthContextType {
   user: User | null;
@@ -14,7 +23,7 @@ interface AuthContextType {
   signUp: (email: string, password: string) => Promise<{ error: AuthError | null; needsEmailConfirmation?: boolean }>;
   verifySignupOtp: (email: string, token: string) => Promise<{ error: AuthError | null }>;
   resendSignupOtp: (email: string) => Promise<{ error: AuthError | null }>;
-  signInWithGoogle: () => Promise<{ error: AuthError | null }>;
+  signInWithGoogle: (returnView?: string) => Promise<{ error: AuthError | null }>;
   signOut: () => Promise<{ error: AuthError | null }>;
   resetPassword: (email: string) => Promise<{ error: AuthError | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: AuthError | null }>;
@@ -22,9 +31,19 @@ interface AuthContextType {
   clearPasswordRecovery: () => void;
   isRecoveryLinkExpired: boolean;
   clearRecoveryLinkExpired: () => void;
+  oauthError: string | null;
+  clearOAuthError: () => void;
+  isGoogleAuthInFlight: boolean;
+  consumeOAuthReturnView: () => string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+function scrubWebAuthUrl(): void {
+  if (typeof window === 'undefined' || !window.history?.replaceState) return;
+  const cleanUrl = window.location.pathname || '/';
+  window.history.replaceState(null, '', cleanUrl);
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -32,57 +51,92 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [isRecoveryLinkExpired, setIsRecoveryLinkExpired] = useState(false);
+  const [oauthError, setOAuthError] = useState<string | null>(null);
+  const [isGoogleAuthInFlight, setIsGoogleAuthInFlight] = useState(false);
 
   const processedUrlsRef = React.useRef<Set<string>>(new Set());
+  const oauthInFlightRef = React.useRef<boolean>(false);
+  const browserFinishTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleDeepLinkUrl = React.useCallback(async (url: string) => {
-    if (!url || !supabase) return;
-    if (processedUrlsRef.current.has(url)) return;
-    processedUrlsRef.current.add(url);
-
-    try {
-      await Browser.close().catch(() => {});
-    } catch {
-      // safe ignore
-    }
-
-    // Check if password recovery deep link or expired token
-    if (url.includes('type=recovery')) {
-      setIsPasswordRecovery(true);
-    } else if (
-      url.includes('error_code=otp_expired') ||
-      url.includes('error=access_denied') ||
-      url.includes('otp_expired')
-    ) {
-      setIsRecoveryLinkExpired(true);
-    }
-
-    // Process OAuth tokens or code from deep link callback
-    if (url.includes('access_token=') || url.includes('code=')) {
-      const hashOrSearch = url.includes('#') ? url.split('#')[1] : url.split('?')[1] || '';
-      const params = new URLSearchParams(hashOrSearch);
-      const accessToken = params.get('access_token');
-      const refreshToken = params.get('refresh_token');
-      const code = params.get('code');
-
-      if (accessToken && refreshToken) {
-        const { data, error } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: refreshToken,
-        });
-        if (!error && data.session) {
-          setSession(data.session);
-          setUser(data.session.user);
-        }
-      } else if (code) {
-        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-        if (!error && data.session) {
-          setSession(data.session);
-          setUser(data.session.user);
-        }
-      }
-    }
+  const setGoogleAuthInFlightState = React.useCallback((val: boolean) => {
+    oauthInFlightRef.current = val;
+    setIsGoogleAuthInFlight(val);
   }, []);
+
+  const handleDeepLinkUrl = React.useCallback(
+    async (url: string) => {
+      if (!url || !supabase) return;
+      if (processedUrlsRef.current.has(url)) return;
+
+      const parsed = parseOAuthCallbackParams(url);
+      if (!parsed.hasAuthPayload && !url.includes('auth/callback')) {
+        return;
+      }
+
+      processedUrlsRef.current.add(url);
+      if (browserFinishTimerRef.current) {
+        clearTimeout(browserFinishTimerRef.current);
+        browserFinishTimerRef.current = null;
+      }
+
+      try {
+        await Browser.close().catch(() => {});
+      } catch {
+        // Safe ignore on web or unsupported environment
+      }
+
+      if (parsed.type === 'recovery') {
+        setIsPasswordRecovery(true);
+        setGoogleAuthInFlightState(false);
+        return;
+      }
+
+      if (parsed.error || parsed.errorCode || parsed.errorDescription) {
+        const combined = `${parsed.error || ''} ${parsed.errorCode || ''} ${parsed.errorDescription || ''}`.toLowerCase();
+        if (combined.includes('otp_expired') || combined.includes('email+link') || combined.includes('email link')) {
+          setIsRecoveryLinkExpired(true);
+        } else if (parsed.error === 'access_denied' && !url.includes('auth/callback') && combined.includes('otp')) {
+          setIsRecoveryLinkExpired(true);
+        } else if (parsed.error === 'access_denied' || combined.includes('cancelled')) {
+          setOAuthError('oauth_cancelled: Google sign-in was cancelled.');
+        } else {
+          setOAuthError(parsed.errorDescription || parsed.error || parsed.errorCode || 'Google sign-in failed.');
+        }
+        setGoogleAuthInFlightState(false);
+        return;
+      }
+
+      try {
+        if (parsed.accessToken && parsed.refreshToken) {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: parsed.accessToken,
+            refresh_token: parsed.refreshToken,
+          });
+          if (error) {
+            setOAuthError(error.message);
+          } else if (data.session) {
+            setSession(data.session);
+            setUser(data.session.user);
+            setOAuthError(null);
+          }
+        } else if (parsed.code) {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(parsed.code);
+          if (error) {
+            setOAuthError(error.message);
+          } else if (data.session) {
+            setSession(data.session);
+            setUser(data.session.user);
+            setOAuthError(null);
+          }
+        }
+      } catch (err) {
+        setOAuthError((err as Error)?.message || 'Failed to complete Google sign-in.');
+      } finally {
+        setGoogleAuthInFlightState(false);
+      }
+    },
+    [setGoogleAuthInFlightState]
+  );
 
   useEffect(() => {
     if (!supabase) {
@@ -90,35 +144,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // Inspect URL for password recovery or expired link tokens on Web
-    if (typeof window !== 'undefined') {
-      const hash = window.location.hash || '';
-      const search = window.location.search || '';
-      const fullUrlParams = hash + search;
+    let isRecoveryFromUrl = false;
+    let shouldScrubWebUrl = false;
 
-      if (
-        fullUrlParams.includes('error_code=otp_expired') ||
-        fullUrlParams.includes('error=access_denied') ||
-        fullUrlParams.includes('Email+link+is+invalid') ||
-        fullUrlParams.includes('otp_expired')
-      ) {
-        setIsRecoveryLinkExpired(true);
-        // Clean error tokens from address bar without exposing tokens in history
-        window.history.replaceState(null, '', window.location.pathname);
-      } else if (fullUrlParams.includes('type=recovery')) {
+    // Inspect initial Web URL for OAuth callback, error, or password recovery parameters
+    if (typeof window !== 'undefined') {
+      const parsed = parseOAuthCallbackParams(window.location.href);
+      if (parsed.type === 'recovery') {
+        isRecoveryFromUrl = true;
         setIsPasswordRecovery(true);
+      } else if (parsed.error || parsed.errorCode || parsed.errorDescription) {
+        const combined = `${parsed.error || ''} ${parsed.errorCode || ''} ${parsed.errorDescription || ''}`.toLowerCase();
+        if (
+          combined.includes('otp_expired') ||
+          combined.includes('email link') ||
+          (parsed.error === 'access_denied' && combined.includes('otp'))
+        ) {
+          setIsRecoveryLinkExpired(true);
+        } else if (parsed.error === 'access_denied' || combined.includes('cancelled')) {
+          setOAuthError('oauth_cancelled: Google sign-in was cancelled.');
+        } else {
+          setOAuthError(parsed.errorDescription || parsed.error || parsed.errorCode || 'Google sign-in failed.');
+        }
+        shouldScrubWebUrl = true;
+      } else if (parsed.code || parsed.accessToken) {
+        shouldScrubWebUrl = true;
+      }
+
+      if (shouldScrubWebUrl && !(parsed.code || parsed.accessToken)) {
+        scrubWebAuthUrl();
       }
     }
 
-    // Initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+    // Initial session extraction (Supabase detectSessionInUrl handles PKCE ?code or #access_token on web)
+    supabase.auth.getSession().then(({ data: { session: initialSession }, error }) => {
+      if (error && !isRecoveryFromUrl) {
+        setOAuthError(error.message);
+      }
+      setSession(initialSession);
+      setUser(initialSession?.user ?? null);
       setLoading(false);
-      // Clean tokens from address bar only after session extraction completes
-      if (typeof window !== 'undefined' && (window.location.hash || window.location.search.includes('code='))) {
-        if (!window.location.hash.includes('type=recovery')) {
-          window.history.replaceState(null, '', window.location.pathname);
+      if (typeof window !== 'undefined') {
+        const parsedNow = parseOAuthCallbackParams(window.location.href);
+        if (parsedNow.hasAuthPayload && !isRecoveryFromUrl) {
+          scrubWebAuthUrl();
         }
       }
     });
@@ -131,20 +200,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(newSession?.user ?? null);
       setLoading(false);
 
+      if (event === 'SIGNED_IN') {
+        setOAuthError(null);
+        setGoogleAuthInFlightState(false);
+      }
+
       if (event === 'PASSWORD_RECOVERY') {
         setIsPasswordRecovery(true);
       }
 
-      // Secure address bar cleanup after Supabase handles authentication tokens
-      if (typeof window !== 'undefined' && window.location.hash && !window.location.hash.includes('type=recovery')) {
-        window.history.replaceState(null, '', window.location.pathname);
+      if (typeof window !== 'undefined') {
+        const parsedNow = parseOAuthCallbackParams(window.location.href);
+        if (parsedNow.hasAuthPayload && parsedNow.type !== 'recovery') {
+          scrubWebAuthUrl();
+        }
       }
     });
 
-    // Capacitor native URL listener for OAuth return & password recovery deep links
+    // Capacitor native listeners for OAuth callback return & browser cancellation
     let appUrlPluginHandle: { remove: () => void } | null = null;
+    let browserFinishHandle: { remove: () => void } | null = null;
     if (typeof window !== 'undefined' && Capacitor.isNativePlatform()) {
-      // Check cold-start launch URL
       App.getLaunchUrl()
         .then((launch) => {
           if (launch?.url) {
@@ -153,19 +229,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         })
         .catch(() => {});
 
-      // Listen for runtime deep link open
       App.addListener('appUrlOpen', ({ url }) => {
         handleDeepLinkUrl(url);
       }).then((handle) => {
         appUrlPluginHandle = handle;
       });
+
+      Browser.addListener('browserFinished', () => {
+        if (!oauthInFlightRef.current) return;
+        if (browserFinishTimerRef.current) {
+          clearTimeout(browserFinishTimerRef.current);
+        }
+        // Wait briefly in case appUrlOpen arrives right alongside browserFinished
+        browserFinishTimerRef.current = setTimeout(() => {
+          if (oauthInFlightRef.current) {
+            setGoogleAuthInFlightState(false);
+            setOAuthError('oauth_cancelled: Google sign-in was cancelled.');
+          }
+        }, 650);
+      })
+        .then((handle) => {
+          browserFinishHandle = handle;
+        })
+        .catch(() => {});
     }
 
     return () => {
       subscription.unsubscribe();
       appUrlPluginHandle?.remove();
+      browserFinishHandle?.remove();
+      if (browserFinishTimerRef.current) {
+        clearTimeout(browserFinishTimerRef.current);
+      }
     };
-  }, [handleDeepLinkUrl]);
+  }, [handleDeepLinkUrl, setGoogleAuthInFlightState]);
 
   const signIn = async (email: string, password: string, rememberMe: boolean = true) => {
     if (!supabase) {
@@ -177,7 +274,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    // Persist remember preference for the auth storage adapter
     if (typeof window !== 'undefined') {
       try {
         window.localStorage.setItem(REMEMBER_ME_STORAGE_KEY, String(rememberMe));
@@ -269,7 +365,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: res.error };
   };
 
-  const signInWithGoogle = async (): Promise<{ error: AuthError | null }> => {
+  const signInWithGoogle = async (returnView?: string): Promise<{ error: AuthError | null }> => {
     if (!supabase) {
       return {
         error: {
@@ -279,11 +375,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
+    if (oauthInFlightRef.current) {
+      return { error: null };
+    }
+
+    setOAuthError(null);
+    setGoogleAuthInFlightState(true);
+
+    if (typeof window !== 'undefined' && returnView) {
+      try {
+        window.sessionStorage.setItem(OAUTH_RETURN_VIEW_KEY, returnView);
+      } catch {
+        // safe ignore
+      }
+    }
+
     try {
       const isNative = typeof window !== 'undefined' && Capacitor.isNativePlatform();
-      const redirectUrl = isNative
-        ? 'com.abmax.analysis://auth/callback'
-        : getAppRedirectUrl();
+      const redirectUrl = getOAuthRedirectUrl(isNative);
 
       if (isNative) {
         const { data, error } = await supabase.auth.signInWithOAuth({
@@ -291,47 +400,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           options: {
             redirectTo: redirectUrl,
             skipBrowserRedirect: true,
+            queryParams: {
+              prompt: 'select_account',
+            },
           },
         });
         if (error) {
-          if (
-            error.message?.toLowerCase().includes('not enabled') ||
-            error.message?.toLowerCase().includes('unsupported')
-          ) {
-            return {
-              error: new AuthError(
-                'Google sign-in is not yet enabled in the Supabase project. Please sign in with email/password or enable Google provider in the Supabase Dashboard.'
-              ),
-            };
-          }
+          setGoogleAuthInFlightState(false);
           return { error };
         }
         if (data?.url) {
-          await Browser.open({ url: data.url, windowName: '_system' });
+          await Browser.open({ url: data.url, presentationStyle: 'popover' });
+        } else {
+          setGoogleAuthInFlightState(false);
         }
         return { error: null };
       } else {
-        const { error } = await supabase.auth.signInWithOAuth({
+        const { data, error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
             redirectTo: redirectUrl,
+            queryParams: {
+              prompt: 'select_account',
+            },
           },
         });
-        if (error) {
-          if (
-            error.message?.toLowerCase().includes('not enabled') ||
-            error.message?.toLowerCase().includes('unsupported')
-          ) {
-            return {
-              error: new AuthError(
-                'Google sign-in is not yet enabled in the Supabase project. Please sign in with email/password or enable Google provider in the Supabase Dashboard.'
-              ),
-            };
-          }
+        if (error || !data?.url) {
+          setGoogleAuthInFlightState(false);
         }
         return { error };
       }
     } catch (err) {
+      setGoogleAuthInFlightState(false);
       return {
         error: {
           name: 'GoogleAuthError',
@@ -395,22 +495,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const res = await supabase.auth.updateUser({ password: newPassword });
     if (!res.error) {
       setIsPasswordRecovery(false);
-      if (typeof window !== 'undefined' && window.location.hash) {
-        window.history.replaceState(null, '', window.location.pathname);
-      }
+      scrubWebAuthUrl();
     }
     return { error: res.error };
   };
 
   const clearPasswordRecovery = () => {
     setIsPasswordRecovery(false);
-    if (typeof window !== 'undefined' && window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname);
-    }
+    scrubWebAuthUrl();
   };
 
   const clearRecoveryLinkExpired = () => {
     setIsRecoveryLinkExpired(false);
+  };
+
+  const clearOAuthError = () => {
+    setOAuthError(null);
+  };
+
+  const consumeOAuthReturnView = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const val = window.sessionStorage.getItem(OAUTH_RETURN_VIEW_KEY);
+      if (val) {
+        window.sessionStorage.removeItem(OAUTH_RETURN_VIEW_KEY);
+        return val;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   };
 
   const value = useMemo(
@@ -431,8 +545,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       clearPasswordRecovery,
       isRecoveryLinkExpired,
       clearRecoveryLinkExpired,
+      oauthError,
+      clearOAuthError,
+      isGoogleAuthInFlight,
+      consumeOAuthReturnView,
     }),
-    [user, session, loading, isPasswordRecovery, isRecoveryLinkExpired]
+    [user, session, loading, isPasswordRecovery, isRecoveryLinkExpired, oauthError, isGoogleAuthInFlight]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -445,3 +563,4 @@ export function useAuth(): AuthContextType {
   }
   return context;
 }
+

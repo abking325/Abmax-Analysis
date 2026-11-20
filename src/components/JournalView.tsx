@@ -33,16 +33,21 @@ import {
   EmotionalReadiness,
   getEnabledInstrumentSymbols,
   getSelectorInstrumentOptions,
+  IN_TRADE_MINDSET_PRESETS,
+  IN_TRADE_OBSERVATION_PRESETS,
   InstrumentsConfig,
   JournalDailyReflection,
   JournalEntry,
   JournalEntryType,
   JournalInTrade,
+  JournalLaunchContext,
+  JournalPhaseKey,
   JournalPostTrade,
   JournalPreTrade,
   JournalPrep,
   JournalVisibilityConfig,
   normalizeInstrumentSymbol,
+  normalizeReadinessStates,
   SavedReport,
   TradingPair,
   TradingSession,
@@ -53,11 +58,12 @@ import {
   deleteJournalEntry,
   getAllJournalEntries,
   getJournalDraft,
+  getScopedContextualSuggestions,
   isJournalEntryOwnedByScope,
   normalizeAccountScope,
   saveJournalDraft,
   saveJournalEntry,
-  saveImage,
+  ScopedContextualSuggestions,
 } from '../services/db';
 import { MyJournalSection } from './MyJournalSection';
 import { StrategiesSection } from './StrategiesSection';
@@ -102,13 +108,43 @@ const COMMON_LESSON_TAGS = [
   'Respected Invalidation',
 ];
 
+const JOURNAL_PHASE_STORAGE_KEY = 'abmax_journal_phase_open_state';
+
+const DEFAULT_OPEN_PHASES: Record<JournalPhaseKey, boolean> = {
+  prep: true,
+  preTrade: false,
+  inTrade: false,
+  postTrade: false,
+  reflection: false,
+};
+
+function loadPersistedOpenPhases(): Record<JournalPhaseKey, boolean> {
+  if (typeof localStorage === 'undefined') return { ...DEFAULT_OPEN_PHASES };
+  try {
+    const raw = localStorage.getItem(JOURNAL_PHASE_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_OPEN_PHASES };
+    const parsed = JSON.parse(raw);
+    return {
+      prep: parsed?.prep !== false,
+      preTrade: Boolean(parsed?.preTrade),
+      inTrade: Boolean(parsed?.inTrade),
+      postTrade: Boolean(parsed?.postTrade),
+      reflection: Boolean(parsed?.reflection),
+    };
+  } catch {
+    return { ...DEFAULT_OPEN_PHASES };
+  }
+}
+
 interface JournalViewProps {
   reportsList: SavedReport[];
   onOpenReport?: (reportId: string) => void;
   userId?: string | null;
   journalVisibilityConfig?: JournalVisibilityConfig;
-  onOpenSettings?: (tab?: 'general' | 'theme' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
+  onOpenSettings?: (tab?: 'general' | 'journal_visibility' | 'performance_visibility' | 'admin' | 'instruments') => void;
   instrumentsConfig?: InstrumentsConfig;
+  journalLaunchRequest?: JournalLaunchContext | null;
+  onConsumeJournalLaunchRequest?: () => void;
 }
 
 export const JournalView: React.FC<JournalViewProps> = ({
@@ -118,6 +154,8 @@ export const JournalView: React.FC<JournalViewProps> = ({
   journalVisibilityConfig = DEFAULT_JOURNAL_VISIBILITY_CONFIG,
   onOpenSettings,
   instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
+  journalLaunchRequest,
+  onConsumeJournalLaunchRequest,
 }) => {
   const [mainJournalTab, setMainJournalTab] = useState<'trading-journal' | 'my-journal' | 'strategies'>('trading-journal');
 
@@ -145,6 +183,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
   const [selectedSession, setSelectedSession] = useState<string>('all');
   const [selectedRuleStatus, setSelectedRuleStatus] = useState<string>('all');
   const [selectedDateFilter, setSelectedDateFilter] = useState<'all' | 'today' | 'week' | 'month'>('all');
+  const [filterTradeId, setFilterTradeId] = useState<string | null>(null);
 
   const filterInstrumentOptions = useMemo(() => {
     const enabled = getEnabledInstrumentSymbols(instrumentsConfig);
@@ -170,11 +209,15 @@ export const JournalView: React.FC<JournalViewProps> = ({
   const [session, setSession] = useState<TradingSession>('London');
   const [pair, setPair] = useState<TradingPair>(() => getEnabledInstrumentSymbols(instrumentsConfig)[0] || 'XAUUSD');
   const [entryType, setEntryType] = useState<JournalEntryType>('general');
+  const [linkedScenarioId, setLinkedScenarioId] = useState('');
+  const [linkedScenarioLabel, setLinkedScenarioLabel] = useState('');
+  const [linkedTradeId, setLinkedTradeId] = useState('');
 
   // Sections
   const [prep, setPrep] = useState<JournalPrep>({
     sessionIntention: '',
     readinessState: 'Optimal / Calm',
+    readinessStates: ['Optimal / Calm'],
     prioritizedRules: [],
     dailyPlanNotes: '',
   });
@@ -188,13 +231,16 @@ export const JournalView: React.FC<JournalViewProps> = ({
       { item: 'Aligned with overall bias', checked: false },
       { item: 'Acceptable risk-to-reward ratio', checked: false },
     ],
-    plannedRiskR: '1R',
+    plannedRiskR: '1',
     linkedReportId: '',
   });
 
   const [inTrade, setInTrade] = useState<JournalInTrade>({
+    mindsets: [],
+    mindsetOther: '',
     managementDecisions: '',
     planAdjustments: '',
+    emotionalObservationTags: [],
     emotionalObservations: '',
     timelineNotes: [],
   });
@@ -216,18 +262,63 @@ export const JournalView: React.FC<JournalViewProps> = ({
   });
 
   const [generalNotes, setGeneralNotes] = useState('');
-  const [activeTab, setActiveTab] = useState<'prep' | 'preTrade' | 'inTrade' | 'postTrade' | 'reflection'>('prep');
+  const [openPhases, setOpenPhases] = useState<Record<JournalPhaseKey, boolean>>(() => loadPersistedOpenPhases());
   const [hasDraftNotice, setHasDraftNotice] = useState(false);
+  const [moodCapWarning, setMoodCapWarning] = useState<string | null>(null);
   const [newChecklistText, setNewChecklistText] = useState('');
-  const [newRuleText, setNewRuleText] = useState('');
-  const [timelineInput, setTimelineInput] = useState('');
+  const [newInTradeObsTag, setNewInTradeObsTag] = useState('');
+  const [customMistakeInput, setCustomMistakeInput] = useState('');
+  const [customLessonInput, setCustomLessonInput] = useState('');
+  const [suggestions, setSuggestions] = useState<ScopedContextualSuggestions>({
+    setupTags: [],
+    mistakeTags: [],
+    lessonTags: [],
+    tags: [],
+    strategies: [],
+    usedInstruments: [],
+  });
+  const phaseContainerRef = useRef<HTMLDivElement>(null);
 
-  // Load entries on mount
+  const togglePhase = (phase: JournalPhaseKey) => {
+    setOpenPhases((prev) => {
+      const next = { ...prev, [phase]: !prev[phase] };
+      try {
+        localStorage.setItem(JOURNAL_PHASE_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage limitations
+      }
+      return next;
+    });
+  };
+
+  const expandSinglePhase = (phase: JournalPhaseKey) => {
+    setOpenPhases((prev) => {
+      const next = { ...prev, [phase]: true };
+      try {
+        localStorage.setItem(JOURNAL_PHASE_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+    setTimeout(() => {
+      const target = phaseContainerRef.current?.querySelector(`[data-journal-phase="${phase}"]`);
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
+
+  // Load entries and scoped contextual suggestions
+  const refreshSuggestions = async (scopeId?: string | null) => {
+    const sug = await getScopedContextualSuggestions(scopeId ?? userId);
+    setSuggestions(sug);
+  };
+
   const refreshEntries = async () => {
     setLoading(true);
     try {
       const list = await getAllJournalEntries();
       setEntries(list);
+      await refreshSuggestions(userId);
     } catch (err) {
       console.error('Error loading journal entries', err);
     } finally {
@@ -237,7 +328,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
 
   useEffect(() => {
     refreshEntries();
-  }, []);
+  }, [userId]);
 
   // Track current active account scope and pending unsaved draft state
   const currentUserIdRef = useRef<string | null | undefined>(userId);
@@ -263,6 +354,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
       session,
       pair,
       entryType,
+      linkedScenarioId: linkedScenarioId || undefined,
+      linkedScenarioLabel: linkedScenarioLabel || undefined,
+      linkedTradeId: linkedTradeId || undefined,
       prep,
       preTrade,
       inTrade,
@@ -344,6 +438,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
         session,
         pair,
         entryType,
+        linkedScenarioId: linkedScenarioId || undefined,
+        linkedScenarioLabel: linkedScenarioLabel || undefined,
+        linkedTradeId: linkedTradeId || undefined,
         prep,
         preTrade,
         inTrade,
@@ -369,6 +466,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
     session,
     pair,
     entryType,
+    linkedScenarioId,
+    linkedScenarioLabel,
+    linkedTradeId,
     prep,
     preTrade,
     inTrade,
@@ -385,6 +485,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
     session: TradingSession;
     pair: TradingPair;
     entryType: JournalEntryType;
+    linkedScenarioId?: string;
+    linkedScenarioLabel?: string;
+    linkedTradeId?: string;
     prep: JournalPrep;
     preTrade: JournalPreTrade;
     inTrade: JournalInTrade;
@@ -399,6 +502,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
     const defaultPrep: JournalPrep = {
       sessionIntention: '',
       readinessState: 'Optimal / Calm',
+      readinessStates: ['Optimal / Calm'],
       prioritizedRules: [],
       dailyPlanNotes: '',
     };
@@ -411,12 +515,15 @@ export const JournalView: React.FC<JournalViewProps> = ({
         { item: 'Aligned with overall bias', checked: false },
         { item: 'Acceptable risk-to-reward ratio', checked: false },
       ],
-      plannedRiskR: '1R',
+      plannedRiskR: '1',
       linkedReportId: '',
     };
     const defaultInTrade: JournalInTrade = {
+      mindsets: [],
+      mindsetOther: '',
       managementDecisions: '',
       planAdjustments: '',
+      emotionalObservationTags: [],
       emotionalObservations: '',
       timelineNotes: [],
     };
@@ -441,6 +548,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
     setSession('London');
     setPair(defaultPair);
     setEntryType('general');
+    setLinkedScenarioId('');
+    setLinkedScenarioLabel('');
+    setLinkedTradeId('');
     setPrep(defaultPrep);
     setPreTrade(defaultPreTrade);
     setInTrade(defaultInTrade);
@@ -448,7 +558,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
     setReflection(defaultReflection);
     setGeneralNotes('');
     setEditingEntryId(null);
-    setActiveTab('prep');
+    setMoodCapWarning(null);
     setShowDiscardConfirm(false);
     return {
       title: '',
@@ -457,6 +567,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
       session: 'London' as TradingSession,
       pair: defaultPair as TradingPair,
       entryType: 'general' as JournalEntryType,
+      linkedScenarioId: '',
+      linkedScenarioLabel: '',
+      linkedTradeId: '',
       prep: defaultPrep,
       preTrade: defaultPreTrade,
       inTrade: defaultInTrade,
@@ -469,16 +582,23 @@ export const JournalView: React.FC<JournalViewProps> = ({
   const openNewEntry = () => {
     const initialVals = resetForm();
     originalSnapshotRef.current = serializeEditorState(initialVals);
+    refreshSuggestions(userId).catch(() => {});
     setIsEditorOpen(true);
   };
 
-  const openEditEntry = (entry: JournalEntry) => {
+  const openEditEntry = (entry: JournalEntry, focusPhase?: JournalPhaseKey) => {
     const clonedEntry: JournalEntry = JSON.parse(JSON.stringify(entry));
-    const entryPrep = clonedEntry.prep || {
+    const rawPrep = clonedEntry.prep || {
       sessionIntention: '',
       readinessState: 'Optimal / Calm',
       prioritizedRules: [],
       dailyPlanNotes: '',
+    };
+    const normalizedStates = normalizeReadinessStates(rawPrep);
+    const entryPrep: JournalPrep = {
+      ...rawPrep,
+      readinessStates: normalizedStates,
+      readinessState: normalizedStates[0] || rawPrep.readinessState || '',
     };
     const entryPreTrade = clonedEntry.preTrade || {
       reasonForTrade: '',
@@ -489,14 +609,18 @@ export const JournalView: React.FC<JournalViewProps> = ({
         { item: 'Aligned with overall bias', checked: false },
         { item: 'Acceptable risk-to-reward ratio', checked: false },
       ],
-      plannedRiskR: '1R',
-      linkedReportId: '',
+      plannedRiskR: '1',
+      linkedReportId: clonedEntry.linkedReportId || '',
     };
-    const entryInTrade = clonedEntry.inTrade || {
+    const entryInTrade: JournalInTrade = {
+      mindsets: [],
+      mindsetOther: '',
       managementDecisions: '',
       planAdjustments: '',
+      emotionalObservationTags: [],
       emotionalObservations: '',
       timelineNotes: [],
+      ...(clonedEntry.inTrade || {}),
     };
     const entryPostTrade = clonedEntry.postTrade || {
       executionReview: '',
@@ -519,6 +643,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
     const entryTypeVal = clonedEntry.entryType || 'general';
     const entryTitle = clonedEntry.title || '';
     const entryNotes = clonedEntry.generalNotes || '';
+    const nextScenarioId = clonedEntry.linkedScenarioId || entryPreTrade.linkedScenarioId || '';
+    const nextScenarioLabel = clonedEntry.linkedScenarioLabel || entryPreTrade.linkedScenarioLabel || '';
+    const nextTradeId = clonedEntry.linkedTradeId || entryPreTrade.linkedTradeId || entryPostTrade.tradeId || '';
 
     setEditingEntryId(clonedEntry.id);
     setTitle(entryTitle);
@@ -527,12 +654,16 @@ export const JournalView: React.FC<JournalViewProps> = ({
     setSession(entrySession);
     setPair(entryPair);
     setEntryType(entryTypeVal);
+    setLinkedScenarioId(nextScenarioId);
+    setLinkedScenarioLabel(nextScenarioLabel);
+    setLinkedTradeId(nextTradeId);
     setPrep(entryPrep);
-    setPreTrade(entryPreTrade);
+    setPreTrade({ ...entryPreTrade, linkedReportId: entryPreTrade.linkedReportId || clonedEntry.linkedReportId || '' });
     setInTrade(entryInTrade);
     setPostTrade(entryPostTrade);
     setReflection(entryReflection);
     setGeneralNotes(entryNotes);
+    setMoodCapWarning(null);
     setShowDiscardConfirm(false);
     originalSnapshotRef.current = serializeEditorState({
       title: entryTitle,
@@ -541,14 +672,21 @@ export const JournalView: React.FC<JournalViewProps> = ({
       session: entrySession,
       pair: entryPair,
       entryType: entryTypeVal,
+      linkedScenarioId: nextScenarioId,
+      linkedScenarioLabel: nextScenarioLabel,
+      linkedTradeId: nextTradeId,
       prep: entryPrep,
-      preTrade: entryPreTrade,
+      preTrade: { ...entryPreTrade, linkedReportId: entryPreTrade.linkedReportId || clonedEntry.linkedReportId || '' },
       inTrade: entryInTrade,
       postTrade: entryPostTrade,
       reflection: entryReflection,
       generalNotes: entryNotes,
     });
+    refreshSuggestions(userId).catch(() => {});
     setIsEditorOpen(true);
+    if (focusPhase) {
+      expandSinglePhase(focusPhase);
+    }
   };
 
   const handleApplyDraft = async () => {
@@ -562,12 +700,21 @@ export const JournalView: React.FC<JournalViewProps> = ({
     const nextSession = clonedDraft.session ?? base.session;
     const nextPair = clonedDraft.pair ?? base.pair;
     const nextType = clonedDraft.entryType ?? base.entryType;
-    const nextPrep = clonedDraft.prep ?? base.prep;
+    const rawPrep = clonedDraft.prep ?? base.prep;
+    const normStates = normalizeReadinessStates(rawPrep);
+    const nextPrep: JournalPrep = {
+      ...rawPrep,
+      readinessStates: normStates,
+      readinessState: (normStates[0] || rawPrep.readinessState || '') as EmotionalReadiness,
+    };
     const nextPreTrade = clonedDraft.preTrade ?? base.preTrade;
-    const nextInTrade = clonedDraft.inTrade ?? base.inTrade;
+    const nextInTrade = { ...base.inTrade, ...(clonedDraft.inTrade || {}) };
     const nextPostTrade = clonedDraft.postTrade ?? base.postTrade;
     const nextReflection = clonedDraft.reflection ?? base.reflection;
     const nextNotes = clonedDraft.generalNotes ?? base.generalNotes;
+    const nextScenId = clonedDraft.linkedScenarioId || '';
+    const nextScenLabel = clonedDraft.linkedScenarioLabel || '';
+    const nextTrdId = clonedDraft.linkedTradeId || '';
 
     setTitle(nextTitle);
     setDate(nextDate);
@@ -575,6 +722,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
     setSession(nextSession);
     setPair(nextPair);
     setEntryType(nextType);
+    setLinkedScenarioId(nextScenId);
+    setLinkedScenarioLabel(nextScenLabel);
+    setLinkedTradeId(nextTrdId);
     setPrep(nextPrep);
     setPreTrade(nextPreTrade);
     setInTrade(nextInTrade);
@@ -588,6 +738,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
       session: nextSession,
       pair: nextPair,
       entryType: nextType,
+      linkedScenarioId: nextScenId,
+      linkedScenarioLabel: nextScenLabel,
+      linkedTradeId: nextTrdId,
       prep: nextPrep,
       preTrade: nextPreTrade,
       inTrade: nextInTrade,
@@ -599,6 +752,95 @@ export const JournalView: React.FC<JournalViewProps> = ({
     setIsEditorOpen(true);
   };
 
+  // Handle cross-feature launch context (e.g. from Trade Card -> In-Trade Mindset / Post-Trade Review / View Linked)
+  const lastConsumedLaunchIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!journalLaunchRequest || lastConsumedLaunchIdRef.current === journalLaunchRequest.requestId) {
+      return;
+    }
+    lastConsumedLaunchIdRef.current = journalLaunchRequest.requestId;
+    setMainJournalTab('trading-journal');
+
+    if (journalLaunchRequest.mode === 'view_linked' && journalLaunchRequest.filterTradeId) {
+      setFilterTradeId(journalLaunchRequest.filterTradeId);
+      setIsEditorOpen(false);
+      onConsumeJournalLaunchRequest?.();
+      return;
+    }
+
+    const existing = journalLaunchRequest.entryIdToEdit
+      ? entries.find((e) => e.id === journalLaunchRequest.entryIdToEdit)
+      : undefined;
+
+    if (existing) {
+      openEditEntry(existing, journalLaunchRequest.targetPhase);
+    } else {
+      const base = resetForm();
+      const targetPair = journalLaunchRequest.pair || base.pair;
+      const targetSession = journalLaunchRequest.session || base.session;
+      const targetDate = journalLaunchRequest.date || base.date;
+      const targetTime = journalLaunchRequest.time || base.time;
+      const targetScenId = journalLaunchRequest.linkedScenarioId || '';
+      const targetScenLabel = journalLaunchRequest.linkedScenarioLabel || '';
+      const targetTrdId = journalLaunchRequest.linkedTradeId || '';
+      const targetReportId = journalLaunchRequest.linkedReportId || '';
+      const defaultTitle = targetScenLabel
+        ? `${targetPair} — ${targetScenLabel} (${targetDate})`
+        : `${targetPair} ${targetSession} Trade Journal (${targetDate})`;
+      const nextPreTrade: JournalPreTrade = {
+        ...base.preTrade,
+        setupTag: journalLaunchRequest.strategy || '',
+        linkedReportId: targetReportId,
+        linkedScenarioId: targetScenId || undefined,
+        linkedScenarioLabel: targetScenLabel || undefined,
+        linkedTradeId: targetTrdId || undefined,
+        timezone: journalLaunchRequest.timezone,
+      };
+      const nextPostTrade: JournalPostTrade = {
+        ...base.postTrade,
+        tradeId: targetTrdId || undefined,
+        outcome: journalLaunchRequest.outcome ? journalLaunchRequest.outcome.toLowerCase() : undefined,
+        rulesFollowedStatus: 'Unreviewed',
+      };
+      const nextType: JournalEntryType =
+        journalLaunchRequest.targetPhase === 'inTrade'
+          ? 'in-trade'
+          : journalLaunchRequest.targetPhase === 'postTrade'
+          ? 'post-trade'
+          : 'general';
+
+      setTitle(defaultTitle);
+      setDate(targetDate);
+      setTime(targetTime);
+      setSession(targetSession);
+      setPair(targetPair);
+      setEntryType(nextType);
+      setLinkedScenarioId(targetScenId);
+      setLinkedScenarioLabel(targetScenLabel);
+      setLinkedTradeId(targetTrdId);
+      setPreTrade(nextPreTrade);
+      setPostTrade(nextPostTrade);
+      originalSnapshotRef.current = serializeEditorState({
+        ...base,
+        title: defaultTitle,
+        date: targetDate,
+        time: targetTime,
+        session: targetSession,
+        pair: targetPair,
+        entryType: nextType,
+        linkedScenarioId: targetScenId,
+        linkedScenarioLabel: targetScenLabel,
+        linkedTradeId: targetTrdId,
+        preTrade: nextPreTrade,
+        postTrade: nextPostTrade,
+      });
+      setIsEditorOpen(true);
+      expandSinglePhase(journalLaunchRequest.targetPhase);
+    }
+
+    onConsumeJournalLaunchRequest?.();
+  }, [journalLaunchRequest, entries]);
+
   const isEditorDirty = () => {
     const current = serializeEditorState({
       title,
@@ -607,6 +849,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
       session,
       pair,
       entryType,
+      linkedScenarioId,
+      linkedScenarioLabel,
+      linkedTradeId,
       prep,
       preTrade,
       inTrade,
@@ -676,6 +921,13 @@ export const JournalView: React.FC<JournalViewProps> = ({
 
     const selectedLinkedReport = reportsList.find((r) => r.id === preTrade.linkedReportId);
 
+    const normalizedReadiness = normalizeReadinessStates(prep);
+    const cleanedPrep: JournalPrep = {
+      ...prep,
+      readinessStates: normalizedReadiness,
+      readinessState: normalizedReadiness[0] || '',
+    };
+
     const payload: JournalEntry = {
       id: editingEntryId || `jrn_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
       title: defaultTitle,
@@ -684,14 +936,25 @@ export const JournalView: React.FC<JournalViewProps> = ({
       session,
       pair,
       entryType,
-      prep,
-      preTrade,
+      prep: cleanedPrep,
+      preTrade: {
+        ...preTrade,
+        linkedScenarioId: linkedScenarioId || undefined,
+        linkedScenarioLabel: linkedScenarioLabel || undefined,
+        linkedTradeId: linkedTradeId || undefined,
+      },
       inTrade,
-      postTrade,
+      postTrade: {
+        ...postTrade,
+        tradeId: linkedTradeId || postTrade.tradeId || undefined,
+      },
       reflection,
       generalNotes,
       linkedReportId: preTrade.linkedReportId || undefined,
       linkedReportTitle: selectedLinkedReport ? selectedLinkedReport.title || `${selectedLinkedReport.pair} Analysis` : undefined,
+      linkedScenarioId: linkedScenarioId || undefined,
+      linkedScenarioLabel: linkedScenarioLabel || undefined,
+      linkedTradeId: linkedTradeId || undefined,
       createdAt: editingEntryId ? entries.find((e) => e.id === editingEntryId)?.createdAt || Date.now() : Date.now(),
       updatedAt: Date.now(),
       userId: normalizeAccountScope(userId),
@@ -725,6 +988,11 @@ export const JournalView: React.FC<JournalViewProps> = ({
   // Filtered entries
   const filteredEntries = useMemo(() => {
     return tradingJournalEntries.filter((e) => {
+      if (filterTradeId) {
+        const entryTradeId = e.linkedTradeId || e.preTrade?.linkedTradeId || e.postTrade?.tradeId;
+        if (entryTradeId !== filterTradeId) return false;
+      }
+
       // Search
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -733,6 +1001,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
         const matchesReason = (e.preTrade?.reasonForTrade || '').toLowerCase().includes(q);
         const matchesSetup = (e.preTrade?.setupTag || '').toLowerCase().includes(q);
         const matchesReview = (e.postTrade?.executionReview || '').toLowerCase().includes(q);
+        const matchesMindset = (e.inTrade?.mindsets || []).some((m) => m.toLowerCase().includes(q)) || (e.inTrade?.mindsetOther || '').toLowerCase().includes(q);
         const matchesMistakes = (e.postTrade?.mistakeTags || []).some((m) => m.toLowerCase().includes(q));
         const matchesLessons = (e.postTrade?.lessonTags || []).some((l) => l.toLowerCase().includes(q));
         if (
@@ -741,6 +1010,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
           !matchesReason &&
           !matchesSetup &&
           !matchesReview &&
+          !matchesMindset &&
           !matchesMistakes &&
           !matchesLessons
         ) {
@@ -780,7 +1050,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
 
       return true;
     });
-  }, [tradingJournalEntries, searchQuery, selectedPair, selectedSession, selectedRuleStatus, selectedDateFilter]);
+  }, [tradingJournalEntries, filterTradeId, searchQuery, selectedPair, selectedSession, selectedRuleStatus, selectedDateFilter]);
 
   const summaryStats = useMemo(() => {
     let followed = 0;
@@ -966,6 +1236,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
           <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-app-secondary" />
           <input
             type="text"
+            spellCheck
+            autoCorrect="on"
+            autoCapitalize="sentences"
             placeholder="Search tags, mistakes, reflections, notes..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -1018,6 +1291,22 @@ export const JournalView: React.FC<JournalViewProps> = ({
           </select>
         </div>
       </div>
+
+      {filterTradeId && (
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-lg bg-emerald-pale/60 border border-emerald-500/40 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-emerald-theme">
+            <LinkIcon className="w-3.5 h-3.5" />
+            <span>Showing journal entries linked to Trade ID: {filterTradeId}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFilterTradeId(null)}
+            className="px-2.5 py-1 rounded bg-app-main border border-app text-app-main font-semibold hover:bg-app-field cursor-pointer"
+          >
+            Show All Journal Entries
+          </button>
+        </div>
+      )}
 
       {/* Entries List / Timeline */}
       {loading ? (
@@ -1091,10 +1380,27 @@ export const JournalView: React.FC<JournalViewProps> = ({
                       {entry.time && <span>· {entry.time}</span>}
                       {entry.session && <span>· {entry.session} Session</span>}
                       {entry.pair && <span>· {entry.pair}</span>}
-                      {entry.prep?.readinessState && (
-                        <span>· Readiness: {entry.prep.readinessState}</span>
-                      )}
+                      {(() => {
+                        const moods = normalizeReadinessStates(entry.prep);
+                        return moods.length > 0 ? (
+                          <span>· Readiness: {moods.join(', ')}</span>
+                        ) : null;
+                      })()}
                     </div>
+                    {(entry.linkedScenarioLabel || entry.linkedTradeId) && (
+                      <div className="flex items-center gap-1.5 flex-wrap pt-0.5 text-[10px]">
+                        {entry.linkedScenarioLabel && (
+                          <span className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-semibold">
+                            Scenario: {entry.linkedScenarioLabel}
+                          </span>
+                        )}
+                        {entry.linkedTradeId && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-semibold">
+                            Trade Linked
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
@@ -1155,7 +1461,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
                           <Tag className="w-3 h-3 text-emerald-theme" />
                           <span className="font-semibold text-emerald-theme">{entry.preTrade.setupTag}</span>
                           {entry.preTrade.plannedRiskR && (
-                            <span className="text-app-secondary">({entry.preTrade.plannedRiskR} Risk)</span>
+                            <span className="text-app-secondary">({entry.preTrade.plannedRiskR}R Risk)</span>
                           )}
                         </div>
                       )}
@@ -1163,6 +1469,51 @@ export const JournalView: React.FC<JournalViewProps> = ({
                         <p className="text-app-main mt-1 italic">
                           &ldquo;{entry.preTrade.reasonForTrade}&rdquo;
                         </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* In-Trade Mindset & Management */}
+                  {(entry.inTrade?.managementDecisions ||
+                    entry.inTrade?.emotionalObservations ||
+                    (entry.inTrade?.mindsets && entry.inTrade.mindsets.length > 0) ||
+                    entry.inTrade?.mindsetOther ||
+                    (entry.inTrade?.emotionalObservationTags && entry.inTrade.emotionalObservationTags.length > 0)) && (
+                    <div className="p-3 rounded-lg bg-app-field/50 border border-app/60 space-y-1.5">
+                      <div className="font-bold text-[11px] text-app-secondary uppercase tracking-wider">
+                        In-Trade Mindset &amp; Management
+                      </div>
+                      {((entry.inTrade?.mindsets && entry.inTrade.mindsets.length > 0) || entry.inTrade?.mindsetOther) && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          {(entry.inTrade?.mindsets || []).map((m) => (
+                            <span
+                              key={m}
+                              className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border border-amber-300/70"
+                            >
+                              {m}
+                            </span>
+                          ))}
+                          {entry.inTrade?.mindsetOther && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-app-main text-app-main border border-app">
+                              {entry.inTrade.mindsetOther}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {entry.inTrade?.emotionalObservationTags && entry.inTrade.emotionalObservationTags.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          {entry.inTrade.emotionalObservationTags.map((t) => (
+                            <span key={t} className="px-1.5 py-0.5 rounded text-[10px] bg-app-main text-app-secondary border border-app">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {entry.inTrade?.managementDecisions && (
+                        <p className="text-app-main">{entry.inTrade.managementDecisions}</p>
+                      )}
+                      {entry.inTrade?.emotionalObservations && (
+                        <p className="text-app-secondary italic">{entry.inTrade.emotionalObservations}</p>
                       )}
                     </div>
                   )}
@@ -1310,8 +1661,8 @@ export const JournalView: React.FC<JournalViewProps> = ({
               </button>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-4 sm:p-6 overflow-y-auto space-y-4 text-xs">
+            {/* Modal Body — Smooth vertical scroll with 5 stacked collapsible phases */}
+            <div ref={phaseContainerRef} className="p-4 sm:p-6 overflow-y-auto space-y-4 text-xs flex-1">
               {/* Metadata Row */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                 <div>
@@ -1373,6 +1724,31 @@ export const JournalView: React.FC<JournalViewProps> = ({
                 </div>
               </div>
 
+              {(linkedScenarioLabel || linkedTradeId) && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-emerald-pale/50 border border-emerald-500/30 text-[11px]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <LinkIcon className="w-3.5 h-3.5 text-emerald-theme" />
+                    {linkedScenarioLabel && (
+                      <span className="font-semibold text-app-main">Scenario: {linkedScenarioLabel}</span>
+                    )}
+                    {linkedTradeId && (
+                      <span className="text-app-secondary">Trade ID: {linkedTradeId}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLinkedScenarioId('');
+                      setLinkedScenarioLabel('');
+                      setLinkedTradeId('');
+                    }}
+                    className="text-[10px] font-semibold text-app-secondary hover:text-rose-600 cursor-pointer"
+                  >
+                    Unlink
+                  </button>
+                </div>
+              )}
+
               {/* Title / Headline */}
               <div>
                 <label className="text-[11px] font-bold text-app-secondary uppercase block mb-1">
@@ -1380,6 +1756,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
                 </label>
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   placeholder="e.g. London Session Sweep & Expansion — Strict Discipline"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
@@ -1387,464 +1766,913 @@ export const JournalView: React.FC<JournalViewProps> = ({
                 />
               </div>
 
-              {/* Tab Navigation for Structured Input */}
-              <div className="flex items-center gap-1 p-1 rounded-lg bg-app-field border border-app overflow-x-auto">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('prep')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-                    activeTab === 'prep'
-                      ? 'bg-app-main text-emerald-theme shadow-2xs'
-                      : 'text-app-secondary hover:text-app-main'
-                  }`}
-                >
-                  1. Preparation
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('preTrade')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-                    activeTab === 'preTrade'
-                      ? 'bg-app-main text-emerald-theme shadow-2xs'
-                      : 'text-app-secondary hover:text-app-main'
-                  }`}
-                >
-                  2. Pre-Trade
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('inTrade')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-                    activeTab === 'inTrade'
-                      ? 'bg-app-main text-emerald-theme shadow-2xs'
-                      : 'text-app-secondary hover:text-app-main'
-                  }`}
-                >
-                  3. In-Trade
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('postTrade')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-                    activeTab === 'postTrade'
-                      ? 'bg-app-main text-emerald-theme shadow-2xs'
-                      : 'text-app-secondary hover:text-app-main'
-                  }`}
-                >
-                  4. Review &amp; Discipline
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('reflection')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-                    activeTab === 'reflection'
-                      ? 'bg-app-main text-emerald-theme shadow-2xs'
-                      : 'text-app-secondary hover:text-app-main'
-                  }`}
-                >
-                  5. Daily Reflection
-                </button>
-              </div>
+              {/* 5 Vertically Stacked Collapsible Journal Phases */}
+              {(() => {
+                const selectedMoods = normalizeReadinessStates(prep);
+                const prepStatus: 'Empty' | 'Draft' | 'Filled' =
+                  (prep.sessionIntention?.trim() || prep.dailyPlanNotes?.trim()) && selectedMoods.length > 0
+                    ? 'Filled'
+                    : prep.sessionIntention?.trim() || prep.dailyPlanNotes?.trim() || selectedMoods.length > 0
+                    ? 'Draft'
+                    : 'Empty';
 
-              {/* Tab 1: Preparation */}
-              {activeTab === 'prep' && (
-                <div className="space-y-3.5 p-3.5 rounded-lg border border-app bg-app-field/30">
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Emotional Readiness &amp; Mindset
-                    </label>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {EMOTIONAL_STATES.map((st) => (
-                        <button
-                          key={st}
-                          type="button"
-                          onClick={() => setPrep((p) => ({ ...p, readinessState: st }))}
-                          className={`px-3 py-2 rounded border text-xs font-medium text-left transition-colors cursor-pointer ${
-                            prep.readinessState === st
-                              ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-theme font-bold'
-                              : 'border-app bg-app-main text-app-secondary hover:text-app-main'
-                          }`}
-                        >
-                          {st}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                const checkedCount = (preTrade.confirmationChecklist || []).filter((c) => c.checked).length;
+                const preTradeStatus: 'Empty' | 'Draft' | 'Filled' =
+                  preTrade.reasonForTrade?.trim() && (preTrade.setupTag?.trim() || checkedCount > 0)
+                    ? 'Filled'
+                    : preTrade.reasonForTrade?.trim() || preTrade.setupTag?.trim() || preTrade.linkedReportId || checkedCount > 0
+                    ? 'Draft'
+                    : 'Empty';
 
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Session Intention &amp; Focus
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="e.g. Wait patiently for the 15M sweep during London open. Do not front-run confirmation."
-                      value={prep.sessionIntention || ''}
-                      onChange={(e) => setPrep((p) => ({ ...p, sessionIntention: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
+                const inTradeFieldsCount =
+                  ((inTrade.mindsets?.length || 0) > 0 || Boolean(inTrade.mindsetOther?.trim()) ? 1 : 0) +
+                  (inTrade.managementDecisions?.trim() ? 1 : 0) +
+                  ((inTrade.emotionalObservationTags?.length || 0) > 0 || Boolean(inTrade.emotionalObservations?.trim()) ? 1 : 0);
+                const inTradeStatus: 'Empty' | 'Draft' | 'Filled' =
+                  inTradeFieldsCount >= 2 ? 'Filled' : inTradeFieldsCount === 1 ? 'Draft' : 'Empty';
 
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Daily Plan &amp; Key Levels
-                    </label>
-                    <textarea
-                      rows={3}
-                      placeholder="Key daily/hourly levels to monitor, news releases, expected volatility..."
-                      value={prep.dailyPlanNotes || ''}
-                      onChange={(e) => setPrep((p) => ({ ...p, dailyPlanNotes: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-              )}
+                const postTradeHasContent =
+                  Boolean(postTrade.executionReview?.trim()) ||
+                  (postTrade.mistakeTags?.length || 0) > 0 ||
+                  (postTrade.lessonTags?.length || 0) > 0;
+                const postTradeStatus: 'Empty' | 'Draft' | 'Filled' = postTradeHasContent
+                  ? 'Filled'
+                  : postTrade.rulesFollowedStatus && postTrade.rulesFollowedStatus !== 'Unreviewed'
+                  ? 'Draft'
+                  : 'Empty';
 
-              {/* Tab 2: Pre-Trade */}
-              {activeTab === 'preTrade' && (
-                <div className="space-y-3.5 p-3.5 rounded-lg border border-app bg-app-field/30">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                        Setup / Strategy Tag
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Liquidity Sweep + MSS"
-                        value={preTrade.setupTag || ''}
-                        onChange={(e) => setPreTrade((pt) => ({ ...pt, setupTag: e.target.value }))}
-                        className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
-                      />
-                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                        {COMMON_SETUP_TAGS.slice(0, 4).map((tag) => (
-                          <button
-                            key={tag}
-                            type="button"
-                            onClick={() => setPreTrade((pt) => ({ ...pt, setupTag: tag }))}
-                            className="px-2 py-0.5 rounded text-[10px] bg-app-field text-app-secondary hover:text-app-main border border-app cursor-pointer"
-                          >
-                            + {tag}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                const reflectionCount =
+                  (reflection.whatWorked?.trim() ? 1 : 0) +
+                  (reflection.whatDidNot?.trim() ? 1 : 0) +
+                  (reflection.nextSessionCommitment?.trim() ? 1 : 0);
+                const reflectionStatus: 'Empty' | 'Draft' | 'Filled' =
+                  reflection.noTradesDay || reflectionCount >= 2
+                    ? 'Filled'
+                    : reflectionCount === 1
+                    ? 'Draft'
+                    : 'Empty';
 
-                    <div>
-                      <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                        Link to Saved Analysis (Optional)
-                      </label>
-                      <select
-                        value={preTrade.linkedReportId || ''}
-                        onChange={(e) => setPreTrade((pt) => ({ ...pt, linkedReportId: e.target.value }))}
-                        className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs cursor-pointer"
+                const statusPillClass = (status: 'Empty' | 'Draft' | 'Filled') =>
+                  status === 'Filled'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700'
+                    : status === 'Draft'
+                    ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700'
+                    : 'bg-app-field text-app-secondary border-app';
+
+                const mergedSetupSuggestions = Array.from(
+                  new Set([...COMMON_SETUP_TAGS, ...suggestions.setupTags, ...suggestions.strategies])
+                );
+                const mergedMistakeSuggestions = Array.from(
+                  new Set([...COMMON_MISTAKE_TAGS, ...suggestions.mistakeTags])
+                );
+                const mergedLessonSuggestions = Array.from(
+                  new Set([...COMMON_LESSON_TAGS, ...suggestions.lessonTags])
+                );
+
+                return (
+                  <div className="space-y-3">
+                    {/* PHASE 1: Daily Preparation */}
+                    <div
+                      data-journal-phase="prep"
+                      className="rounded-lg border border-app bg-app-field/25 overflow-hidden"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => togglePhase('prep')}
+                        aria-expanded={openPhases.prep}
+                        className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between gap-2 bg-app-secondary/50 hover:bg-app-secondary/80 transition-colors cursor-pointer text-left"
                       >
-                        <option value="">None (Standalone Entry)</option>
-                        {reportsList.map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.title || `${r.pair} Analysis (${r.date})`}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Reason for Considering Trade
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="Why is this trade valid under your strategy? What market condition supports it?"
-                      value={preTrade.reasonForTrade || ''}
-                      onChange={(e) => setPreTrade((pt) => ({ ...pt, reasonForTrade: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Pre-Trade Confirmation Checklist
-                    </label>
-                    <div className="space-y-1.5">
-                      {(preTrade.confirmationChecklist || []).map((chk, idx) => (
-                        <label
-                          key={idx}
-                          className="flex items-center gap-2 p-2 rounded bg-app-main border border-app cursor-pointer hover:bg-app-field transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={chk.checked}
-                            onChange={(e) => {
-                              const next = [...(preTrade.confirmationChecklist || [])];
-                              next[idx].checked = e.target.checked;
-                              setPreTrade((pt) => ({ ...pt, confirmationChecklist: next }));
-                            }}
-                            className="rounded text-emerald-theme focus:ring-emerald-500"
-                          />
-                          <span className={`text-xs ${chk.checked ? 'text-app-main font-semibold' : 'text-app-secondary'}`}>
-                            {chk.item}
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs sm:text-sm text-app-main">
+                            1. Daily Preparation
+                          </div>
+                          <div className="text-[11px] text-app-secondary truncate">
+                            Mindset readiness (up to 3), session intention &amp; key plan
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusPillClass(prepStatus)}`}>
+                            {prepStatus}
                           </span>
-                        </label>
-                      ))}
+                          {openPhases.prep ? <ChevronUp className="w-4 h-4 text-app-secondary" /> : <ChevronDown className="w-4 h-4 text-app-secondary" />}
+                        </div>
+                      </button>
+
+                      {openPhases.prep && (
+                        <div className="p-3.5 space-y-3.5 border-t border-app/60">
+                          <div>
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <label className="text-[11px] font-bold text-app-main uppercase">
+                                Emotional Readiness &amp; Mindset (Up to 3)
+                              </label>
+                              <span
+                                className={`text-[11px] font-bold ${
+                                  selectedMoods.length >= 3 ? 'text-emerald-theme' : 'text-app-secondary'
+                                }`}
+                              >
+                                {selectedMoods.length} / 3 selected
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                              {EMOTIONAL_STATES.map((st) => {
+                                const isSelected = selectedMoods.includes(st);
+                                return (
+                                  <button
+                                    key={st}
+                                    type="button"
+                                    onClick={() => {
+                                      if (isSelected) {
+                                        const next = selectedMoods.filter((m) => m !== st);
+                                        setMoodCapWarning(null);
+                                        setPrep((p) => ({
+                                          ...p,
+                                          readinessStates: next,
+                                          readinessState: next[0] || '',
+                                        }));
+                                      } else if (selectedMoods.length >= 3) {
+                                        setMoodCapWarning('Maximum 3 readiness moods can be selected. Deselect one first to pick another.');
+                                      } else {
+                                        const next = [...selectedMoods, st];
+                                        setMoodCapWarning(null);
+                                        setPrep((p) => ({
+                                          ...p,
+                                          readinessStates: next,
+                                          readinessState: next[0] || '',
+                                        }));
+                                      }
+                                    }}
+                                    aria-pressed={isSelected}
+                                    className={`min-h-[44px] px-3 py-2 rounded border text-xs font-medium text-left transition-colors cursor-pointer ${
+                                      isSelected
+                                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-theme font-bold'
+                                        : 'border-app bg-app-main text-app-secondary hover:text-app-main'
+                                    }`}
+                                  >
+                                    {isSelected ? '✓ ' : ''}
+                                    {st}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {moodCapWarning && (
+                              <div className="mt-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-300/70 rounded px-2.5 py-1.5">
+                                {moodCapWarning}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Session Intention &amp; Focus
+                            </label>
+                            <textarea
+                              rows={2}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="e.g. Wait patiently for the 15M sweep during London open. Do not front-run confirmation."
+                              value={prep.sessionIntention || ''}
+                              onChange={(e) => setPrep((p) => ({ ...p, sessionIntention: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Daily Plan &amp; Key Levels
+                            </label>
+                            <textarea
+                              rows={3}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="Key daily/hourly levels to monitor, news releases, expected volatility..."
+                              value={prep.dailyPlanNotes || ''}
+                              onChange={(e) => setPrep((p) => ({ ...p, dailyPlanNotes: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center gap-2 mt-2">
-                      <input
-                        type="text"
-                        placeholder="Add custom confirmation rule..."
-                        value={newChecklistText}
-                        onChange={(e) => setNewChecklistText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && newChecklistText.trim()) {
-                            e.preventDefault();
-                            setPreTrade((pt) => ({
-                              ...pt,
-                              confirmationChecklist: [
-                                ...(pt.confirmationChecklist || []),
-                                { item: newChecklistText.trim(), checked: false },
-                              ],
-                            }));
-                            setNewChecklistText('');
-                          }
-                        }}
-                        className="flex-1 px-2.5 py-1.5 rounded border border-app bg-app-main text-xs text-app-main"
-                      />
+                    {/* PHASE 2: Pre-Trade Checklist */}
+                    <div
+                      data-journal-phase="preTrade"
+                      className="rounded-lg border border-app bg-app-field/25 overflow-hidden"
+                    >
                       <button
                         type="button"
-                        onClick={() => {
-                          if (newChecklistText.trim()) {
-                            setPreTrade((pt) => ({
-                              ...pt,
-                              confirmationChecklist: [
-                                ...(pt.confirmationChecklist || []),
-                                { item: newChecklistText.trim(), checked: false },
-                              ],
-                            }));
-                            setNewChecklistText('');
-                          }
-                        }}
-                        className="px-3 py-1.5 rounded bg-app-field border border-app text-xs font-semibold text-app-main hover:bg-app-main cursor-pointer"
+                        onClick={() => togglePhase('preTrade')}
+                        aria-expanded={openPhases.preTrade}
+                        className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between gap-2 bg-app-secondary/50 hover:bg-app-secondary/80 transition-colors cursor-pointer text-left"
                       >
-                        Add Rule
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs sm:text-sm text-app-main">
+                            2. Pre-Trade Checklist
+                          </div>
+                          <div className="text-[11px] text-app-secondary truncate">
+                            Setup / strategy tag, linked analysis &amp; confirmation checklist
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusPillClass(preTradeStatus)}`}>
+                            {preTradeStatus}
+                          </span>
+                          {openPhases.preTrade ? <ChevronUp className="w-4 h-4 text-app-secondary" /> : <ChevronDown className="w-4 h-4 text-app-secondary" />}
+                        </div>
                       </button>
+
+                      {openPhases.preTrade && (
+                        <div className="p-3.5 space-y-3.5 border-t border-app/60">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                              <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                                Setup / Strategy Tag
+                              </label>
+                              <input
+                                type="text"
+                                spellCheck
+                                autoCorrect="on"
+                                autoCapitalize="sentences"
+                                list="journal-setup-suggestions"
+                                placeholder="e.g. Liquidity Sweep + MSS"
+                                value={preTrade.setupTag || ''}
+                                onChange={(e) => setPreTrade((pt) => ({ ...pt, setupTag: e.target.value }))}
+                                className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
+                              />
+                              <datalist id="journal-setup-suggestions">
+                                {mergedSetupSuggestions.map((tag) => (
+                                  <option key={tag} value={tag} />
+                                ))}
+                              </datalist>
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                {mergedSetupSuggestions.slice(0, 6).map((tag) => (
+                                  <button
+                                    key={tag}
+                                    type="button"
+                                    onClick={() => setPreTrade((pt) => ({ ...pt, setupTag: tag }))}
+                                    className="px-2 py-0.5 rounded text-[10px] bg-app-field text-app-secondary hover:text-app-main border border-app cursor-pointer"
+                                  >
+                                    + {tag}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                                Planned Risk (R)
+                              </label>
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                placeholder="1 or 0.5"
+                                value={preTrade.plannedRiskR || ''}
+                                onChange={(e) => setPreTrade((pt) => ({ ...pt, plannedRiskR: e.target.value }))}
+                                className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                                Link to Saved Analysis (Optional)
+                              </label>
+                              <select
+                                value={preTrade.linkedReportId || ''}
+                                onChange={(e) => setPreTrade((pt) => ({ ...pt, linkedReportId: e.target.value }))}
+                                className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs cursor-pointer"
+                              >
+                                <option value="">None (Standalone Entry)</option>
+                                {reportsList.map((r) => (
+                                  <option key={r.id} value={r.id}>
+                                    {r.title || `${r.pair} Analysis (${r.date})`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Reason for Considering Trade
+                            </label>
+                            <textarea
+                              rows={2}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="Why is this trade valid under your strategy? What market condition supports it?"
+                              value={preTrade.reasonForTrade || ''}
+                              onChange={(e) => setPreTrade((pt) => ({ ...pt, reasonForTrade: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Pre-Trade Confirmation Checklist
+                            </label>
+                            <div className="space-y-1.5">
+                              {(preTrade.confirmationChecklist || []).map((chk, idx) => (
+                                <label
+                                  key={idx}
+                                  className="flex items-center gap-2 p-2 rounded bg-app-main border border-app cursor-pointer hover:bg-app-field transition-colors"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={chk.checked}
+                                    onChange={(e) => {
+                                      const next = [...(preTrade.confirmationChecklist || [])];
+                                      next[idx] = { ...next[idx], checked: e.target.checked };
+                                      setPreTrade((pt) => ({ ...pt, confirmationChecklist: next }));
+                                    }}
+                                    className="rounded text-emerald-theme focus:ring-emerald-500"
+                                  />
+                                  <span className={`text-xs ${chk.checked ? 'text-app-main font-semibold' : 'text-app-secondary'}`}>
+                                    {chk.item}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+
+                            <div className="flex items-center gap-2 mt-2">
+                              <input
+                                type="text"
+                                spellCheck
+                                autoCorrect="on"
+                                autoCapitalize="sentences"
+                                placeholder="Add custom confirmation rule..."
+                                value={newChecklistText}
+                                onChange={(e) => setNewChecklistText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && newChecklistText.trim()) {
+                                    e.preventDefault();
+                                    setPreTrade((pt) => ({
+                                      ...pt,
+                                      confirmationChecklist: [
+                                        ...(pt.confirmationChecklist || []),
+                                        { item: newChecklistText.trim(), checked: false },
+                                      ],
+                                    }));
+                                    setNewChecklistText('');
+                                  }
+                                }}
+                                className="flex-1 px-2.5 py-1.5 rounded border border-app bg-app-main text-xs text-app-main"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (newChecklistText.trim()) {
+                                    setPreTrade((pt) => ({
+                                      ...pt,
+                                      confirmationChecklist: [
+                                        ...(pt.confirmationChecklist || []),
+                                        { item: newChecklistText.trim(), checked: false },
+                                      ],
+                                    }));
+                                    setNewChecklistText('');
+                                  }
+                                }}
+                                className="px-3 py-1.5 rounded bg-app-field border border-app text-xs font-semibold text-app-main hover:bg-app-main cursor-pointer"
+                              >
+                                Add Rule
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                </div>
-              )}
 
-              {/* Tab 3: In-Trade */}
-              {activeTab === 'inTrade' && (
-                <div className="space-y-3.5 p-3.5 rounded-lg border border-app bg-app-field/30">
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Management Decisions &amp; Plan Adjustments
-                    </label>
-                    <textarea
-                      rows={3}
-                      placeholder="e.g. Moved stop to breakeven after 1:2 reached; took 50% partial at internal high..."
-                      value={inTrade.managementDecisions || ''}
-                      onChange={(e) => setInTrade((it) => ({ ...it, managementDecisions: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Emotional Observations During Trade
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="Did you feel tempted to close early? Over-monitoring? Calm execution?"
-                      value={inTrade.emotionalObservations || ''}
-                      onChange={(e) => setInTrade((it) => ({ ...it, emotionalObservations: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 4: Post-Trade Review & Discipline */}
-              {activeTab === 'postTrade' && (
-                <div className="space-y-3.5 p-3.5 rounded-lg border border-app bg-app-field/30">
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Trading Rule Compliance Status
-                    </label>
-                    <div className="grid grid-cols-3 gap-2">
+                    {/* PHASE 3: In-Trade Management */}
+                    <div
+                      data-journal-phase="inTrade"
+                      className="rounded-lg border border-app bg-app-field/25 overflow-hidden"
+                    >
                       <button
                         type="button"
-                        onClick={() => setPostTrade((pt) => ({ ...pt, rulesFollowedStatus: 'Followed' }))}
-                        className={`px-3 py-2 rounded border text-xs font-bold transition-colors cursor-pointer text-center ${
-                          postTrade.rulesFollowedStatus === 'Followed'
-                            ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-theme'
-                            : 'border-app bg-app-main text-app-secondary hover:text-app-main'
-                        }`}
+                        onClick={() => togglePhase('inTrade')}
+                        aria-expanded={openPhases.inTrade}
+                        className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between gap-2 bg-app-secondary/50 hover:bg-app-secondary/80 transition-colors cursor-pointer text-left"
                       >
-                        ✓ Rules Followed
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs sm:text-sm text-app-main">
+                            3. In-Trade Management
+                          </div>
+                          <div className="text-[11px] text-app-secondary truncate">
+                            Mindset during trade, active management &amp; emotional observations
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusPillClass(inTradeStatus)}`}>
+                            {inTradeStatus}
+                          </span>
+                          {openPhases.inTrade ? <ChevronUp className="w-4 h-4 text-app-secondary" /> : <ChevronDown className="w-4 h-4 text-app-secondary" />}
+                        </div>
                       </button>
+
+                      {openPhases.inTrade && (
+                        <div className="p-3.5 space-y-3.5 border-t border-app/60">
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1.5">
+                              Mindset During Trade
+                            </label>
+                            <div className="flex flex-wrap gap-1.5 mb-2">
+                              {IN_TRADE_MINDSET_PRESETS.map((preset) => {
+                                const isSel = (inTrade.mindsets || []).includes(preset);
+                                return (
+                                  <button
+                                    key={preset}
+                                    type="button"
+                                    aria-pressed={isSel}
+                                    onClick={() => {
+                                      const cur = inTrade.mindsets || [];
+                                      setInTrade((it) => ({
+                                        ...it,
+                                        mindsets: isSel ? cur.filter((x) => x !== preset) : [...cur, preset],
+                                      }));
+                                    }}
+                                    className={`min-h-[36px] px-2.5 py-1 rounded border text-[11px] font-medium transition-colors cursor-pointer ${
+                                      isSel
+                                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-theme font-bold'
+                                        : 'border-app bg-app-main text-app-secondary hover:text-app-main'
+                                    }`}
+                                  >
+                                    {isSel ? '✓ ' : ''}
+                                    {preset}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <input
+                              type="text"
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="Other mindset state (optional)..."
+                              value={inTrade.mindsetOther || ''}
+                              onChange={(e) => setInTrade((it) => ({ ...it, mindsetOther: e.target.value }))}
+                              className="w-full px-3 py-1.5 rounded border border-app bg-app-main text-app-main text-xs"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Management Decisions &amp; Plan Adjustments
+                            </label>
+                            <textarea
+                              rows={3}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="e.g. Moved stop to breakeven after 1:2 reached; took 50% partial at internal high..."
+                              value={inTrade.managementDecisions || ''}
+                              onChange={(e) => setInTrade((it) => ({ ...it, managementDecisions: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-[11px] font-bold text-app-main uppercase block">
+                              Emotional Observations &amp; Urges During Trade
+                            </label>
+                            <div className="flex flex-wrap gap-1.5">
+                              {IN_TRADE_OBSERVATION_PRESETS.map((obs) => {
+                                const isSel = (inTrade.emotionalObservationTags || []).includes(obs);
+                                return (
+                                  <button
+                                    key={obs}
+                                    type="button"
+                                    aria-pressed={isSel}
+                                    onClick={() => {
+                                      const cur = inTrade.emotionalObservationTags || [];
+                                      setInTrade((it) => ({
+                                        ...it,
+                                        emotionalObservationTags: isSel ? cur.filter((x) => x !== obs) : [...cur, obs],
+                                      }));
+                                    }}
+                                    className={`px-2.5 py-1 rounded border text-[11px] font-medium transition-colors cursor-pointer ${
+                                      isSel
+                                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 font-semibold'
+                                        : 'border-app bg-app-main text-app-secondary hover:text-app-main'
+                                    }`}
+                                  >
+                                    {isSel ? '✓ ' : '+ '}
+                                    {obs}
+                                  </button>
+                                );
+                              })}
+                              {(inTrade.emotionalObservationTags || [])
+                                .filter((t) => !(IN_TRADE_OBSERVATION_PRESETS as ReadonlyArray<string>).includes(t))
+                                .map((customTag) => (
+                                  <button
+                                    key={customTag}
+                                    type="button"
+                                    onClick={() =>
+                                      setInTrade((it) => ({
+                                        ...it,
+                                        emotionalObservationTags: (it.emotionalObservationTags || []).filter((x) => x !== customTag),
+                                      }))
+                                    }
+                                    className="px-2.5 py-1 rounded border border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    ✕ {customTag}
+                                  </button>
+                                ))}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                spellCheck
+                                autoCorrect="on"
+                                autoCapitalize="sentences"
+                                placeholder="Add custom emotional observation tag..."
+                                value={newInTradeObsTag}
+                                onChange={(e) => setNewInTradeObsTag(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && newInTradeObsTag.trim()) {
+                                    e.preventDefault();
+                                    const trimmed = newInTradeObsTag.trim();
+                                    setInTrade((it) => ({
+                                      ...it,
+                                      emotionalObservationTags: (it.emotionalObservationTags || []).includes(trimmed)
+                                        ? it.emotionalObservationTags
+                                        : [...(it.emotionalObservationTags || []), trimmed],
+                                    }));
+                                    setNewInTradeObsTag('');
+                                  }
+                                }}
+                                className="flex-1 px-2.5 py-1.5 rounded border border-app bg-app-main text-xs text-app-main"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const trimmed = newInTradeObsTag.trim();
+                                  if (!trimmed) return;
+                                  setInTrade((it) => ({
+                                    ...it,
+                                    emotionalObservationTags: (it.emotionalObservationTags || []).includes(trimmed)
+                                      ? it.emotionalObservationTags
+                                      : [...(it.emotionalObservationTags || []), trimmed],
+                                  }));
+                                  setNewInTradeObsTag('');
+                                }}
+                                className="px-3 py-1.5 rounded bg-app-field border border-app text-xs font-semibold text-app-main cursor-pointer"
+                              >
+                                Add Tag
+                              </button>
+                            </div>
+                            <textarea
+                              rows={2}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="Detailed notes on what you felt during execution (kept separate from Rule Compliance)..."
+                              value={inTrade.emotionalObservations || ''}
+                              onChange={(e) => setInTrade((it) => ({ ...it, emotionalObservations: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* PHASE 4: Review & Discipline */}
+                    <div
+                      data-journal-phase="postTrade"
+                      className="rounded-lg border border-app bg-app-field/25 overflow-hidden"
+                    >
                       <button
                         type="button"
-                        onClick={() => setPostTrade((pt) => ({ ...pt, rulesFollowedStatus: 'Broken' }))}
-                        className={`px-3 py-2 rounded border text-xs font-bold transition-colors cursor-pointer text-center ${
-                          postTrade.rulesFollowedStatus === 'Broken'
-                            ? 'border-rose-500 bg-rose-50 dark:bg-rose-950/40 text-rose-600'
-                            : 'border-app bg-app-main text-app-secondary hover:text-app-main'
-                        }`}
+                        onClick={() => togglePhase('postTrade')}
+                        aria-expanded={openPhases.postTrade}
+                        className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between gap-2 bg-app-secondary/50 hover:bg-app-secondary/80 transition-colors cursor-pointer text-left"
                       >
-                        ✕ Rules Broken
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs sm:text-sm text-app-main">
+                            4. Review &amp; Discipline
+                          </div>
+                          <div className="text-[11px] text-app-secondary truncate">
+                            Rule compliance, mistake &amp; lesson tags, execution takeaway
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusPillClass(postTradeStatus)}`}>
+                            {postTradeStatus}
+                          </span>
+                          {openPhases.postTrade ? <ChevronUp className="w-4 h-4 text-app-secondary" /> : <ChevronDown className="w-4 h-4 text-app-secondary" />}
+                        </div>
                       </button>
+
+                      {openPhases.postTrade && (
+                        <div className="p-3.5 space-y-3.5 border-t border-app/60">
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Trading Rule Compliance Status
+                            </label>
+                            <div className="grid grid-cols-3 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setPostTrade((pt) => ({ ...pt, rulesFollowedStatus: 'Followed' }))}
+                                className={`min-h-[44px] px-3 py-2 rounded border text-xs font-bold transition-colors cursor-pointer text-center ${
+                                  postTrade.rulesFollowedStatus === 'Followed'
+                                    ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-theme'
+                                    : 'border-app bg-app-main text-app-secondary hover:text-app-main'
+                                }`}
+                              >
+                                ✓ Rules Followed
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPostTrade((pt) => ({ ...pt, rulesFollowedStatus: 'Broken' }))}
+                                className={`min-h-[44px] px-3 py-2 rounded border text-xs font-bold transition-colors cursor-pointer text-center ${
+                                  postTrade.rulesFollowedStatus === 'Broken'
+                                    ? 'border-rose-500 bg-rose-50 dark:bg-rose-950/40 text-rose-600'
+                                    : 'border-app bg-app-main text-app-secondary hover:text-app-main'
+                                }`}
+                              >
+                                ✕ Rules Broken
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPostTrade((pt) => ({ ...pt, rulesFollowedStatus: 'Unreviewed' }))}
+                                className={`min-h-[44px] px-3 py-2 rounded border text-xs font-bold transition-colors cursor-pointer text-center ${
+                                  postTrade.rulesFollowedStatus === 'Unreviewed'
+                                    ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-600'
+                                    : 'border-app bg-app-main text-app-secondary hover:text-app-main'
+                                }`}
+                              >
+                                ? Unreviewed
+                              </button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Mistake Tags (if any rules were broken)
+                            </label>
+                            <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                              {mergedMistakeSuggestions.map((tag) => {
+                                const isSelected = (postTrade.mistakeTags || []).includes(tag);
+                                return (
+                                  <button
+                                    key={tag}
+                                    type="button"
+                                    onClick={() => {
+                                      const cur = postTrade.mistakeTags || [];
+                                      setPostTrade((pt) => ({
+                                        ...pt,
+                                        mistakeTags: isSelected ? cur.filter((t) => t !== tag) : [...cur, tag],
+                                      }));
+                                    }}
+                                    className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-300'
+                                        : 'bg-app-main text-app-secondary border-app hover:text-app-main'
+                                    }`}
+                                  >
+                                    {isSelected ? '✕ ' : '+ '}
+                                    {tag}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                spellCheck
+                                autoCorrect="on"
+                                autoCapitalize="sentences"
+                                placeholder="Add custom mistake tag..."
+                                value={customMistakeInput}
+                                onChange={(e) => setCustomMistakeInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && customMistakeInput.trim()) {
+                                    e.preventDefault();
+                                    const trimmed = customMistakeInput.trim();
+                                    setPostTrade((pt) => ({
+                                      ...pt,
+                                      mistakeTags: (pt.mistakeTags || []).includes(trimmed)
+                                        ? pt.mistakeTags
+                                        : [...(pt.mistakeTags || []), trimmed],
+                                    }));
+                                    setCustomMistakeInput('');
+                                  }
+                                }}
+                                className="flex-1 px-2.5 py-1.5 rounded border border-app bg-app-main text-xs text-app-main"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const trimmed = customMistakeInput.trim();
+                                  if (!trimmed) return;
+                                  setPostTrade((pt) => ({
+                                    ...pt,
+                                    mistakeTags: (pt.mistakeTags || []).includes(trimmed)
+                                      ? pt.mistakeTags
+                                      : [...(pt.mistakeTags || []), trimmed],
+                                  }));
+                                  setCustomMistakeInput('');
+                                }}
+                                className="px-3 py-1.5 rounded bg-app-field border border-app text-xs font-semibold text-app-main cursor-pointer"
+                              >
+                                Add Mistake
+                              </button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Lesson Tags &amp; Best Practices
+                            </label>
+                            <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                              {mergedLessonSuggestions.map((tag) => {
+                                const isSelected = (postTrade.lessonTags || []).includes(tag);
+                                return (
+                                  <button
+                                    key={tag}
+                                    type="button"
+                                    onClick={() => {
+                                      const cur = postTrade.lessonTags || [];
+                                      setPostTrade((pt) => ({
+                                        ...pt,
+                                        lessonTags: isSelected ? cur.filter((t) => t !== tag) : [...cur, tag],
+                                      }));
+                                    }}
+                                    className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-300'
+                                        : 'bg-app-main text-app-secondary border-app hover:text-app-main'
+                                    }`}
+                                  >
+                                    {isSelected ? '✓ ' : '+ '}
+                                    {tag}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                spellCheck
+                                autoCorrect="on"
+                                autoCapitalize="sentences"
+                                placeholder="Add custom lesson tag..."
+                                value={customLessonInput}
+                                onChange={(e) => setCustomLessonInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && customLessonInput.trim()) {
+                                    e.preventDefault();
+                                    const trimmed = customLessonInput.trim();
+                                    setPostTrade((pt) => ({
+                                      ...pt,
+                                      lessonTags: (pt.lessonTags || []).includes(trimmed)
+                                        ? pt.lessonTags
+                                        : [...(pt.lessonTags || []), trimmed],
+                                    }));
+                                    setCustomLessonInput('');
+                                  }
+                                }}
+                                className="flex-1 px-2.5 py-1.5 rounded border border-app bg-app-main text-xs text-app-main"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const trimmed = customLessonInput.trim();
+                                  if (!trimmed) return;
+                                  setPostTrade((pt) => ({
+                                    ...pt,
+                                    lessonTags: (pt.lessonTags || []).includes(trimmed)
+                                      ? pt.lessonTags
+                                      : [...(pt.lessonTags || []), trimmed],
+                                  }));
+                                  setCustomLessonInput('');
+                                }}
+                                className="px-3 py-1.5 rounded bg-app-field border border-app text-xs font-semibold text-app-main cursor-pointer"
+                              >
+                                Add Lesson
+                              </button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
+                              Execution Quality &amp; Key Takeaway
+                            </label>
+                            <textarea
+                              rows={3}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="What should you repeat next time? What specific behavior should be improved?"
+                              value={postTrade.executionReview || ''}
+                              onChange={(e) => setPostTrade((pt) => ({ ...pt, executionReview: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* PHASE 5: Daily Reflection */}
+                    <div
+                      data-journal-phase="reflection"
+                      className="rounded-lg border border-app bg-app-field/25 overflow-hidden"
+                    >
                       <button
                         type="button"
-                        onClick={() => setPostTrade((pt) => ({ ...pt, rulesFollowedStatus: 'Unreviewed' }))}
-                        className={`px-3 py-2 rounded border text-xs font-bold transition-colors cursor-pointer text-center ${
-                          postTrade.rulesFollowedStatus === 'Unreviewed'
-                            ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-600'
-                            : 'border-app bg-app-main text-app-secondary hover:text-app-main'
-                        }`}
+                        onClick={() => togglePhase('reflection')}
+                        aria-expanded={openPhases.reflection}
+                        className="w-full min-h-[44px] px-3.5 py-2.5 flex items-center justify-between gap-2 bg-app-secondary/50 hover:bg-app-secondary/80 transition-colors cursor-pointer text-left"
                       >
-                        ? Unreviewed
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs sm:text-sm text-app-main">
+                            5. Daily Reflection
+                          </div>
+                          <div className="text-[11px] text-app-secondary truncate">
+                            What worked, what didn&rsquo;t, no-trade status &amp; next session commitment
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${statusPillClass(reflectionStatus)}`}>
+                            {reflectionStatus}
+                          </span>
+                          {openPhases.reflection ? <ChevronUp className="w-4 h-4 text-app-secondary" /> : <ChevronDown className="w-4 h-4 text-app-secondary" />}
+                        </div>
                       </button>
+
+                      {openPhases.reflection && (
+                        <div className="p-3.5 space-y-3.5 border-t border-app/60">
+                          <label className="flex items-center gap-2 p-2.5 rounded bg-app-main border border-app cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={reflection.noTradesDay || false}
+                              onChange={(e) => setReflection((r) => ({ ...r, noTradesDay: e.target.checked }))}
+                              className="rounded text-emerald-theme focus:ring-emerald-500"
+                            />
+                            <div>
+                              <span className="font-bold text-xs text-app-main block">
+                                Record as No-Trade Day
+                              </span>
+                              <span className="text-[11px] text-app-secondary">
+                                Documenting non-trading days preserves discipline and tracks patience when criteria are not met.
+                              </span>
+                            </div>
+                          </label>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase block mb-1">
+                              What Worked Today
+                            </label>
+                            <textarea
+                              rows={2}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="Positive execution habits, patience, rule adhesion..."
+                              value={reflection.whatWorked || ''}
+                              onChange={(e) => setReflection((r) => ({ ...r, whatWorked: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase block mb-1">
+                              What Did Not Work
+                            </label>
+                            <textarea
+                              rows={2}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="Hesitation, overtrading, missed invalidations..."
+                              value={reflection.whatDidNot || ''}
+                              onChange={(e) => setReflection((r) => ({ ...r, whatDidNot: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase block mb-1">
+                              Commitment for Next Session
+                            </label>
+                            <textarea
+                              rows={2}
+                              spellCheck
+                              autoCorrect="on"
+                              autoCapitalize="sentences"
+                              placeholder="One concrete behavioral commitment for the next trading session."
+                              value={reflection.nextSessionCommitment || ''}
+                              onChange={(e) => setReflection((r) => ({ ...r, nextSessionCommitment: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Mistake Tags (if any rules were broken)
-                    </label>
-                    <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                      {COMMON_MISTAKE_TAGS.map((tag) => {
-                        const isSelected = (postTrade.mistakeTags || []).includes(tag);
-                        return (
-                          <button
-                            key={tag}
-                            type="button"
-                            onClick={() => {
-                              const cur = postTrade.mistakeTags || [];
-                              setPostTrade((pt) => ({
-                                ...pt,
-                                mistakeTags: isSelected ? cur.filter((t) => t !== tag) : [...cur, tag],
-                              }));
-                            }}
-                            className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                              isSelected
-                                ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-300'
-                                : 'bg-app-main text-app-secondary border-app hover:text-app-main'
-                            }`}
-                          >
-                            {isSelected ? '✕ ' : '+ '}
-                            {tag}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Lesson Tags &amp; Best Practices
-                    </label>
-                    <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                      {COMMON_LESSON_TAGS.map((tag) => {
-                        const isSelected = (postTrade.lessonTags || []).includes(tag);
-                        return (
-                          <button
-                            key={tag}
-                            type="button"
-                            onClick={() => {
-                              const cur = postTrade.lessonTags || [];
-                              setPostTrade((pt) => ({
-                                ...pt,
-                                lessonTags: isSelected ? cur.filter((t) => t !== tag) : [...cur, tag],
-                              }));
-                            }}
-                            className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                              isSelected
-                                ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-300'
-                                : 'bg-app-main text-app-secondary border-app hover:text-app-main'
-                            }`}
-                          >
-                            {isSelected ? '✓ ' : '+ '}
-                            {tag}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-app-main uppercase block mb-1">
-                      Execution Quality &amp; Key Takeaway
-                    </label>
-                    <textarea
-                      rows={3}
-                      placeholder="What should you repeat next time? What specific behavior should be improved?"
-                      value={postTrade.executionReview || ''}
-                      onChange={(e) => setPostTrade((pt) => ({ ...pt, executionReview: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 5: Daily Reflection */}
-              {activeTab === 'reflection' && (
-                <div className="space-y-3.5 p-3.5 rounded-lg border border-app bg-app-field/30">
-                  <label className="flex items-center gap-2 p-2.5 rounded bg-app-main border border-app cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={reflection.noTradesDay || false}
-                      onChange={(e) => setReflection((r) => ({ ...r, noTradesDay: e.target.checked }))}
-                      className="rounded text-emerald-theme focus:ring-emerald-500"
-                    />
-                    <div>
-                      <span className="font-bold text-xs text-app-main block">
-                        Record as No-Trade Day
-                      </span>
-                      <span className="text-[11px] text-app-secondary">
-                        Documenting non-trading days preserves discipline and tracks patience when criteria are not met.
-                      </span>
-                    </div>
-                  </label>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase block mb-1">
-                      What Worked Today
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="Positive execution habits, patience, rule adhesion..."
-                      value={reflection.whatWorked || ''}
-                      onChange={(e) => setReflection((r) => ({ ...r, whatWorked: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase block mb-1">
-                      What Did Not Work
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="Hesitation, overtrading, missed invalidations..."
-                      value={reflection.whatDidNot || ''}
-                      onChange={(e) => setReflection((r) => ({ ...r, whatDidNot: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase block mb-1">
-                      Commitment for Next Session
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="One concrete behavioral commitment for the next trading session."
-                      value={reflection.nextSessionCommitment || ''}
-                      onChange={(e) => setReflection((r) => ({ ...r, nextSessionCommitment: e.target.value }))}
-                      className="w-full px-3 py-2 rounded border border-app bg-app-main text-app-main text-xs"
-                    />
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Discard confirmation */}

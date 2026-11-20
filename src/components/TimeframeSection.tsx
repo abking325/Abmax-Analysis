@@ -20,6 +20,7 @@ import {
   FractalDirection,
   OverallBias,
   PriceLocation,
+  StructureConfirmation,
   StructureDirection,
   SupplyDemandLevel,
   TimeframeData,
@@ -29,6 +30,7 @@ import {
   OpeningCandleEntry,
   getPersonalBiasLabel,
   isHigherPersonalBiasTimeframe,
+  normalizeStructureDirectionAndConfirmation,
 } from '../types/journal';
 import {
   isDeepAnalysisAligned,
@@ -428,6 +430,9 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                         </label>
                         <input
                           type="text"
+                          spellCheck
+                          autoCorrect="on"
+                          autoCapitalize="sentences"
                           value={editLevelNote}
                           onChange={(e) => setEditLevelNote(e.target.value)}
                           placeholder="Optional observation / note..."
@@ -555,6 +560,9 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                 </label>
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={newLevelNote}
                   onChange={(e) => setNewLevelNote(e.target.value)}
                   placeholder="Optional observation / note..."
@@ -765,6 +773,9 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               </label>
               <input
                 type="text"
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={data.biasSpecific}
                 onChange={(e) =>
                   onUpdateField((prev) => ({ ...prev, biasSpecific: e.target.value }))
@@ -783,6 +794,9 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               </label>
               <textarea
                 rows={3}
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={data.personalBiasNotes || ''}
                 onChange={(e) =>
                   onUpdateField((prev) => ({ ...prev, personalBiasNotes: e.target.value }))
@@ -790,74 +804,6 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                 placeholder={`Optional — write your personal ${timeframe.toLowerCase()} bias thesis in your own words...`}
                 className="w-full px-3 py-2 text-sm font-bold bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main transition-colors resize-y leading-relaxed"
               />
-            </div>
-          )}
-
-          {/* 2. Equilibrium / Price Location */}
-          {deepVis?.priceLocation !== false && (
-            <div className="py-4">
-              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
-                2. Equilibrium / Price Location
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                    Market Location
-                  </label>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {(['Discount', 'Equilibrium', 'Premium'] as const).map((loc) => {
-                      const isSel = data.priceLocation?.location === loc;
-                      return (
-                        <button
-                          key={loc}
-                          type="button"
-                          onClick={() =>
-                            onUpdateField((prev) => ({
-                              ...prev,
-                              priceLocation: {
-                                location: isSel ? '' : (loc as PriceLocation),
-                                levelRange: prev.priceLocation?.levelRange || '',
-                              },
-                            }))
-                          }
-                          className={`py-1.5 text-xs rounded border transition-colors ${
-                            isSel
-                              ? loc === 'Discount'
-                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold'
-                                : loc === 'Premium'
-                                ? 'bg-bearish-pale text-bearish border-rose-500 font-semibold'
-                                : 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold'
-                              : 'border-app text-app-secondary hover:bg-app-field'
-                          }`}
-                        >
-                          {loc}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                    Level / Range
-                  </label>
-                  <input
-                    type="text"
-                    value={data.priceLocation?.levelRange || ''}
-                    onChange={(e) =>
-                      onUpdateField((prev) => ({
-                        ...prev,
-                        priceLocation: {
-                          location: prev.priceLocation?.location || '',
-                          levelRange: e.target.value,
-                        },
-                      }))
-                    }
-                    placeholder="Enter level or range"
-                    className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
-                  />
-                </div>
-              </div>
             </div>
           )}
 
@@ -1002,6 +948,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                 <StructureTracker
                   label="SWING"
                   direction={data.swing.direction}
+                  confirmation={data.swing.confirmation}
                   high={data.swing.high}
                   low={data.swing.low}
                   brokenLevel={data.swing.bosAt}
@@ -1013,6 +960,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                       ...prev,
                       swing: {
                         direction: updated.direction,
+                        confirmation: updated.confirmation,
                         high: updated.high,
                         low: updated.low,
                         bosAt: updated.brokenLevel,
@@ -1028,6 +976,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                 <StructureTracker
                   label="INTERNAL"
                   direction={data.internal.direction}
+                  confirmation={data.internal.confirmation}
                   high={data.internal.high}
                   low={data.internal.low}
                   brokenLevel={data.internal.ibosAt}
@@ -1041,6 +990,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                       ...prev,
                       internal: {
                         direction: updated.direction,
+                        confirmation: updated.confirmation,
                         high: updated.high,
                         low: updated.low,
                         ibosAt: updated.brokenLevel,
@@ -1107,6 +1057,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                             fractal: {
                               ...prev.fractal,
                               direction: (deletedEvt.previousSnapshot.direction as FractalDirection) || '',
+                              confirmation: deletedEvt.previousSnapshot.confirmation ?? prev.fractal.confirmation,
                               fractalBosAt: deletedEvt.previousSnapshot.fractalLevel || '',
                               history: remaining,
                             },
@@ -1134,57 +1085,117 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
               )}
 
               {/* 5. FRACTAL Structure */}
-              {deepVis?.fractalStructure !== false && (
+              {deepVis?.fractalStructure !== false && (() => {
+                const fractalNorm = normalizeStructureDirectionAndConfirmation(
+                  data.fractal.direction,
+                  data.fractal.confirmation
+                );
+                return (
                 <div className="p-3 rounded border border-app bg-app-secondary/50 space-y-2.5">
-                  <div className="text-xs font-bold uppercase tracking-wider text-app-main pb-1 border-b border-app/60 flex items-center justify-between">
-                    <span>5. FRACTAL</span>
-                    {data.fractal.direction && (
-                      <span
-                        className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
-                          data.fractal.direction === 'Bullish'
-                            ? 'bg-emerald-pale text-bullish border border-emerald-500/30'
-                            : data.fractal.direction === 'Bearish'
-                            ? 'bg-bearish-pale text-bearish border border-rose-500/30'
-                            : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border border-amber-400/40'
-                        }`}
-                      >
-                        {data.fractal.direction}
-                      </span>
+                  <div className="text-xs font-bold uppercase tracking-wider text-app-main pb-1 border-b border-app/60 flex items-center justify-between gap-2 flex-wrap">
+                    <span>FRACTAL</span>
+                    {(fractalNorm.direction || fractalNorm.confirmation) && (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {fractalNorm.direction && (
+                          <span
+                            className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                              fractalNorm.direction === 'Bullish'
+                                ? 'bg-emerald-pale text-bullish border border-emerald-500/30'
+                                : fractalNorm.direction === 'Bearish'
+                                ? 'bg-bearish-pale text-bearish border border-rose-500/30'
+                                : 'bg-slate-200 dark:bg-slate-700 text-app-main border border-slate-400/40'
+                            }`}
+                          >
+                            {fractalNorm.direction}
+                          </span>
+                        )}
+                        {fractalNorm.confirmation && (
+                          <span
+                            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border normal-case ${
+                              fractalNorm.confirmation === 'Confirmed'
+                                ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                                : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400/40'
+                            }`}
+                          >
+                            {fractalNorm.confirmation}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
 
-                  <div className="space-y-2.5">
+                  <div className="space-y-2">
                     <div>
                       <label className="block text-[11px] font-medium text-app-secondary mb-1">
-                        Fractal Structure
+                        Direction
                       </label>
                       <div className="grid grid-cols-3 gap-1">
-                        {(['Bullish', 'Bearish', 'Waiting'] as const).map((dir) => (
-                          <button
-                            key={dir}
-                            type="button"
-                            onClick={() =>
-                              onUpdateField((prev) => ({
-                                ...prev,
-                                fractal: {
-                                  ...prev.fractal,
-                                  direction: prev.fractal.direction === dir ? ('' as FractalDirection) : dir,
-                                },
-                              }))
-                            }
-                            className={`py-1 text-xs rounded border transition-colors ${
-                              data.fractal.direction === dir
-                                ? dir === 'Bullish'
-                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-medium'
-                                : dir === 'Bearish'
-                                ? 'bg-bearish-pale text-bearish border-rose-500 font-medium'
-                                : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400 font-medium'
-                                : 'border-app text-app-secondary hover:bg-app-field'
-                            }`}
-                          >
-                            {dir}
-                          </button>
-                        ))}
+                        {(['Bullish', 'Bearish', 'Neutral'] as const).map((dir) => {
+                          const isSel = fractalNorm.direction === dir;
+                          return (
+                            <button
+                              key={dir}
+                              type="button"
+                              onClick={() =>
+                                onUpdateField((prev) => ({
+                                  ...prev,
+                                  fractal: {
+                                    ...prev.fractal,
+                                    direction: isSel ? ('' as FractalDirection) : dir,
+                                    confirmation: fractalNorm.confirmation,
+                                  },
+                                }))
+                              }
+                              className={`py-1.5 min-h-[36px] text-xs rounded border transition-colors cursor-pointer ${
+                                isSel
+                                  ? dir === 'Bullish'
+                                    ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold'
+                                    : dir === 'Bearish'
+                                    ? 'bg-bearish-pale text-bearish border-rose-500 font-semibold'
+                                    : 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold'
+                                  : 'border-app text-app-secondary hover:bg-app-field'
+                              }`}
+                            >
+                              {dir}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-medium text-app-secondary shrink-0">
+                        Status:
+                      </span>
+                      <div className="grid grid-cols-2 gap-1 flex-1">
+                        {(['Waiting', 'Confirmed'] as const).map((conf) => {
+                          const isSel = fractalNorm.confirmation === conf;
+                          return (
+                            <button
+                              key={conf}
+                              type="button"
+                              onClick={() =>
+                                onUpdateField((prev) => ({
+                                  ...prev,
+                                  fractal: {
+                                    ...prev.fractal,
+                                    direction: fractalNorm.direction,
+                                    confirmation: isSel ? ('' as StructureConfirmation) : conf,
+                                  },
+                                }))
+                              }
+                              className={`py-1 min-h-[34px] text-[11px] rounded border transition-colors cursor-pointer ${
+                                isSel
+                                  ? conf === 'Confirmed'
+                                    ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold'
+                                    : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400 font-semibold'
+                                  : 'border-app text-app-secondary hover:bg-app-field'
+                              }`}
+                            >
+                              {conf}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -1195,6 +1206,7 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                       </label>
                       <input
                         type="text"
+                        inputMode="decimal"
                         value={data.fractal.fractalBosAt}
                         onChange={(e) =>
                           onUpdateField((prev) => ({
@@ -1284,38 +1296,110 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
                     )}
                   </div>
                 </div>
-              )}
+                );
+              })()}
             </div>
           </div>
 
-          {/* 6. Supply Levels */}
+          {/* Supply Levels */}
           {deepVis?.supplyLevels !== false &&
-            renderLevelSection('6. Supply Levels', 'Add Supply', 'supplyLevels', 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300')}
+            renderLevelSection('Supply Levels', 'Add Supply', 'supplyLevels', 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300')}
 
-          {/* 7. Demand Levels */}
+          {/* Demand Levels */}
           {deepVis?.demandLevels !== false &&
-            renderLevelSection('7. Demand Levels', 'Add Demand', 'demandLevels', 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300')}
+            renderLevelSection('Demand Levels', 'Add Demand', 'demandLevels', 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300')}
 
-          {/* 8. Support Levels */}
+          {/* Support Levels */}
           {deepVis?.supportLevels !== false &&
-            renderLevelSection('8. Support Levels', 'Add Support', 'supportLevels', 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300')}
+            renderLevelSection('Support Levels', 'Add Support', 'supportLevels', 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300')}
 
-          {/* 9. Resistance Levels */}
+          {/* Resistance Levels */}
           {deepVis?.resistanceLevels !== false &&
-            renderLevelSection('9. Resistance Levels', 'Add Resistance', 'resistanceLevels', 'bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300')}
+            renderLevelSection('Resistance Levels', 'Add Resistance', 'resistanceLevels', 'bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300')}
 
-          {/* 10. Liquidity Levels */}
+          {/* Liquidity Levels */}
           {deepVis?.liquidityLevels !== false &&
-            renderLevelSection('10. Liquidity Levels', 'Add Liquidity', 'liquidityLevels', 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300')}
+            renderLevelSection('Liquidity Levels', 'Add Liquidity', 'liquidityLevels', 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300')}
 
-          {/* 11. Timeframe Note */}
+          {/* Equilibrium / Price Location — positioned directly above Timeframe Note */}
+          {deepVis?.priceLocation !== false && (
+            <div className="py-4" data-testid={`price-location-${timeframe}`}>
+              <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1.5">
+                Equilibrium / Price Location
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                    Market Location
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['Discount', 'Equilibrium', 'Premium'] as const).map((loc) => {
+                      const isSel = data.priceLocation?.location === loc;
+                      return (
+                        <button
+                          key={loc}
+                          type="button"
+                          onClick={() =>
+                            onUpdateField((prev) => ({
+                              ...prev,
+                              priceLocation: {
+                                location: isSel ? '' : (loc as PriceLocation),
+                                levelRange: prev.priceLocation?.levelRange || '',
+                              },
+                            }))
+                          }
+                          className={`py-1.5 min-h-[38px] text-xs rounded border transition-colors cursor-pointer ${
+                            isSel
+                              ? loc === 'Discount'
+                                ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold'
+                                : loc === 'Premium'
+                                ? 'bg-bearish-pale text-bearish border-rose-500 font-semibold'
+                                : 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold'
+                              : 'border-app text-app-secondary hover:bg-app-field'
+                          }`}
+                        >
+                          {loc}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-app-secondary mb-1">
+                    Level / Range
+                  </label>
+                  <input
+                    type="text"
+                    value={data.priceLocation?.levelRange || ''}
+                    onChange={(e) =>
+                      onUpdateField((prev) => ({
+                        ...prev,
+                        priceLocation: {
+                          location: prev.priceLocation?.location || '',
+                          levelRange: e.target.value,
+                        },
+                      }))
+                    }
+                    placeholder="Enter level or range"
+                    className="w-full px-2.5 py-1.5 text-xs bg-app-field border border-app rounded text-app-main font-mono tabular-nums focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Timeframe Note */}
           {deepVis?.timeframeNotes !== false && (
-            <div className="py-4">
+            <div className="py-4" data-testid={`timeframe-note-${timeframe}`}>
               <label className="block text-xs font-semibold text-app-main uppercase tracking-wider mb-1">
-                11. {noteLabel}
+                {noteLabel}
               </label>
               <textarea
                 rows={2}
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={data.note}
                 onChange={(e) =>
                   onUpdateField((prev) => ({ ...prev, note: e.target.value }))
@@ -1477,75 +1561,82 @@ export const TimeframeSection: React.FC<TimeframeSectionProps> = ({
             </div>
           )}
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-4">
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={handleSaveTimeframe}
-                disabled={isSavingDeep}
-                aria-label={`Save ${timeframe} Deep Analysis`}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {isSavingDeep ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Check className="w-3.5 h-3.5" />
-                )}
-                <span>{isSavingDeep ? 'Saving...' : 'Save Deep Analysis'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleRequestCancelDeep}
-                disabled={isSavingDeep}
-                aria-label={`Cancel ${timeframe} Deep Analysis edits`}
-                className="px-3 py-1.5 text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app hover:bg-app-secondary rounded transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={onToggleExpand}
-                className="px-3 py-1.5 text-xs font-medium text-app-secondary bg-app-field hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors cursor-pointer"
-              >
-                Collapse
-              </button>
-            </div>
-
-            {/* Reset with confirmation */}
-            {!showResetConfirm ? (
-              <button
-                type="button"
-                onClick={() => setShowResetConfirm(true)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors cursor-pointer"
-              >
-                <RotateCcw className="w-3 h-3" /> Reset {timeframe} Fields
-              </button>
-            ) : (
-              <div className="inline-flex items-center gap-2 text-xs p-1.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 rounded">
-                <span className="text-rose-700 dark:text-rose-300 text-xs">
-                  Clear {timeframe} deep fields & chart?
-                </span>
+          {/* Bottom action bar: Clean single primary row (Save Deep Analysis | Cancel | Collapse [ChevronUp]) + separated Reset */}
+          <div className="pt-4 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
-                  onClick={() => {
-                    onResetDeep();
-                    setShowResetConfirm(false);
-                  }}
-                  className="px-2.5 py-1 bg-rose-600 text-white rounded text-xs font-semibold cursor-pointer"
+                  onClick={handleSaveTimeframe}
+                  disabled={isSavingDeep}
+                  aria-label={`Save ${timeframe} Deep Analysis`}
+                  className="inline-flex items-center gap-1.5 px-3.5 sm:px-4 py-2 min-h-[44px] text-xs font-semibold text-white bg-emerald-theme bg-emerald-theme-hover rounded-md shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  Confirm Reset
+                  {isSavingDeep ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Check className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isSavingDeep ? 'Saving...' : 'Save Deep Analysis'}</span>
                 </button>
+
                 <button
                   type="button"
-                  onClick={() => setShowResetConfirm(false)}
-                  className="px-2 py-1 text-app-secondary rounded text-xs cursor-pointer"
+                  onClick={handleRequestCancelDeep}
+                  disabled={isSavingDeep}
+                  aria-label={`Cancel ${timeframe} Deep Analysis edits`}
+                  className="inline-flex items-center justify-center px-3 py-2 min-h-[44px] text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app hover:bg-app-secondary rounded-md transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
               </div>
-            )}
+
+              <button
+                type="button"
+                onClick={onToggleExpand}
+                aria-label={`Collapse ${timeframe} Deep Analysis`}
+                className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[44px] text-xs font-medium text-app-secondary hover:text-app-main bg-app-field border border-app hover:bg-slate-200 dark:hover:bg-slate-800 rounded-md transition-colors cursor-pointer shrink-0 ml-auto"
+              >
+                <span>Collapse</span>
+                <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
+
+            {/* Reset kept separated below primary action row */}
+            <div className="pt-2 border-t border-app/40 flex items-center justify-end">
+              {!showResetConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 min-h-[36px] text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" /> Reset {timeframe} Fields
+                </button>
+              ) : (
+                <div className="inline-flex flex-wrap items-center gap-2 text-xs p-1.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 rounded">
+                  <span className="text-rose-700 dark:text-rose-300 text-xs">
+                    Clear {timeframe} deep fields &amp; chart?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onResetDeep();
+                      setShowResetConfirm(false);
+                    }}
+                    className="px-2.5 py-1 min-h-[34px] bg-rose-600 text-white rounded text-xs font-semibold cursor-pointer"
+                  >
+                    Confirm Reset
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirm(false)}
+                    className="px-2 py-1 min-h-[34px] text-app-secondary rounded text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
     </section>

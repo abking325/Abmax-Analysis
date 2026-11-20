@@ -34,6 +34,7 @@ interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenMigration: () => void;
+  activeView?: string;
 }
 
 export type AuthTab = 'signin' | 'signup' | 'verify_otp' | 'forgot' | 'reset';
@@ -42,6 +43,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
   onOpenMigration,
+  activeView,
 }) => {
   const {
     user,
@@ -58,6 +60,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     clearPasswordRecovery,
     isRecoveryLinkExpired,
     clearRecoveryLinkExpired,
+    oauthError,
+    clearOAuthError,
+    isGoogleAuthInFlight,
   } = useAuth();
 
   const [tab, setTab] = useState<AuthTab>(() => {
@@ -88,7 +93,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [serviceLatencyMs, setServiceLatencyMs] = useState<number | undefined>(undefined);
   const [showDiagDetails, setShowDiagDetails] = useState(false);
 
-  // Sync recovery and expired link states
+  // Sync recovery, expired link, and OAuth error states
   useEffect(() => {
     if (isPasswordRecovery) {
       setTab('reset');
@@ -98,8 +103,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setTab('forgot');
       setErrorMsg('The password recovery link has expired or has already been used. Please request a new password reset.');
       setSuccessMsg(null);
+    } else if (oauthError) {
+      setErrorMsg(oauthError);
+      setSuccessMsg(null);
+      setIsGoogleLoading(false);
     }
-  }, [isPasswordRecovery, isRecoveryLinkExpired]);
+  }, [isPasswordRecovery, isRecoveryLinkExpired, oauthError]);
+
+  useEffect(() => {
+    setIsGoogleLoading(isGoogleAuthInFlight);
+  }, [isGoogleAuthInFlight]);
 
   // Timers for resend cooldowns
   useEffect(() => {
@@ -169,6 +182,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const handleClose = () => {
     if (isRecoveryLinkExpired) clearRecoveryLinkExpired();
     if (isPasswordRecovery) clearPasswordRecovery();
+    clearOAuthError();
     onClose();
   };
 
@@ -234,17 +248,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   const handleGoogleSignIn = async () => {
+    if (isGoogleLoading || isGoogleAuthInFlight) return;
+    clearOAuthError();
     setErrorMsg(null);
     setSuccessMsg(null);
     setIsGoogleLoading(true);
     try {
-      const { error } = await signInWithGoogle();
+      const { error } = await signInWithGoogle(activeView);
       if (error) {
         setErrorMsg(error.message);
+        setIsGoogleLoading(false);
       }
-    } finally {
+    } catch (err) {
+      setErrorMsg((err as Error)?.message || 'Google sign-in could not be initiated.');
       setIsGoogleLoading(false);
     }
+  };
+
+  const renderEmailGmailSuggestion = () => {
+    const trimmed = email.trim();
+    if (!trimmed || trimmed.includes('@')) return null;
+    return (
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => {
+            const currentTrimmed = email.trim();
+            if (currentTrimmed && !currentTrimmed.includes('@')) {
+              setEmail(`${currentTrimmed}@gmail.com`);
+            }
+          }}
+          className="inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded border border-emerald-500/30 bg-emerald-pale text-emerald-theme hover:bg-emerald-500/15 transition-colors cursor-pointer"
+        >
+          + @gmail.com
+        </button>
+      </div>
+    );
   };
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
@@ -713,13 +752,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="email"
                         required
-                        autoComplete="username"
+                        autoComplete="email"
+                        inputMode="email"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="trader@example.com"
                         className="w-full pl-8 pr-3 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
                       />
                     </div>
+                    {renderEmailGmailSuggestion()}
                   </div>
 
                   <div>
@@ -745,6 +789,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         type={showPassword ? 'text' : 'password'}
                         required
                         autoComplete="current-password"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
@@ -802,13 +849,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="email"
                         required
-                        autoComplete="username"
+                        autoComplete="email"
+                        inputMode="email"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="trader@example.com"
                         className="w-full pl-8 pr-3 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600 focus:bg-app-main"
                       />
                     </div>
+                    {renderEmailGmailSuggestion()}
                   </div>
 
                   <div>
@@ -821,6 +873,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         type={showPassword ? 'text' : 'password'}
                         required
                         autoComplete="new-password"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
@@ -847,6 +902,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         type={showConfirmPassword ? 'text' : 'password'}
                         required
                         autoComplete="new-password"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         placeholder="••••••••"
@@ -957,13 +1015,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <input
                         type="email"
                         required
-                        autoComplete="username"
+                        autoComplete="email"
+                        inputMode="email"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="trader@example.com"
                         className="w-full pl-8 pr-3 py-1.5 text-xs bg-app-field border border-app rounded text-app-main focus:outline-hidden focus:border-emerald-600"
                       />
                     </div>
+                    {renderEmailGmailSuggestion()}
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -1012,6 +1075,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         type={showPassword ? 'text' : 'password'}
                         required
                         autoComplete="new-password"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
@@ -1037,6 +1103,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         type={showConfirmPassword ? 'text' : 'password'}
                         required
                         autoComplete="new-password"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         placeholder="••••••••"

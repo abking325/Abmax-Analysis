@@ -24,6 +24,7 @@ import {
   getEnabledInstrumentSymbols,
   InstrumentsConfig,
   JournalEntry,
+  JournalLaunchContext,
   normalizeInstrumentSymbol,
   SavedReport,
 } from '../types/journal';
@@ -39,7 +40,11 @@ import { BackupModal } from './BackupModal';
 import { PeriodExportModal } from './PeriodExportModal';
 import { SyncStatusBadge } from './SyncStatusBadge';
 import { useAuth } from '../context/AuthContext';
-import { getAllJournalEntries, deleteJournalEntry } from '../services/db';
+import {
+  getAllJournalEntries,
+  deleteJournalEntry,
+  isJournalEntryOwnedByScope,
+} from '../services/db';
 
 interface ReportsViewProps {
   reports: SavedReport[];
@@ -64,6 +69,8 @@ interface ReportsViewProps {
   onReportDetailsStateChange?: (isOpen: boolean, isOrganized: boolean) => void;
   onNavigateToJournal?: () => void;
   onNavigateToPerformance?: () => void;
+  onLaunchJournalFromTrade?: (ctx: Omit<JournalLaunchContext, 'requestId'>) => void;
+  onSavePreparationJournal?: (entry: JournalEntry) => Promise<void>;
   instrumentsConfig?: InstrumentsConfig;
 }
 
@@ -82,6 +89,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   onReportDetailsStateChange,
   onNavigateToJournal,
   onNavigateToPerformance,
+  onLaunchJournalFromTrade,
+  onSavePreparationJournal,
   instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
 }) => {
   const { user } = useAuth();
@@ -94,8 +103,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [isPeriodExportModalOpen, setIsPeriodExportModalOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
-  // Journal entries state for tab 2 & period export
+  // Journal entries state for tab 2 (excludes My Journal) & full scoped entries for period export
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [scopedAllJournalEntries, setScopedAllJournalEntries] = useState<JournalEntry[]>([]);
   const [journalTypeFilter, setJournalTypeFilter] = useState<string>('all');
   const [deleteJournalConfirmId, setDeleteJournalConfirmId] = useState<string | null>(null);
 
@@ -217,15 +227,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     }
   }, [reports]);
 
-  // Fetch journal entries on mount and refresh
+  // Fetch journal entries scoped to the active account (never expose My Journal in Journal Reports tab)
   const loadJournalData = useCallback(async () => {
     try {
       const list = await getAllJournalEntries();
-      setJournalEntries(list);
+      const owned = list.filter((entry) => isJournalEntryOwnedByScope(entry, user?.id));
+      const tradingOnly = owned.filter(
+        (entry) => entry.entryType !== 'my-journal' && (entry.entryType as string) !== 'my_journal'
+      );
+      setScopedAllJournalEntries(owned);
+      setJournalEntries(tradingOnly);
     } catch (err) {
       console.error('Failed to load journal entries in ReportsView', err);
     }
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     loadJournalData();
@@ -453,6 +468,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 <Search className="w-3.5 h-3.5 text-app-secondary absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search notes, dates..."
@@ -1097,6 +1115,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             await onUpdateReport(updated);
           }
         }}
+        onLaunchJournalFromTrade={onLaunchJournalFromTrade}
+        onSavePreparationJournal={onSavePreparationJournal}
         initialTradeDraft={initialTradeDraft}
         onTradeDraftChange={onTradeDraftChange}
       />
@@ -1113,7 +1133,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         isOpen={isPeriodExportModalOpen}
         onClose={() => setIsPeriodExportModalOpen(false)}
         reports={reports}
-        journalEntries={journalEntries}
+        journalEntries={scopedAllJournalEntries}
         userId={user?.id}
       />
     </div>

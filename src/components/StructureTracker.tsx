@@ -13,19 +13,23 @@ import {
 } from 'lucide-react';
 import {
   FractalDirection,
+  StructureConfirmation,
   StructureDirection,
   StructureEvent,
+  normalizeStructureDirectionAndConfirmation,
 } from '../types/journal';
 
 interface StructureTrackerProps {
   label: 'SWING' | 'INTERNAL';
   direction: StructureDirection;
+  confirmation?: StructureConfirmation;
   high: string;
   low: string;
   brokenLevel: string;
   history?: StructureEvent[];
   onChange: (updated: {
     direction: StructureDirection;
+    confirmation?: StructureConfirmation;
     high: string;
     low: string;
     brokenLevel: string;
@@ -43,6 +47,7 @@ interface StructureTrackerProps {
 export const StructureTracker: React.FC<StructureTrackerProps> = ({
   label,
   direction,
+  confirmation = '',
   high,
   low,
   brokenLevel,
@@ -56,6 +61,9 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
   onEditCHoCH,
   onDeleteCHoCH,
 }) => {
+  const normalizedState = normalizeStructureDirectionAndConfirmation(direction, confirmation);
+  const cleanDirection = normalizedState.direction;
+  const cleanConfirmation = normalizedState.confirmation;
   // Panel toggles for inline BOS, MSS, and CHoCH actions
   const [activeAction, setActiveAction] = useState<'bos' | 'mss' | 'choch' | null>(null);
 
@@ -120,7 +128,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
       return;
     }
     setBosValidationError(null);
-    const activeDir: 'Bullish' | 'Bearish' = direction === 'Bearish' ? 'Bearish' : 'Bullish';
+    const activeDir: 'Bullish' | 'Bearish' = cleanDirection === 'Bearish' ? 'Bearish' : 'Bullish';
     setBosDirection(activeDir);
 
     if (activeDir === 'Bullish') {
@@ -158,7 +166,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
       low: bosLow.trim(),
       timestamp: now,
       previousSnapshot: {
-        direction,
+        direction: cleanDirection,
+        confirmation: cleanConfirmation,
         high,
         low,
         brokenLevel,
@@ -168,7 +177,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     const updatedHistory = [newEvent, ...(history || [])];
 
     onChange({
-      direction: direction || bosDirection,
+      direction: cleanDirection || bosDirection,
+      confirmation: cleanConfirmation || 'Confirmed',
       high: bosHigh.trim() || high,
       low: bosLow.trim() || low,
       brokenLevel: bosBrokenLevel.trim(),
@@ -187,13 +197,13 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     setMssValidationError(null);
 
     // Propose direction reversal: Bullish -> Bearish, Bearish -> Bullish
-    if (direction === 'Bullish') {
+    if (cleanDirection === 'Bullish') {
       setMssProposedDir('Bearish');
       // Market shifts to bearish: breaks the swing low
       setMssBrokenLevel(low || '');
       setMssHigh(high || '');
       setMssLow('');
-    } else if (direction === 'Bearish') {
+    } else if (cleanDirection === 'Bearish') {
       setMssProposedDir('Bullish');
       // Market shifts to bullish: breaks the swing high
       setMssBrokenLevel(high || '');
@@ -229,7 +239,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
       low: mssLow.trim(),
       timestamp: now,
       previousSnapshot: {
-        direction,
+        direction: cleanDirection,
+        confirmation: cleanConfirmation,
         high,
         low,
         brokenLevel,
@@ -240,6 +251,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
 
     onChange({
       direction: mssProposedDir, // Structure direction reversed upon confirmed MSS
+      confirmation: cleanConfirmation || 'Confirmed',
       high: mssHigh.trim() || high,
       low: mssLow.trim() || low,
       brokenLevel: mssBrokenLevel.trim(),
@@ -303,7 +315,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     // 1. Add to Internal structure history while preserving active Internal direction and levels
     const updatedInternalHistory = [newEvent, ...(history || [])];
     onChange({
-      direction,
+      direction: cleanDirection,
+      confirmation: cleanConfirmation,
       high,
       low,
       brokenLevel,
@@ -355,7 +368,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     // If the edited event is the latest one (index 0), synchronize active structure fields
     const isLatest = history[0]?.id === evtId;
     onChange({
-      direction,
+      direction: cleanDirection,
+      confirmation: cleanConfirmation,
       high: isLatest ? editHigh.trim() : high,
       low: isLatest ? editLow.trim() : low,
       brokenLevel: isLatest ? editBrokenLevel.trim() : brokenLevel,
@@ -386,11 +400,12 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
       // Check if user made manual modifications that diverge from the deleted event
       const userEditedHigh = deletedEvt ? (high !== deletedEvt.high && high !== '') : false;
       const userEditedLow = deletedEvt ? (low !== deletedEvt.low && low !== '') : false;
-      const userEditedDir = deletedEvt ? (direction !== deletedEvt.direction && direction !== '') : false;
+      const userEditedDir = deletedEvt ? (cleanDirection !== deletedEvt.direction && cleanDirection !== '') : false;
 
       if (previous) {
         onChange({
-          direction: userEditedDir ? direction : previous.direction,
+          direction: userEditedDir ? cleanDirection : previous.direction,
+          confirmation: cleanConfirmation,
           high: userEditedHigh ? high : previous.high,
           low: userEditedLow ? low : previous.low,
           brokenLevel: previous.brokenLevel,
@@ -399,7 +414,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
       } else if (deletedEvt?.previousSnapshot) {
         // Restoring baseline original structure before this only event was created
         onChange({
-          direction: userEditedDir ? direction : (deletedEvt.previousSnapshot.direction as StructureDirection) || '',
+          direction: userEditedDir ? cleanDirection : (deletedEvt.previousSnapshot.direction as StructureDirection) || '',
+          confirmation: deletedEvt.previousSnapshot.confirmation ?? cleanConfirmation,
           high: userEditedHigh ? high : (deletedEvt.previousSnapshot.high || ''),
           low: userEditedLow ? low : (deletedEvt.previousSnapshot.low || ''),
           brokenLevel: deletedEvt.previousSnapshot.brokenLevel || '',
@@ -407,7 +423,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
         });
       } else {
         onChange({
-          direction,
+          direction: cleanDirection,
+          confirmation: cleanConfirmation,
           high,
           low,
           brokenLevel: '',
@@ -417,7 +434,8 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     } else {
       // Deleting older history event leaves current active structure and manual changes untouched
       onChange({
-        direction,
+        direction: cleanDirection,
+        confirmation: cleanConfirmation,
         high,
         low,
         brokenLevel,
@@ -432,44 +450,53 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
     setConfirmDeleteId(null);
   };
 
-  // Map legacy 'Not sure' to 'Waiting' for display
-  const normalizedDirection = direction === 'Not sure' ? 'Waiting' : direction;
+  const normalizedDirection = cleanDirection;
 
   return (
     <div className="p-3 rounded border border-app bg-app-secondary/50 space-y-2.5">
-      {/* Title & Active Direction Display */}
-      <div className="text-xs font-bold uppercase tracking-wider text-app-main pb-1 border-b border-app/60 flex items-center justify-between">
+      {/* Title & Active Direction + Confirmation Display */}
+      <div className="text-xs font-bold uppercase tracking-wider text-app-main pb-1 border-b border-app/60 flex items-center justify-between gap-2 flex-wrap">
         <span className="flex items-center gap-1.5">
           <span>{label}</span>
         </span>
-        {normalizedDirection && (
-          <span
-            className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
-              normalizedDirection === 'Bullish'
-                ? 'bg-emerald-pale text-bullish border border-emerald-500/30'
-                : normalizedDirection === 'Bearish'
-                ? 'bg-bearish-pale text-bearish border border-rose-500/30'
-                : normalizedDirection === 'Neutral'
-                ? 'bg-slate-200 dark:bg-slate-700 text-app-main border border-slate-400/40'
-                : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border border-amber-400/40'
-            }`}
-          >
-            {normalizedDirection}
-          </span>
+        {(normalizedDirection || cleanConfirmation) && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {normalizedDirection && (
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                  normalizedDirection === 'Bullish'
+                    ? 'bg-emerald-pale text-bullish border border-emerald-500/30'
+                    : normalizedDirection === 'Bearish'
+                    ? 'bg-bearish-pale text-bearish border border-rose-500/30'
+                    : 'bg-slate-200 dark:bg-slate-700 text-app-main border border-slate-400/40'
+                }`}
+              >
+                {normalizedDirection}
+              </span>
+            )}
+            {cleanConfirmation && (
+              <span
+                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border normal-case ${
+                  cleanConfirmation === 'Confirmed'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                    : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400/40'
+                }`}
+              >
+                {cleanConfirmation}
+              </span>
+            )}
+          </div>
         )}
       </div>
 
-      {/* Direction Choices & Action Buttons */}
-      <div className="space-y-1.5">
-        <label className="block text-[11px] font-medium text-app-secondary">
-          Structure Direction &amp; Tracking
-        </label>
-        
-        {/* Responsive flex wrapping container for ~360px mobile viewports */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {/* Direction Buttons: Bullish, Bearish, Neutral, Waiting */}
-          <div className="grid grid-cols-4 gap-1 flex-1 min-w-[210px]">
-            {(['Bullish', 'Bearish', 'Neutral', 'Waiting'] as const).map((dir) => {
+      {/* Direction Choices, Confirmation Choices & Action Buttons */}
+      <div className="space-y-2">
+        <div>
+          <label className="block text-[11px] font-medium text-app-secondary mb-1">
+            Direction
+          </label>
+          <div className="grid grid-cols-3 gap-1">
+            {(['Bullish', 'Bearish', 'Neutral'] as const).map((dir) => {
               const isSelected = normalizedDirection === dir;
               return (
                 <button
@@ -478,21 +505,20 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                   onClick={() =>
                     onChange({
                       direction: isSelected ? '' : dir,
+                      confirmation: cleanConfirmation,
                       high,
                       low,
                       brokenLevel,
                       history,
                     })
                   }
-                  className={`py-1 px-1.5 text-xs rounded border transition-colors text-center truncate ${
+                  className={`py-1.5 px-1.5 min-h-[36px] text-xs rounded border transition-colors text-center truncate cursor-pointer ${
                     isSelected
                       ? dir === 'Bullish'
                         ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold'
                         : dir === 'Bearish'
                         ? 'bg-bearish-pale text-bearish border-rose-500 font-semibold'
-                        : dir === 'Neutral'
-                        ? 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold'
-                        : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400 font-semibold'
+                        : 'bg-slate-200 dark:bg-slate-700 text-app-main border-slate-400 font-semibold'
                       : 'border-app text-app-secondary hover:bg-app-field'
                   }`}
                 >
@@ -501,6 +527,44 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               );
             })}
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 flex-1 min-w-[175px]">
+            <span className="text-[11px] font-medium text-app-secondary shrink-0">
+              Status:
+            </span>
+            <div className="grid grid-cols-2 gap-1 flex-1">
+              {(['Waiting', 'Confirmed'] as const).map((conf) => {
+                const isSelected = cleanConfirmation === conf;
+                return (
+                  <button
+                    key={conf}
+                    type="button"
+                    onClick={() =>
+                      onChange({
+                        direction: cleanDirection,
+                        confirmation: isSelected ? '' : conf,
+                        high,
+                        low,
+                        brokenLevel,
+                        history,
+                      })
+                    }
+                    className={`py-1 px-2 min-h-[34px] text-[11px] rounded border transition-colors text-center truncate cursor-pointer ${
+                      isSelected
+                        ? conf === 'Confirmed'
+                          ? 'bg-emerald-pale text-bullish border-emerald-500 font-semibold'
+                          : 'bg-amber-100 dark:bg-amber-950/40 text-amber-theme border-amber-400 font-semibold'
+                        : 'border-app text-app-secondary hover:bg-app-field'
+                    }`}
+                  >
+                    {conf}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           {/* Action Buttons: + BOS, + MSS (Controlled by showTrackingControls toggle) */}
           {showTrackingControls && (
@@ -508,7 +572,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               <button
                 type="button"
                 onClick={handleOpenBOS}
-                className={`px-2 py-1 text-xs font-semibold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
+                className={`px-2 py-1 min-h-[34px] text-xs font-semibold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
                   activeAction === 'bos'
                     ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
                     : 'bg-app-field border-app text-app-main hover:bg-emerald-50 dark:hover:bg-emerald-950/30 hover:border-emerald-500'
@@ -522,7 +586,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               <button
                 type="button"
                 onClick={handleOpenMSS}
-                className={`px-2 py-1 text-xs font-semibold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
+                className={`px-2 py-1 min-h-[34px] text-xs font-semibold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
                   activeAction === 'mss'
                     ? 'bg-purple-600 text-white border-purple-700 shadow-2xs'
                     : 'bg-app-field border-app text-app-main hover:bg-purple-50 dark:hover:bg-purple-950/30 hover:border-purple-500'
@@ -537,7 +601,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                 <button
                   type="button"
                   onClick={handleOpenCHoCH}
-                  className={`px-2 py-1 text-xs font-semibold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
+                  className={`px-2 py-1 min-h-[34px] text-xs font-semibold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
                     activeAction === 'choch'
                       ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
                       : 'bg-app-field border-app text-app-main hover:bg-amber-50 dark:hover:bg-amber-950/30 hover:border-amber-500'
@@ -586,6 +650,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={bosBrokenLevel}
                 onChange={(e) => setBosBrokenLevel(e.target.value)}
                 placeholder="Broken price level"
@@ -598,6 +663,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={bosHigh}
                 onChange={(e) => setBosHigh(e.target.value)}
                 placeholder="High price"
@@ -611,6 +677,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={bosLow}
                 onChange={(e) => setBosLow(e.target.value)}
                 placeholder="Low price"
@@ -669,7 +736,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
             </label>
             <div className="flex items-center gap-2">
               <span className="text-xs text-app-secondary">Current:</span>
-              <span className="font-bold text-xs text-app-main">{direction || 'None'}</span>
+              <span className="font-bold text-xs text-app-main">{cleanDirection || 'None'}</span>
               <ArrowRight className="w-3.5 h-3.5 text-purple-500" />
               <div className="inline-flex rounded border border-purple-500/40 overflow-hidden">
                 {(['Bullish', 'Bearish'] as const).map((dir) => (
@@ -699,6 +766,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={mssBrokenLevel}
                 onChange={(e) => setMssBrokenLevel(e.target.value)}
                 placeholder="Shift break level"
@@ -711,6 +779,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={mssHigh}
                 onChange={(e) => setMssHigh(e.target.value)}
                 placeholder="High price"
@@ -723,6 +792,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={mssLow}
                 onChange={(e) => setMssLow(e.target.value)}
                 placeholder="Low price"
@@ -815,6 +885,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={chochBrokenLevel}
                 onChange={(e) => setChochBrokenLevel(e.target.value)}
                 placeholder="e.g. 2670.00"
@@ -827,6 +898,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
               </label>
               <input
                 type="text"
+                inputMode="decimal"
                 value={chochNewActiveLevel}
                 onChange={(e) => setChochNewActiveLevel(e.target.value)}
                 placeholder="New Fractal level (or default to broken)"
@@ -862,10 +934,12 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
           </label>
           <input
             type="text"
+            inputMode="decimal"
             value={high}
             onChange={(e) =>
               onChange({
-                direction,
+                direction: cleanDirection,
+                confirmation: cleanConfirmation,
                 high: e.target.value,
                 low,
                 brokenLevel,
@@ -882,10 +956,12 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
           </label>
           <input
             type="text"
+            inputMode="decimal"
             value={low}
             onChange={(e) =>
               onChange({
-                direction,
+                direction: cleanDirection,
+                confirmation: cleanConfirmation,
                 high,
                 low: e.target.value,
                 brokenLevel,
@@ -902,10 +978,12 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
           </label>
           <input
             type="text"
+            inputMode="decimal"
             value={brokenLevel}
             onChange={(e) =>
               onChange({
-                direction,
+                direction: cleanDirection,
+                confirmation: cleanConfirmation,
                 high,
                 low,
                 brokenLevel: e.target.value,
@@ -1079,6 +1157,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                                 <label className="block text-[10px] text-app-secondary">Broken</label>
                                 <input
                                   type="text"
+                                  inputMode="decimal"
                                   value={editBrokenLevel}
                                   onChange={(e) => setEditBrokenLevel(e.target.value)}
                                   className="w-full px-1.5 py-0.5 text-xs bg-app-field border border-app rounded font-mono"
@@ -1088,6 +1167,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                                 <label className="block text-[10px] text-app-secondary">High</label>
                                 <input
                                   type="text"
+                                  inputMode="decimal"
                                   value={editHigh}
                                   onChange={(e) => setEditHigh(e.target.value)}
                                   className="w-full px-1.5 py-0.5 text-xs bg-app-field border border-app rounded font-mono"
@@ -1097,6 +1177,7 @@ export const StructureTracker: React.FC<StructureTrackerProps> = ({
                                 <label className="block text-[10px] text-app-secondary">Low</label>
                                 <input
                                   type="text"
+                                  inputMode="decimal"
                                   value={editLow}
                                   onChange={(e) => setEditLow(e.target.value)}
                                   className="w-full px-1.5 py-0.5 text-xs bg-app-field border border-app rounded font-mono"

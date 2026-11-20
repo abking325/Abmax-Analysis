@@ -654,6 +654,218 @@ async function run() {
     await instContext.close();
     await v1Page.close();
 
+    // =========================================================================
+    // SUITE C: Stage 1–7 Polish (Mobile 360x780 Header/Theme, Structure, R:R, Journal Phases, Live Record Trade)
+    // =========================================================================
+    const mobileContext = await browser.newContext({ viewport: { width: 360, height: 780 } });
+    const mobilePage = await mobileContext.newPage();
+    mobilePage.setDefaultTimeout(10000);
+    mobilePage.on('pageerror', (err) => {
+      console.error('[PAGEERROR mobilePage]', err.message);
+      pageErrors.push(`mobilePage: ${err.message}`);
+    });
+    await mobilePage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await dismissSplash(mobilePage);
+
+    const mobileHeaderMetrics = await mobilePage.evaluate(() => {
+      const docOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
+      const navButtons = Array.from(document.querySelectorAll('header nav button')).map((el) => ({
+        text: el.textContent?.trim(),
+        rect: el.getBoundingClientRect(),
+      }));
+      return { docOverflow, navButtons };
+    });
+    assert(
+      !mobileHeaderMetrics.docOverflow &&
+        mobileHeaderMetrics.navButtons.length === 3 &&
+        mobileHeaderMetrics.navButtons.every((b) => b.rect.width > 24 && b.rect.right <= 360),
+      'Mobile 360x780 header renders Home | Analysis | Reports visibly without horizontal overflow'
+    );
+
+    const themeSwitch = mobilePage.locator('header button[role="switch"]');
+    await themeSwitch.waitFor({ state: 'visible' });
+    const initiallyDark = await mobilePage.evaluate(() => document.documentElement.classList.contains('dark'));
+    await themeSwitch.click();
+    await mobilePage.waitForTimeout(150);
+    const afterToggleDark = await mobilePage.evaluate(() => document.documentElement.classList.contains('dark'));
+    assert(
+      afterToggleDark === !initiallyDark,
+      'Header compact Light/Dark switch toggles html.dark immediately on mobile'
+    );
+
+    // Open Settings -> confirm no standalone Theme tab & Light/Dark/System lives in General
+    await mobilePage.getByRole('button', { name: 'Open navigation menu' }).click();
+    await mobilePage.locator('div[role="dialog"][aria-label="Navigation Menu"] button:has-text("Settings")').click();
+    const settingsDialog = mobilePage.getByRole('dialog', { name: /^Settings$/i });
+    await settingsDialog.waitFor({ state: 'visible' });
+    const hasStandaloneThemeTab = (await settingsDialog.locator('button').filter({ hasText: /^Theme$/ }).count()) > 0;
+    const generalThemePressed = await settingsDialog
+      .getByRole('button', { name: afterToggleDark ? /^Dark$/i : /^Light$/i })
+      .getAttribute('aria-pressed');
+    assert(
+      !hasStandaloneThemeTab && generalThemePressed === 'true',
+      'Settings removed standalone Theme tab and keeps Light/Dark/System synchronized inside General'
+    );
+    await settingsDialog.getByRole('button', { name: /^System$/i }).click();
+    await mobilePage.keyboard.press('Escape');
+    await mobilePage.waitForTimeout(150);
+    await mobilePage.close();
+    await mobileContext.close();
+
+    // Desktop context for Analysis Structure, Reports->TakeTrade->Journal, and Live->LoadReport->RecordTrade
+    const polishContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const polishPage = await polishContext.newPage();
+    polishPage.setDefaultTimeout(10000);
+    polishPage.on('pageerror', (err) => {
+      console.error('[PAGEERROR polishPage]', err.message);
+      pageErrors.push(`polishPage: ${err.message}`);
+    });
+    await polishPage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await dismissSplash(polishPage);
+
+    // 1. Analysis: Separate Direction + Confirmation & Equilibrium above Timeframe Note
+    await polishPage.getByRole('button', { name: /Start Analysis/i }).click();
+    await polishPage.getByPlaceholder('Optional — name this analysis').fill('Stage C Polish Report');
+    await polishPage.locator('button[aria-label="Expand Monthly Deep Analysis"]:visible').click();
+    await polishPage.waitForSelector('[data-testid="price-location-Monthly"]', { state: 'visible' });
+
+    const eqVsNoteOrder = await polishPage.evaluate(() => {
+      const eq = document.querySelector('[data-testid="price-location-Monthly"]')?.getBoundingClientRect();
+      const note = document.querySelector('[data-testid="timeframe-note-Monthly"]')?.getBoundingClientRect();
+      return Boolean(eq && note && eq.top < note.top);
+    });
+    assert(eqVsNoteOrder, 'Equilibrium / Price Location renders directly above Timeframe Note');
+
+    // Click Monthly Bias Bearish + Swing/Internal/Fractal Bearish with Swing=Waiting -> Waiting confirmation
+    const monthlySection = polishPage.locator('[data-testid="price-location-Monthly"]').locator('xpath=ancestor::section[1]');
+    const bearishBtns = monthlySection.getByRole('button', { name: /^Bearish$/ });
+    await bearishBtns.nth(0).click();
+    await bearishBtns.nth(1).click();
+    await bearishBtns.nth(2).click();
+    await bearishBtns.nth(3).click();
+    await monthlySection.getByRole('button', { name: /^Waiting$/ }).nth(0).click();
+    await monthlySection.getByRole('button', { name: /^Confirmed$/ }).nth(1).click();
+    await monthlySection.getByRole('button', { name: /^Confirmed$/ }).nth(2).click();
+    await polishPage.waitForTimeout(150);
+    const monthlyTextWaiting = await monthlySection.innerText();
+    assert(
+      monthlyTextWaiting.includes('Waiting confirmation') &&
+        !monthlyTextWaiting.includes('Deep Analysis Aligned'),
+      'Monthly structure in Waiting state displays Waiting confirmation and blocks Deep Analysis Aligned'
+    );
+    await monthlySection.getByRole('button', { name: /^Confirmed$/ }).nth(0).click();
+    await polishPage.waitForTimeout(150);
+    const monthlyTextConfirmed = await monthlySection.innerText();
+    assert(
+      monthlyTextConfirmed.includes('Deep Analysis Aligned (Bearish)'),
+      'Switching Swing Confirmation from Waiting to Confirmed activates Deep Analysis Aligned (Bearish)'
+    );
+    await monthlySection.locator('button[aria-label="Collapse Monthly Deep Analysis"]').last().click();
+
+    await polishPage.getByRole('button', { name: /^Save$/i }).click();
+    await polishPage.waitForTimeout(500);
+
+    // 2. Reports -> Record Trade (Planned R:R + Calculate TP + Setup Validity independent of Loss) -> Add review
+    await polishPage.evaluate(() => window.scrollTo(0, 0));
+    await polishPage.getByRole('button', { name: /^Reports$/i }).click();
+    await polishPage.getByText('Stage C Polish Report').first().waitFor({ state: 'visible' });
+    await polishPage.getByRole('button', { name: /View Details/i }).first().click();
+    const detailsDialog = polishPage.getByRole('dialog', { name: /Analysis Report/i });
+    await detailsDialog.waitFor({ state: 'visible' });
+    await detailsDialog.getByRole('button', { name: /^Record Trade$/i }).click();
+
+    const tradeModal = polishPage.getByRole('dialog', { name: /^Record Trade$/i });
+    await tradeModal.waitFor({ state: 'visible' });
+    await tradeModal.getByRole('button', { name: /^Buy$/i }).click();
+    await tradeModal.getByPlaceholder('e.g. 2680.50').fill('2680.00');
+    await tradeModal.getByPlaceholder('e.g. 2676.00').fill('2675.00');
+    await tradeModal.getByRole('button', { name: /^1:2$/ }).click();
+    const calcTpBtn = tradeModal.getByRole('button', { name: /Calculate TP \(2690\.00\)/i });
+    await calcTpBtn.waitFor({ state: 'visible' });
+    await calcTpBtn.click();
+    assert(
+      (await tradeModal.getByPlaceholder('e.g. 2694.00').inputValue()) === '2690.00',
+      'Planned R:R Calculate TP accurately fills Take Profit (2690.00) on explicit click'
+    );
+
+    // Set Setup Validity = Valid while Outcome = Loss (strictly independent!)
+    await tradeModal.getByRole('button', { name: /^Loss$/ }).click();
+    await tradeModal.getByRole('button', { name: /^Valid$/ }).click();
+    await tradeModal.locator('button[type="submit"]').click();
+    await tradeModal.waitFor({ state: 'detached' });
+
+    const detailsText = await detailsDialog.innerText();
+    assert(
+      detailsText.includes('Valid setup') && detailsText.includes('Loss') && detailsText.includes('1:2'),
+      'Saved trade displays Setup Validity (Valid setup), Outcome (Loss), and Planned R:R (1:2) independently'
+    );
+
+    // Launch Journal directly from Trade Card ("Add review")
+    await detailsDialog.getByRole('button', { name: /Add review/i }).first().click();
+    const journalModal = polishPage.getByRole('dialog', { name: /Journal Entry Editor/i });
+    await journalModal.waitFor({ state: 'visible' });
+    const phase4Expanded = await journalModal
+      .locator('[data-journal-phase="postTrade"] > button')
+      .getAttribute('aria-expanded');
+    assert(
+      phase4Expanded === 'true',
+      'Trade Card review link opens Journal Entry Editor directly on Phase 4 (Review & Discipline)'
+    );
+
+    // Verify 3-mood selection cap in Phase 1 (Daily Preparation)
+    const prepPhaseBtn = journalModal.locator('[data-journal-phase="prep"] > button');
+    if ((await prepPhaseBtn.getAttribute('aria-expanded')) !== 'true') {
+      await prepPhaseBtn.click();
+    }
+    const calmBtn = journalModal.getByRole('button', { name: /Optimal \/ Calm/i });
+    if ((await calmBtn.getAttribute('aria-pressed')) !== 'true') {
+      await calmBtn.click();
+    }
+    await journalModal.getByRole('button', { name: /^Focused$/i }).click();
+    await journalModal.getByRole('button', { name: /^Anxious$/i }).click();
+    await journalModal.getByRole('button', { name: /^Fatigued$/i }).click();
+    const journalModalText = await journalModal.innerText();
+    assert(
+      journalModalText.includes('3 / 3 selected') &&
+        journalModalText.includes('Maximum 3 readiness moods'),
+      'Journal Phase 1 enforces 3-mood cap with clear non-destructive feedback'
+    );
+    await journalModal.getByRole('button', { name: /Close editor/i }).click();
+    const discardConfirmBtn = polishPage.getByRole('button', { name: /Discard changes/i });
+    if (await discardConfirmBtn.count()) {
+      await discardConfirmBtn.click();
+    }
+    await journalModal.waitFor({ state: 'detached' });
+    if (await detailsDialog.count()) {
+      await detailsDialog.getByRole('button', { name: /Back to Reports/i }).click();
+      await detailsDialog.waitFor({ state: 'detached' });
+    }
+
+    // 3. Live -> Load Report Reference -> Record Trade without source mutation or Convert controls
+    await polishPage.evaluate(() => window.scrollTo(0, 0));
+    await polishPage.getByRole('button', { name: 'Open navigation menu' }).click();
+    await polishPage.locator('div[role="dialog"][aria-label="Navigation Menu"] button:has-text("Live")').click();
+    await polishPage.getByLabel('Load Saved Report in Live').waitFor({ state: 'visible' });
+
+    const reportSelect = polishPage.getByLabel('Load Saved Report in Live');
+    const stageReportOptionVal = await reportSelect.evaluate((sel) => {
+      const opts = Array.from(sel.querySelectorAll('option'));
+      const found = opts.find((o) => o.textContent?.includes('Stage C Polish Report'));
+      return found ? found.value : '';
+    });
+    assert(Boolean(stageReportOptionVal), 'Live Load Report dropdown lists saved Stage C Polish Report');
+    await reportSelect.selectOption(stageReportOptionVal);
+    await polishPage.waitForTimeout(200);
+    const liveLoadedText = await polishPage.locator('#root').innerText();
+    assert(
+      liveLoadedText.includes('Stage C Polish Report') &&
+        !/Convert to Report|Convert to Trade/i.test(liveLoadedText),
+      'Live renders loaded report reference read-only with zero Convert to Report/Trade buttons'
+    );
+
+    await polishPage.close();
+    await polishContext.close();
+
     assert(
       pageErrors.length === 0,
       `Zero uncaught page errors in Chromium (got ${pageErrors.length}: ${JSON.stringify(pageErrors)})`

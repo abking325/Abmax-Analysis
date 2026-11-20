@@ -69,7 +69,9 @@ import { registerBackHandler } from '../utils/backNavigation';
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  theme: 'light' | 'dark';
+  theme: 'light' | 'dark' | 'system';
+  effectiveTheme?: 'light' | 'dark';
+  onChangeTheme?: (theme: 'light' | 'dark' | 'system') => void;
   onToggleTheme: () => void;
   onOpenAccount: () => void;
   isAnimationPaused: boolean;
@@ -85,13 +87,15 @@ interface SettingsModalProps {
   instrumentsConfig?: InstrumentsConfig;
   onChangeInstrumentsConfig?: (config: InstrumentsConfig) => void;
   onAccountDataReset?: () => Promise<void> | void;
-  initialTab?: 'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments';
+  initialTab?: 'general' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments';
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   theme,
+  effectiveTheme = theme === 'dark' ? 'dark' : 'light',
+  onChangeTheme,
   onToggleTheme,
   onOpenAccount,
   isAnimationPaused,
@@ -110,7 +114,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   initialTab,
 }) => {
   const { user, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState<'general' | 'theme' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments'>(initialTab || 'general');
+  const [activeTab, setActiveTab] = useState<'general' | 'admin' | 'journal_visibility' | 'performance_visibility' | 'instruments'>(initialTab || 'general');
 
   useEffect(() => {
     if (initialTab) {
@@ -631,7 +635,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Navigation: 1. General | 2. Theme | 3. Workspace | 4. Journal Sections | 5. Performance Sections */}
+        {/* Tab Navigation: 1. General | 2. Workspace | 3. Journal Sections | 4. Performance Sections | 5. Instruments */}
         <div className="flex border-b border-app bg-app-secondary/40 shrink-0 px-2 sm:px-4 overflow-x-auto no-scrollbar">
           <button
             type="button"
@@ -643,18 +647,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             General
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('theme')}
-            className={`py-2 px-2.5 sm:px-3 text-xs font-semibold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
-              activeTab === 'theme'
-                ? 'border-emerald-600 text-emerald-theme'
-                : 'border-transparent text-app-secondary hover:text-app-main'
-            }`}
-          >
-            <Monitor className="w-3.5 h-3.5" />
-            Theme
           </button>
           <button
             type="button"
@@ -798,7 +790,84 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </section>
 
-              {/* SECTION 2: ANIMATION (Theme chooser lives in dedicated Theme tab) */}
+              {/* SECTION 2: APPEARANCE & THEME */}
+              <section className="space-y-2.5">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
+                  <Monitor className="w-3.5 h-3.5 text-emerald-theme" />
+                  <span>Appearance &amp; Theme</span>
+                </div>
+
+                <div className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onChangeTheme) {
+                          onChangeTheme('light');
+                        } else if (theme !== 'light') {
+                          onToggleTheme();
+                        }
+                      }}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-md text-xs font-semibold border transition-all cursor-pointer min-h-[44px] ${
+                        theme === 'light'
+                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
+                      }`}
+                      aria-pressed={theme === 'light'}
+                    >
+                      <Sun className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Light</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onChangeTheme) {
+                          onChangeTheme('dark');
+                        } else if (theme !== 'dark') {
+                          onToggleTheme();
+                        }
+                      }}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-md text-xs font-semibold border transition-all cursor-pointer min-h-[44px] ${
+                        theme === 'dark'
+                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
+                      }`}
+                      aria-pressed={theme === 'dark'}
+                    >
+                      <Moon className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                      <span>Dark</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onChangeTheme) {
+                          onChangeTheme('system');
+                        } else {
+                          onToggleTheme();
+                        }
+                      }}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 px-2 rounded-md text-xs font-semibold border transition-all cursor-pointer min-h-[44px] ${
+                        theme === 'system'
+                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
+                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
+                      }`}
+                      aria-pressed={theme === 'system'}
+                    >
+                      <Monitor className="w-3.5 h-3.5 shrink-0" />
+                      <span>System</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-app-secondary">
+                    Preference: <strong className="text-app-main font-semibold capitalize">{theme}</strong>
+                    {theme === 'system' ? ` (active: ${effectiveTheme})` : ''}. Synced with the header switch and saved automatically.
+                  </p>
+                </div>
+              </section>
+
+              {/* SECTION 3: ANIMATION */}
               <section className="space-y-2.5">
                 <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
                   <Play className="w-3.5 h-3.5 text-emerald-theme" />
@@ -952,61 +1021,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </>
           )}
 
-          {/* SECTION: THEME */}
-          {activeTab === 'theme' && (
-            <div className="space-y-4">
-              <section className="space-y-2.5">
-                <div className="text-[11px] font-bold uppercase tracking-wider text-app-secondary flex items-center gap-1.5">
-                  <Monitor className="w-3.5 h-3.5 text-emerald-theme" />
-                  <span>Appearance &amp; Theme Chooser</span>
-                </div>
-
-                <div className="p-3.5 rounded-lg border border-app bg-app-secondary/40 space-y-3">
-                  <label className="block text-xs font-medium text-app-secondary">
-                    Theme Chooser
-                  </label>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (theme !== 'light') onToggleTheme();
-                      }}
-                      className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-md text-xs font-semibold border transition-all cursor-pointer ${
-                        theme === 'light'
-                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
-                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
-                      }`}
-                      aria-pressed={theme === 'light'}
-                    >
-                      <Sun className="w-4 h-4 text-amber-400" />
-                      <span>Light</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (theme !== 'dark') onToggleTheme();
-                      }}
-                      className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-md text-xs font-semibold border transition-all cursor-pointer ${
-                        theme === 'dark'
-                          ? 'bg-emerald-theme text-white border-emerald-600 shadow-2xs'
-                          : 'bg-app-field text-app-main border-app hover:bg-slate-200 dark:hover:bg-slate-800'
-                      }`}
-                      aria-pressed={theme === 'dark'}
-                    >
-                      <Moon className="w-4 h-4 text-slate-300" />
-                      <span>Dark</span>
-                    </button>
-                  </div>
-
-                  <p className="text-[11px] text-app-secondary">
-                    Currently using <strong className="text-app-main font-semibold capitalize">{theme}</strong> theme. Preference is saved automatically and included in backups.
-                  </p>
-                </div>
-              </section>
-            </div>
-          )}
 
           {/* SECTION: JOURNAL VISIBILITY */}
           {activeTab === 'journal_visibility' && (

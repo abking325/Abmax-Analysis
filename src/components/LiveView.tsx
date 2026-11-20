@@ -7,9 +7,12 @@ import {
   Calendar,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Edit3,
   ExternalLink,
+  FileText,
   Info,
   Layers,
   Pause,
@@ -19,6 +22,7 @@ import {
   RotateCcw,
   Save,
   Trash2,
+  TrendingUp,
   Wifi,
   WifiOff,
   X,
@@ -28,6 +32,8 @@ import {
   DEFAULT_INSTRUMENTS_CONFIG,
   getEnabledInstrumentSymbols,
   InstrumentsConfig,
+  JournalEntry,
+  JournalLaunchContext,
   LIVE_SCENARIO_STATUSES,
   LiveConfirmationTimeframe,
   LiveEventItem,
@@ -37,6 +43,9 @@ import {
   LiveScenarioStatus,
   LiveWatchScenario,
   LiveWorkspaceData,
+  PlannedScenario,
+  RecordedTrade,
+  SavedReport,
   TimeframeId,
   TradingPair,
   createEmptyLiveInstrumentState,
@@ -47,6 +56,7 @@ import {
   resetLiveInstrument,
   resetLiveWorkspace,
   saveLiveWorkspace,
+  saveReport,
 } from '../services/db';
 import {
   evaluateLiveScenarioConditions,
@@ -54,7 +64,8 @@ import {
   isQuoteStale,
 } from '../services/liveMarketService';
 import { StrategySelector } from './StrategySelector';
-import { deepClone } from '../utils/analysisUtils';
+import { TakeTradeModal } from './TakeTradeModal';
+import { deepClone, formatDateInTimezone, formatTimeInTimezone } from '../utils/analysisUtils';
 import { registerBackHandler } from '../utils/backNavigation';
 
 const ZONE_TYPES: LiveLevelZone['type'][] = ['Supply', 'Demand', 'Support', 'Resistance', 'Liquidity', 'Custom'];
@@ -63,7 +74,11 @@ const CONFIRMATION_TIMEFRAMES: LiveConfirmationTimeframe[] = ['1M', '5M', '15M',
 interface LiveViewProps {
   userId?: string | null;
   instrumentsConfig?: InstrumentsConfig;
+  reports?: SavedReport[];
   onOpenReport?: (reportId: string) => void;
+  onUpdateReport?: (updated: SavedReport) => Promise<void>;
+  onLaunchJournalFromTrade?: (ctx: Omit<JournalLaunchContext, 'requestId'>) => void;
+  onSavePreparationJournal?: (entry: JournalEntry) => Promise<void>;
 }
 
 const createEmptyScenarioDraft = (): LiveWatchScenario => {
@@ -126,7 +141,11 @@ const createEmptyEventDraft = (): LiveEventItem => {
 export const LiveView: React.FC<LiveViewProps> = ({
   userId,
   instrumentsConfig = DEFAULT_INSTRUMENTS_CONFIG,
+  reports = [],
   onOpenReport,
+  onUpdateReport,
+  onLaunchJournalFromTrade,
+  onSavePreparationJournal,
 }) => {
   const enabledInstruments = useMemo(
     () => getEnabledInstrumentSymbols(instrumentsConfig),
@@ -173,6 +192,24 @@ export const LiveView: React.FC<LiveViewProps> = ({
   const [showEventDiscardConfirm, setShowEventDiscardConfirm] = useState(false);
   const [confirmDeleteEventId, setConfirmDeleteEventId] = useState<string | null>(null);
 
+  // Loaded Report reference & Record Trade integration (non-destructive)
+  const [selectedReportId, setSelectedReportId] = useState<string>('');
+  const [loadedScenarioExpandedMap, setLoadedScenarioExpandedMap] = useState<Record<string, boolean>>({});
+  const [copiedLoadedScenarioId, setCopiedLoadedScenarioId] = useState<string | null>(null);
+  const [tradeModalState, setTradeModalState] = useState<{
+    report: SavedReport;
+    draft: any;
+  } | null>(null);
+  const [reportPickerForLiveScenario, setReportPickerForLiveScenario] = useState<LiveWatchScenario | null>(null);
+  const [pickerReportId, setPickerReportId] = useState<string>('');
+  const [tradeSavedFeedback, setTradeSavedFeedback] = useState<{
+    reportId: string;
+    reportTitle: string;
+    tradeId: string;
+    direction: 'Buy' | 'Sell' | '';
+    pair: TradingPair;
+  } | null>(null);
+
   // Reset confirmations
   const [showResetInstrumentConfirm, setShowResetInstrumentConfirm] = useState(false);
   const [showResetWorkspaceConfirm, setShowResetWorkspaceConfirm] = useState(false);
@@ -192,6 +229,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
     setIsScenarioModalOpen(false);
     setIsLevelEditorOpen(false);
     setIsEventEditorOpen(false);
+    setTradeModalState(null);
+    setReportPickerForLiveScenario(null);
+    setTradeSavedFeedback(null);
     setShowResetInstrumentConfirm(false);
     setShowResetWorkspaceConfirm(false);
 
@@ -614,11 +654,13 @@ export const LiveView: React.FC<LiveViewProps> = ({
 
   // Keyboard Escape support for topmost open editor
   useEffect(() => {
-    if (!isScenarioModalOpen && !isLevelEditorOpen && !isEventEditorOpen) return;
+    if (!isScenarioModalOpen && !isLevelEditorOpen && !isEventEditorOpen && !reportPickerForLiveScenario) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.preventDefault();
-      if (isScenarioModalOpen) {
+      if (reportPickerForLiveScenario) {
+        setReportPickerForLiveScenario(null);
+      } else if (isScenarioModalOpen) {
         if (showScenarioDiscardConfirm) setShowScenarioDiscardConfirm(false);
         else handleRequestCloseScenarioModal();
       } else if (isLevelEditorOpen) {
@@ -635,6 +677,7 @@ export const LiveView: React.FC<LiveViewProps> = ({
     isScenarioModalOpen,
     isLevelEditorOpen,
     isEventEditorOpen,
+    reportPickerForLiveScenario,
     showScenarioDiscardConfirm,
     showLevelDiscardConfirm,
     showEventDiscardConfirm,
@@ -645,9 +688,11 @@ export const LiveView: React.FC<LiveViewProps> = ({
 
   // Register topmost Android Back handler when any Live editor modal is open
   useEffect(() => {
-    if (!isScenarioModalOpen && !isLevelEditorOpen && !isEventEditorOpen) return;
+    if (!isScenarioModalOpen && !isLevelEditorOpen && !isEventEditorOpen && !reportPickerForLiveScenario) return;
     return registerBackHandler(() => {
-      if (isScenarioModalOpen) {
+      if (reportPickerForLiveScenario) {
+        setReportPickerForLiveScenario(null);
+      } else if (isScenarioModalOpen) {
         if (showScenarioDiscardConfirm) setShowScenarioDiscardConfirm(false);
         else handleRequestCloseScenarioModal();
       } else if (isLevelEditorOpen) {
@@ -662,6 +707,7 @@ export const LiveView: React.FC<LiveViewProps> = ({
     isScenarioModalOpen,
     isLevelEditorOpen,
     isEventEditorOpen,
+    reportPickerForLiveScenario,
     showScenarioDiscardConfirm,
     showLevelDiscardConfirm,
     showEventDiscardConfirm,
@@ -696,6 +742,169 @@ export const LiveView: React.FC<LiveViewProps> = ({
     () => activeInstrument.alerts.filter((a) => !a.acknowledged),
     [activeInstrument.alerts]
   );
+
+  // Reports sorted by recency with activePair matches prioritized
+  const orderedReportsForPicker = useMemo(() => {
+    const activePairMatches: SavedReport[] = [];
+    const others: SavedReport[] = [];
+    for (const r of reports) {
+      if (r.pair === activePair) activePairMatches.push(r);
+      else others.push(r);
+    }
+    return { activePairMatches, others, all: [...activePairMatches, ...others] };
+  }, [reports, activePair]);
+
+  const loadedReport = useMemo(() => {
+    if (!selectedReportId) return null;
+    return reports.find((r) => r.id === selectedReportId) || null;
+  }, [reports, selectedReportId]);
+
+  const reportsById = useMemo(() => {
+    const map = new Map<string, SavedReport>();
+    for (const r of reports) {
+      map.set(r.id, r);
+    }
+    return map;
+  }, [reports]);
+
+  // Clear report selection when switching instrument if it doesn't belong to activePair
+  useEffect(() => {
+    if (loadedReport && loadedReport.pair !== activePair) {
+      const firstForPair = reports.find((r) => r.pair === activePair);
+      setSelectedReportId(firstForPair ? firstForPair.id : '');
+      setLoadedScenarioExpandedMap({});
+    }
+  }, [activePair, loadedReport, reports]);
+
+  const handleCopyLoadedScenarioToLive = async (rpt: SavedReport, sc: PlannedScenario) => {
+    const now = Date.now();
+    const watchItem: LiveWatchScenario = {
+      id: `lscn_${now}_${Math.random().toString(36).substring(2, 8)}`,
+      name: sc.label || 'Scenario',
+      direction: sc.direction === 'Sell' ? 'Sell' : 'Buy',
+      strategy: sc.strategy || sc.strategySnapshot?.name || '',
+      strategyId: sc.strategyId,
+      strategySnapshot: sc.strategySnapshot ? deepClone(sc.strategySnapshot) : undefined,
+      targetZoneOrLevel: '',
+      zoneLow: '',
+      zoneHigh: '',
+      triggerConditions: sc.entryConditions || '',
+      confirmationType: sc.entryConditions || '',
+      confirmationTimeframe: '15M',
+      requiresCandleClose: true,
+      plannedResponse: sc.description || '',
+      invalidationLevel: sc.invalidationConditions || '',
+      priority: 'High',
+      status: 'Waiting',
+      notes: '',
+      sourceReportId: rpt.id,
+      sourceScenarioId: sc.id,
+      sourceReportTitle: rpt.title || `${rpt.pair} (${rpt.date})`,
+      alertOnZoneTouch: true,
+      alertOnInvalidation: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const targetPair = rpt.pair || activePair;
+    await updateInstrument(targetPair, (inst) => ({
+      ...inst,
+      scenarios: [watchItem, ...inst.scenarios],
+      updatedAt: now,
+    }));
+    setCopiedLoadedScenarioId(sc.id);
+    setTimeout(() => {
+      setCopiedLoadedScenarioId((prev) => (prev === sc.id ? null : prev));
+    }, 2000);
+  };
+
+  const openTakeTradeForReportAndLiveScenario = (
+    targetReport: SavedReport,
+    sc: LiveWatchScenario,
+    sourcePlannedScenario?: PlannedScenario
+  ) => {
+    const now = new Date();
+    const matchedScenario =
+      sourcePlannedScenario ||
+      (sc.sourceScenarioId
+        ? targetReport.scenarios?.find((s) => s.id === sc.sourceScenarioId)
+        : undefined);
+    setTradeSavedFeedback(null);
+    setTradeModalState({
+      report: targetReport,
+      draft: {
+        selectedScenarioId: matchedScenario ? matchedScenario.id : 'manual',
+        direction: sc.direction || 'Buy',
+        session: targetReport.session || 'London',
+        timeframeTaken: (sc.confirmationTimeframe as TimeframeId) || '15M',
+        entryPrice: '',
+        stopLoss: '',
+        takeProfit: '',
+        exitPrice: '',
+        riskReward: '',
+        plannedRRChoice: '',
+        plannedRRRatio: '',
+        setupValidity: 'Not reviewed',
+        outcome: 'Open',
+        rulesFollowed: true,
+        notes: [sc.name, sc.plannedResponse, sc.notes].filter(Boolean).join(' — '),
+        tradeDate: formatDateInTimezone(now),
+        tradeTime: formatTimeInTimezone(now),
+        strategy: sc.strategy || sc.strategySnapshot?.name || matchedScenario?.strategy || '',
+        strategyId: sc.strategyId || matchedScenario?.strategyId,
+        strategySnapshot: sc.strategySnapshot || matchedScenario?.strategySnapshot,
+        sourceReportId: targetReport.id,
+        sourceReportTitle: targetReport.title || `${targetReport.pair} (${targetReport.date})`,
+      },
+    });
+  };
+
+  const handleTriggerRecordTradeFromLiveScenario = (sc: LiveWatchScenario) => {
+    if (sc.sourceReportId) {
+      const matched = reportsById.get(sc.sourceReportId);
+      if (matched) {
+        openTakeTradeForReportAndLiveScenario(matched, sc);
+        return;
+      }
+    }
+    const defaultPick =
+      orderedReportsForPicker.activePairMatches[0]?.id ||
+      orderedReportsForPicker.all[0]?.id ||
+      '';
+    setPickerReportId(defaultPick);
+    setReportPickerForLiveScenario(sc);
+  };
+
+  const handleConfirmSaveLiveTrade = async (trade: RecordedTrade) => {
+    if (!tradeModalState) return;
+    const latestReport = reportsById.get(tradeModalState.report.id) || tradeModalState.report;
+    const existingTrades = latestReport.trades || [];
+    const tradeWithSource: RecordedTrade = {
+      ...trade,
+      sourceReportId: latestReport.id,
+      sourceReportTitle: latestReport.title || `${latestReport.pair} (${latestReport.date})`,
+    };
+    const nextTrades = existingTrades.some((t) => t.id === tradeWithSource.id)
+      ? existingTrades.map((t) => (t.id === tradeWithSource.id ? tradeWithSource : t))
+      : [...existingTrades, tradeWithSource];
+    const updatedReport: SavedReport = {
+      ...latestReport,
+      trades: nextTrades,
+      updatedAt: Date.now(),
+    };
+    if (onUpdateReport) {
+      await onUpdateReport(updatedReport);
+    } else {
+      await saveReport(updatedReport);
+    }
+    setTradeSavedFeedback({
+      reportId: updatedReport.id,
+      reportTitle: updatedReport.title || `${updatedReport.pair} (${updatedReport.date})`,
+      tradeId: tradeWithSource.id,
+      direction: tradeWithSource.direction,
+      pair: updatedReport.pair,
+    });
+    setTradeModalState(null);
+  };
 
   const handleResetCurrentInstrument = async () => {
     const updated = await resetLiveInstrument(activePair, userId);
@@ -1143,6 +1352,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
           </div>
           <textarea
             rows={5}
+            spellCheck
+            autoCorrect="on"
+            autoCapitalize="sentences"
             value={activeInstrument.marketConditionSummary}
             onChange={(e) => {
               const val = e.target.value;
@@ -1157,6 +1369,258 @@ export const LiveView: React.FC<LiveViewProps> = ({
           />
         </section>
       </div>
+
+      {/* Saved Trade Feedback Banner */}
+      {tradeSavedFeedback && (
+        <div className="p-3 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-500/40 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 text-app-main">
+            <CheckCircle2 className="w-4 h-4 text-emerald-theme shrink-0" />
+            <span>
+              Trade recorded in <strong className="font-bold">{tradeSavedFeedback.reportTitle}</strong>.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {onLaunchJournalFromTrade && (
+              <button
+                type="button"
+                onClick={() =>
+                  onLaunchJournalFromTrade({
+                    targetPhase: 'inTrade',
+                    mode: 'create',
+                    linkedReportId: tradeSavedFeedback.reportId,
+                    linkedReportTitle: tradeSavedFeedback.reportTitle,
+                    linkedTradeId: tradeSavedFeedback.tradeId,
+                    pair: tradeSavedFeedback.pair,
+                  })
+                }
+                className="px-2.5 py-1 rounded bg-emerald-theme text-white font-semibold hover:bg-emerald-theme-hover cursor-pointer"
+              >
+                Open in Journal
+              </button>
+            )}
+            {onOpenReport && (
+              <button
+                type="button"
+                onClick={() => onOpenReport(tradeSavedFeedback.reportId)}
+                className="px-2.5 py-1 rounded bg-app-main border border-app text-app-main font-semibold hover:bg-app-field cursor-pointer"
+              >
+                View Report
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setTradeSavedFeedback(null)}
+              className="p-1 text-app-secondary hover:text-app-main cursor-pointer"
+              aria-label="Dismiss trade confirmation"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Load Report Reference Section */}
+      <section className="p-4 sm:p-5 rounded-xl border border-app bg-app-main space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-emerald-theme" />
+              <h2 className="text-sm font-bold text-app-main">
+                Load Report Reference ({activePair})
+              </h2>
+            </div>
+            <p className="text-[11px] text-app-secondary mt-0.5">
+              Pull saved analysis scenarios into Live as read-only references or independent watch copies.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              aria-label="Load Saved Report in Live"
+              value={loadedReport ? loadedReport.id : ''}
+              onChange={(e) => {
+                setSelectedReportId(e.target.value);
+                setLoadedScenarioExpandedMap({});
+              }}
+              className="px-3 py-2 rounded-lg bg-app-field border border-app text-xs font-medium text-app-main max-w-full sm:max-w-xs cursor-pointer"
+            >
+              <option value="">
+                {orderedReportsForPicker.all.length === 0
+                  ? 'No saved reports available'
+                  : `Select a saved report (${orderedReportsForPicker.activePairMatches.length} for ${activePair})...`}
+              </option>
+              {orderedReportsForPicker.activePairMatches.length > 0 && (
+                <optgroup label={`${activePair} Reports`}>
+                  {orderedReportsForPicker.activePairMatches.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {(r.title || 'Analysis')} — {r.pair} · Analysis {r.date}{r.time ? ` ${r.time}` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {orderedReportsForPicker.others.length > 0 && (
+                <optgroup label="Other Instruments">
+                  {orderedReportsForPicker.others.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {(r.title || 'Analysis')} — {r.pair} · Analysis {r.date}{r.time ? ` ${r.time}` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+
+            {loadedReport && onOpenReport && (
+              <button
+                type="button"
+                onClick={() => onOpenReport(loadedReport.id)}
+                className="inline-flex items-center gap-1 px-3 py-2 text-xs font-semibold text-emerald-theme bg-emerald-pale rounded-lg border border-emerald-500/30 hover:opacity-90 cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>View Report</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {selectedReportId && !loadedReport && (
+          <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-300/70 text-[11px] text-amber-800 dark:text-amber-200 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span>The previously selected source report is no longer available in saved reports. Copied Live watch scenarios remain preserved.</span>
+          </div>
+        )}
+
+        {loadedReport && (
+          <div className="p-3.5 rounded-xl bg-app-secondary/40 border border-app space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-app/60">
+              <div className="space-y-0.5">
+                <div className="font-bold text-sm text-app-main">
+                  {loadedReport.title || `${loadedReport.pair} Analysis`}
+                </div>
+                <div className="text-[11px] text-app-secondary flex flex-wrap items-center gap-2">
+                  <span>Instrument: <strong className="text-app-main">{loadedReport.pair}</strong></span>
+                  <span>·</span>
+                  <span>Analysis Date/Time: <strong className="font-mono text-app-main">{loadedReport.date}{loadedReport.time ? ` ${loadedReport.time}` : ''}</strong></span>
+                  <span>·</span>
+                  <span>Session: <strong className="text-app-main">{loadedReport.session}</strong></span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedReportId('')}
+                className="text-[11px] text-app-secondary hover:text-app-main px-2 py-1 rounded border border-app bg-app-main cursor-pointer"
+              >
+                Unload Reference
+              </button>
+            </div>
+
+            {(!loadedReport.scenarios || loadedReport.scenarios.length === 0) ? (
+              <p className="text-[11px] text-app-secondary italic">
+                No planned scenarios saved in this report. You can still record a discretionary trade via Record Trade on any Watch Scenario.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {loadedReport.scenarios.map((sc, idx) => {
+                  const isExp = Boolean(loadedScenarioExpandedMap[sc.id]);
+                  const headline = sc.label || `Scenario ${idx + 1}`;
+                  const stratLabel = sc.strategy || sc.strategySnapshot?.name;
+                  return (
+                    <div key={sc.id} className="p-3 rounded-lg bg-app-main border border-app space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-extrabold text-sm text-app-main">{headline}</span>
+                          {sc.direction && (
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase ${
+                                sc.direction === 'Buy'
+                                  ? 'bg-emerald-pale text-bullish border-emerald-500/40'
+                                  : 'bg-bearish-pale text-bearish border-rose-500/40'
+                              }`}
+                            >
+                              {sc.direction}
+                            </span>
+                          )}
+                          {stratLabel && (
+                            <span className="text-[11px] font-semibold text-emerald-theme">
+                              · {stratLabel}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => handleCopyLoadedScenarioToLive(loadedReport, sc)}
+                            className="px-2.5 py-1 rounded text-[11px] font-semibold text-emerald-theme bg-emerald-pale border border-emerald-500/30 hover:opacity-90 cursor-pointer"
+                          >
+                            {copiedLoadedScenarioId === sc.id ? 'Copied!' : 'Copy into Live'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openTakeTradeForReportAndLiveScenario(
+                                loadedReport,
+                                {
+                                  ...createEmptyScenarioDraft(),
+                                  name: headline,
+                                  direction: sc.direction === 'Sell' ? 'Sell' : 'Buy',
+                                  strategy: stratLabel || '',
+                                  strategyId: sc.strategyId,
+                                  strategySnapshot: sc.strategySnapshot,
+                                  plannedResponse: sc.description || '',
+                                  sourceReportId: loadedReport.id,
+                                  sourceScenarioId: sc.id,
+                                },
+                                sc
+                              )
+                            }
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold text-white bg-emerald-theme hover:bg-emerald-theme-hover cursor-pointer"
+                          >
+                            <TrendingUp className="w-3 h-3" />
+                            <span>Record Trade</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLoadedScenarioExpandedMap((prev) => ({ ...prev, [sc.id]: !isExp }))
+                            }
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-app-secondary hover:text-app-main border border-app bg-app-field cursor-pointer"
+                          >
+                            {isExp ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                            <span>{isExp ? 'Hide' : 'Details'}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExp && (
+                        <div className="pt-2 border-t border-app/60 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+                          {sc.description && (
+                            <div className="p-2 rounded bg-app-field/60 border border-app/50">
+                              <div className="font-bold text-app-secondary mb-0.5">Narrative</div>
+                              <div className="text-app-main whitespace-pre-wrap">{sc.description}</div>
+                            </div>
+                          )}
+                          {sc.entryConditions && (
+                            <div className="p-2 rounded bg-app-field/60 border border-app/50">
+                              <div className="font-bold text-app-secondary mb-0.5">Entry Rules</div>
+                              <div className="text-app-main whitespace-pre-wrap">{sc.entryConditions}</div>
+                            </div>
+                          )}
+                          {sc.invalidationConditions && (
+                            <div className="p-2 rounded bg-app-field/60 border border-app/50">
+                              <div className="font-bold text-app-secondary mb-0.5">Invalidation</div>
+                              <div className="text-app-main whitespace-pre-wrap">{sc.invalidationConditions}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* Watch Scenarios Section */}
       <section className="p-4 sm:p-5 rounded-xl border border-app bg-app-main space-y-4">
@@ -1356,22 +1820,49 @@ export const LiveView: React.FC<LiveViewProps> = ({
                   <p className="text-[11px] text-app-secondary italic">{sc.notes}</p>
                 )}
 
-                {sc.sourceReportId && (
-                  <div className="pt-1 flex items-center justify-between text-[11px] text-app-secondary">
-                    {onOpenReport ? (
-                      <button
-                        type="button"
-                        onClick={() => onOpenReport(sc.sourceReportId!)}
-                        className="inline-flex items-center gap-1 font-medium text-emerald-theme hover:underline cursor-pointer"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>Copied from Report: {sc.sourceReportTitle || sc.sourceReportId}</span>
-                      </button>
-                    ) : (
-                      <span>Copied from Report: {sc.sourceReportTitle || sc.sourceReportId}</span>
-                    )}
+                <div className="pt-2 border-t border-app/50 flex flex-wrap items-center justify-between gap-2 text-[11px] text-app-secondary">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {sc.sourceReportId && (() => {
+                      const matchedSource = reportsById.get(sc.sourceReportId);
+                      const wasModifiedAfterCopy = Boolean(
+                        matchedSource && sc.createdAt && matchedSource.updatedAt > sc.createdAt
+                      );
+                      return (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {matchedSource && onOpenReport ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenReport(sc.sourceReportId!)}
+                              className="inline-flex items-center gap-1 font-medium text-emerald-theme hover:underline cursor-pointer"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Copied from Report: {sc.sourceReportTitle || sc.sourceReportId}</span>
+                            </button>
+                          ) : (
+                            <span>
+                              Copied from Report: {sc.sourceReportTitle || sc.sourceReportId}
+                              {!matchedSource && ' (source report deleted — Live copy preserved)'}
+                            </span>
+                          )}
+                          {wasModifiedAfterCopy && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-300/60 text-amber-800 dark:text-amber-300 text-[10px]">
+                              Source modified since copy
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
-                )}
+
+                  <button
+                    type="button"
+                    onClick={() => handleTriggerRecordTradeFromLiveScenario(sc)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-theme hover:bg-emerald-theme-hover text-white font-semibold text-[11px] cursor-pointer"
+                  >
+                    <TrendingUp className="w-3 h-3" />
+                    <span>Record Trade</span>
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1407,6 +1898,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={levelDraft.label}
                   onChange={(e) => setLevelDraft((p) => ({ ...p, label: e.target.value }))}
                   placeholder="Label (e.g. Daily Supply POI)"
@@ -1438,6 +1932,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
               </div>
               <input
                 type="text"
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={levelDraft.notes || ''}
                 onChange={(e) => setLevelDraft((p) => ({ ...p, notes: e.target.value }))}
                 placeholder="Optional note..."
@@ -1583,6 +2080,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={eventDraft.title}
                   onChange={(e) => setEventDraft((p) => ({ ...p, title: e.target.value }))}
                   placeholder="Event title (e.g. US CPI Release)"
@@ -1614,6 +2114,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
               </div>
               <input
                 type="text"
+                spellCheck
+                autoCorrect="on"
+                autoCapitalize="sentences"
                 value={eventDraft.notes || ''}
                 onChange={(e) => setEventDraft((p) => ({ ...p, notes: e.target.value }))}
                 placeholder="Rule / expected volatility note..."
@@ -1771,6 +2274,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
                   </label>
                   <input
                     type="text"
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={scenarioDraft.name}
                     onChange={(e) => setScenarioDraft((p) => ({ ...p, name: e.target.value }))}
                     placeholder="e.g. Scenario A — NY Sweep of Asia Low + 15M MSS"
@@ -1845,6 +2351,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
                   <label className="block font-medium text-app-secondary mb-1">Trigger Conditions</label>
                   <textarea
                     rows={2}
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={scenarioDraft.triggerConditions}
                     onChange={(e) => setScenarioDraft((p) => ({ ...p, triggerConditions: e.target.value }))}
                     placeholder="What price action or liquidity sweep puts this setup in play?"
@@ -1855,6 +2364,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
                   <label className="block font-medium text-app-secondary mb-1">Confirmation Criteria</label>
                   <textarea
                     rows={2}
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={scenarioDraft.confirmationType}
                     onChange={(e) => setScenarioDraft((p) => ({ ...p, confirmationType: e.target.value }))}
                     placeholder="e.g. 15M MSS + FVG displacement"
@@ -1867,6 +2379,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
                 <label className="block font-medium text-app-secondary mb-1">Planned Response / Execution Plan</label>
                 <textarea
                   rows={2}
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={scenarioDraft.plannedResponse}
                   onChange={(e) => setScenarioDraft((p) => ({ ...p, plannedResponse: e.target.value }))}
                   placeholder="Entry trigger, stop placement, and TP1/TP2 management..."
@@ -1911,6 +2426,9 @@ export const LiveView: React.FC<LiveViewProps> = ({
                 <label className="block font-medium text-app-secondary mb-1">Notes</label>
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={scenarioDraft.notes || ''}
                   onChange={(e) => setScenarioDraft((p) => ({ ...p, notes: e.target.value }))}
                   placeholder="Optional observation notes..."
@@ -1965,6 +2483,100 @@ export const LiveView: React.FC<LiveViewProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {/* Explicit Target Report Chooser for Live Record Trade */}
+      {reportPickerForLiveScenario && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose Saved Report for Trade"
+          onClick={() => setReportPickerForLiveScenario(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-app-main border border-app rounded-xl shadow-2xl p-5 space-y-4 text-xs"
+          >
+            <div className="flex items-center justify-between border-b border-app pb-2.5">
+              <h3 className="text-sm font-bold text-app-main">Select Target Saved Report</h3>
+              <button
+                type="button"
+                onClick={() => setReportPickerForLiveScenario(null)}
+                className="p-1 text-app-secondary hover:text-app-main cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {orderedReportsForPicker.all.length === 0 ? (
+              <div className="p-4 rounded-lg bg-app-field border border-app text-app-secondary space-y-2">
+                <p className="font-semibold text-app-main">No Saved Reports Found</p>
+                <p>
+                  Trades are stored on an existing Analysis Report so discipline and history stay consistent. Save an Analysis Report first, then record your trade here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-app-secondary">
+                  Choose which existing Analysis Report should record the trade from <strong className="text-app-main">{reportPickerForLiveScenario.name}</strong>. Your Live Watch Scenario will remain untouched.
+                </p>
+                <select
+                  value={pickerReportId}
+                  onChange={(e) => setPickerReportId(e.target.value)}
+                  aria-label="Target saved report"
+                  className="w-full px-3 py-2 rounded bg-app-field border border-app text-app-main cursor-pointer"
+                >
+                  {orderedReportsForPicker.all.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {(r.title || 'Analysis')} — {r.pair} ({r.date}{r.time ? ` ${r.time}` : ''})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-app">
+              <button
+                type="button"
+                onClick={() => setReportPickerForLiveScenario(null)}
+                className="px-3 py-1.5 text-app-secondary hover:text-app-main rounded cursor-pointer"
+              >
+                Cancel
+              </button>
+              {orderedReportsForPicker.all.length > 0 && (
+                <button
+                  type="button"
+                  disabled={!pickerReportId}
+                  onClick={() => {
+                    const target = reportsById.get(pickerReportId);
+                    const sc = reportPickerForLiveScenario;
+                    setReportPickerForLiveScenario(null);
+                    if (target && sc) {
+                      openTakeTradeForReportAndLiveScenario(target, sc);
+                    }
+                  }}
+                  className="px-4 py-1.5 bg-emerald-theme text-white font-semibold rounded hover:bg-emerald-theme-hover cursor-pointer disabled:opacity-40"
+                >
+                  Continue to Trade Form
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shared Record Trade Modal triggered from Live */}
+      {tradeModalState && (
+        <TakeTradeModal
+          isOpen={true}
+          onClose={() => setTradeModalState(null)}
+          report={tradeModalState.report}
+          initialTradeDraft={tradeModalState.draft}
+          onSaveTrade={handleConfirmSaveLiveTrade}
+          onSavePreparationJournal={onSavePreparationJournal}
+          userId={userId}
+        />
       )}
     </div>
   );

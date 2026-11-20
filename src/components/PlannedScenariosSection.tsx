@@ -577,6 +577,9 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                       </label>
                       <textarea
                         rows={2}
+                        spellCheck
+                        autoCorrect="on"
+                        autoCapitalize="sentences"
                         value={scenario.description}
                         onChange={(e) =>
                           handleUpdateDraftOrScenario(parentScenario.id, {
@@ -596,6 +599,9 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                         </label>
                         <textarea
                           rows={2}
+                          spellCheck
+                          autoCorrect="on"
+                          autoCapitalize="sentences"
                           value={scenario.entryConditions}
                           onChange={(e) =>
                             handleUpdateDraftOrScenario(parentScenario.id, {
@@ -613,6 +619,9 @@ export const PlannedScenariosSection: React.FC<PlannedScenariosSectionProps> = (
                         </label>
                         <textarea
                           rows={2}
+                          spellCheck
+                          autoCorrect="on"
+                          autoCapitalize="sentences"
                           value={scenario.invalidationConditions}
                           onChange={(e) =>
                             handleUpdateDraftOrScenario(parentScenario.id, {

@@ -1045,7 +1045,7 @@ export async function migrateLocalDataToCloud(
 
 export async function uploadPreferencesToCloud(
   userId: string,
-  theme: 'light' | 'dark',
+  theme: 'light' | 'dark' | 'system',
   preferences: Record<string, any>
 ): Promise<void> {
   if (!supabase) return;
@@ -1075,7 +1075,7 @@ export async function uploadPreferencesToCloud(
 
 export async function fetchPreferencesFromCloud(
   userId: string
-): Promise<{ theme?: 'light' | 'dark'; preferences?: Record<string, any> } | null> {
+): Promise<{ theme?: 'light' | 'dark' | 'system'; preferences?: Record<string, any> } | null> {
   if (!supabase) return null;
   try {
     const { data, error } = await supabase
@@ -1086,7 +1086,7 @@ export async function fetchPreferencesFromCloud(
 
     if (error || !data) return null;
     return {
-      theme: data.theme as 'light' | 'dark',
+      theme: data.theme as 'light' | 'dark' | 'system',
       preferences: data.preferences,
     };
   } catch {

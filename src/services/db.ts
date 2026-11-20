@@ -1776,10 +1776,10 @@ export async function createFullBackup(accountId?: string | null): Promise<Backu
     getAllScopedInstrumentsConfigs(),
   ]);
 
-  const theme =
-    (typeof localStorage !== 'undefined'
-      ? (localStorage.getItem('abmax_theme') as 'light' | 'dark')
-      : null) || 'light';
+  const rawTheme =
+    typeof localStorage !== 'undefined' ? localStorage.getItem('abmax_theme') : null;
+  const theme: 'light' | 'dark' | 'system' =
+    rawTheme === 'dark' || rawTheme === 'system' ? rawTheme : 'light';
 
   // Capture all active working sessions and unfinished form states from localStorage
   const workingSessions: Record<string, unknown> = {};
@@ -2399,3 +2399,103 @@ export async function restoreBackup(
     restoredLiveWorkspaces,
   };
 }
+
+export interface ScopedContextualSuggestions {
+  setupTags: string[];
+  mistakeTags: string[];
+  lessonTags: string[];
+  tags: string[];
+  strategies: string[];
+  usedInstruments: string[];
+}
+
+/**
+ * Returns non-sensitive autocomplete suggestions derived strictly from the active account's
+ * own reports, strategies, and trading-journal entries (excluding private My Journal notes and foreign accounts).
+ */
+export async function getScopedContextualSuggestions(
+  accountId?: string | null
+): Promise<ScopedContextualSuggestions> {
+  const scope = normalizeAccountScope(accountId);
+  const isGuestScope = scope === 'guest';
+
+  try {
+    const [reports, strategies, journalEntries] = await Promise.all([
+      getAllReports(),
+      getStrategiesForScope(accountId),
+      getAllJournalEntries(),
+    ]);
+
+    const setupTags = new Set<string>();
+    const mistakeTags = new Set<string>();
+    const lessonTags = new Set<string>();
+    const tags = new Set<string>();
+    const strategyNames = new Set<string>();
+    const usedInstruments = new Set<string>();
+
+    for (const st of strategies) {
+      if (st?.name && !st.isArchived) {
+        strategyNames.add(st.name.trim());
+      }
+      for (const tg of st?.tags || []) {
+        if (tg && tg.trim()) tags.add(tg.trim());
+      }
+    }
+
+    for (const r of reports) {
+      const rOwner = r.accountId ? normalizeAccountScope(r.accountId) : 'guest';
+      const belongsToScope = isGuestScope
+        ? !r.accountId || rOwner === 'guest'
+        : rOwner === scope || (!r.accountId && false);
+      if (!belongsToScope) continue;
+
+      if (r.pair) usedInstruments.add(r.pair);
+      for (const scn of r.scenarios || []) {
+        if (scn.strategy && scn.strategy.trim()) strategyNames.add(scn.strategy.trim());
+      }
+      for (const trd of r.trades || []) {
+        if (trd.pair) usedInstruments.add(trd.pair);
+        if (trd.strategy && trd.strategy.trim()) strategyNames.add(trd.strategy.trim());
+      }
+    }
+
+    for (const j of journalEntries) {
+      if (!isJournalEntryOwnedByScope(j, accountId)) continue;
+      // Strictly exclude private My Journal entries from suggestion pools
+      if (j.entryType === 'my_journal' || j.entryType === 'my-journal') continue;
+
+      if (j.pair) usedInstruments.add(j.pair);
+      if (j.preTrade?.setupTag && j.preTrade.setupTag.trim()) {
+        setupTags.add(j.preTrade.setupTag.trim());
+      }
+      for (const m of j.postTrade?.mistakeTags || []) {
+        if (m && m.trim()) mistakeTags.add(m.trim());
+      }
+      for (const l of j.postTrade?.lessonTags || []) {
+        if (l && l.trim()) lessonTags.add(l.trim());
+      }
+      for (const tg of j.tags || []) {
+        if (tg && tg.trim()) tags.add(tg.trim());
+      }
+    }
+
+    return {
+      setupTags: Array.from(setupTags).slice(0, 20),
+      mistakeTags: Array.from(mistakeTags).slice(0, 20),
+      lessonTags: Array.from(lessonTags).slice(0, 20),
+      tags: Array.from(tags).slice(0, 20),
+      strategies: Array.from(strategyNames).slice(0, 20),
+      usedInstruments: Array.from(usedInstruments).slice(0, 20),
+    };
+  } catch {
+    return {
+      setupTags: [],
+      mistakeTags: [],
+      lessonTags: [],
+      tags: [],
+      strategies: [],
+      usedInstruments: [],
+    };
+  }
+}
+

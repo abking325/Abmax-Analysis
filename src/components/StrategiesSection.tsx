@@ -563,6 +563,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
           <Search className="w-3.5 h-3.5 text-app-secondary absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
+            spellCheck
+            autoCorrect="on"
+            autoCapitalize="sentences"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search strategies by name, rules, context, or tags..."
@@ -941,6 +944,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                 </label>
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. London Session Liquidity Sweep + 5M iBOS"
@@ -955,6 +961,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                 </label>
                 <input
                   type="text"
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={setupContext}
                   onChange={(e) => setSetupContext(e.target.value)}
                   placeholder="e.g. HTF aligned, discount/premium POI tapped during London Killzone"
@@ -968,6 +977,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                 </label>
                 <textarea
                   rows={2}
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Overall thesis and narrative of how this setup unfolds..."
@@ -982,6 +994,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                   </label>
                   <textarea
                     rows={3}
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={entryRules}
                     onChange={(e) => setEntryRules(e.target.value)}
                     placeholder="Specific confirmation candle, LTF shift, FVG or OB trigger..."
@@ -994,6 +1009,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                   </label>
                   <textarea
                     rows={3}
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={invalidationConditions}
                     onChange={(e) => setInvalidationConditions(e.target.value)}
                     placeholder="What invalidates this setup cleanly?"
@@ -1009,6 +1027,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                   </label>
                   <textarea
                     rows={2}
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={riskManagementRules}
                     onChange={(e) => setRiskManagementRules(e.target.value)}
                     placeholder="e.g. Max 0.5% risk, stop behind structural high/low..."
@@ -1021,6 +1042,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                   </label>
                   <textarea
                     rows={2}
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={exitRules}
                     onChange={(e) => setExitRules(e.target.value)}
                     placeholder="e.g. Partial at 2R, final target at opposing external liquidity..."
@@ -1036,6 +1060,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
+                    spellCheck
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     value={tagInput}
                     onChange={(e) => setTagInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -1083,6 +1110,9 @@ export const StrategiesSection: React.FC<StrategiesSectionProps> = ({ userId }) 
                 </label>
                 <textarea
                   rows={2}
+                  spellCheck
+                  autoCorrect="on"
+                  autoCapitalize="sentences"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Optional psychological or execution reminders..."
